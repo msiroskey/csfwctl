@@ -117,10 +117,21 @@ max_deletes = 1
 max_changes = 10
 require_bootstrap_for_unmanaged = true
 
+[lint]
+disabled = ["broad-allow"]              # list of rule ids to skip
+
+[lint.options.broad-allow]
+unconstrained = false                   # per-rule config; see CLI reference
+
 [notifications.teams]
 url_env = "TEAMS_WEBHOOK_URL"
 events = ["apply.failed", "drift.detected"]
 ```
+
+The `[lint]` section is optional. `disabled` lists `rule_id` strings
+matched against `csfwctl.linter.LINT_REGISTRY`. `[lint.options.<rule>]`
+sub-tables are passed verbatim to the matching rule's `check` method;
+the rule itself defines the accepted keys.
 
 Notifier sections under `[notifications.<channel>]` accept arbitrary
 extra fields (channel-specific). The `events` list uses glob patterns

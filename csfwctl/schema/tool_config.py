@@ -35,6 +35,22 @@ class NotifierConfig(BaseModel):
     events: list[str] = Field(default_factory=list)
 
 
+class LintSection(BaseModel):
+    """The ``[lint]`` section: disable rules and pass per-rule options.
+
+    ``disabled`` is a list of lint rule ids to skip (matched against
+    :data:`csfwctl.linter.LINT_REGISTRY`). ``options`` keys are
+    rule ids; each value is a per-rule config dict the rule itself
+    interprets — see :class:`csfwctl.linter.BroadAllowLint` for an
+    example.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    disabled: list[str] = Field(default_factory=list)
+    options: dict[str, dict[str, object]] = Field(default_factory=dict)
+
+
 class ToolConfig(BaseModel):
     """Top-level ``csfwctl.toml`` model."""
 
@@ -42,7 +58,8 @@ class ToolConfig(BaseModel):
 
     tool: ToolSection = Field(default_factory=ToolSection)
     safety: SafetySection = Field(default_factory=SafetySection)
+    lint: LintSection = Field(default_factory=LintSection)
     notifications: dict[str, NotifierConfig] = Field(default_factory=dict)
 
 
-__all__ = ["NotifierConfig", "SafetySection", "ToolConfig", "ToolSection"]
+__all__ = ["LintSection", "NotifierConfig", "SafetySection", "ToolConfig", "ToolSection"]

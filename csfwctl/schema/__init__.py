@@ -25,6 +25,7 @@ from csfwctl.schema.rule import ANY_LOCATION, Endpoint, Rule
 from csfwctl.schema.rule_group import RuleGroup
 from csfwctl.schema.tombstone import TombstoneEntry, Tombstones
 from csfwctl.schema.tool_config import (
+    LintSection,
     NotifierConfig,
     SafetySection,
     ToolConfig,
@@ -40,6 +41,7 @@ __all__ = [
     "DisplayName",
     "Endpoint",
     "HostGroupEnv",
+    "LintSection",
     "Location",
     "NotifierConfig",
     "Platform",

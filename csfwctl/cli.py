@@ -122,11 +122,15 @@ def validate(
         Path | None,
         typer.Option("--repo", help="Path to the config repository."),
     ] = None,
+    strict: Annotated[
+        bool,
+        typer.Option("--strict", help="Treat lint warnings and info as fatal."),
+    ] = False,
 ) -> None:
     """Schema and semantic lint. No API calls. Exit 1 on any error."""
     from csfwctl.validate_cmd import run_validate
 
-    run_validate(repo)
+    run_validate(repo, strict=strict)
 
 
 @app.command()
