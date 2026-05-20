@@ -87,6 +87,119 @@ the "still needs confirmation" list. If any assumption is wrong, the
 `LocationsAPI` wrapper is the only place that needs to change — the
 loader/differ already treat `any` as a sentinel.
 
+## Exporter / API shape assumptions (Phase 3)
+
+The importer converts CrowdStrike API records into our Pydantic schema
+and back. ``csfwctl/exporter.py`` carries both directions: the
+``*_from_api`` functions consume the API shape, and the ``*_to_api_shape``
+functions render a model into the shape we expect to see. Phase 5's
+applier will reuse the renderers verbatim.
+
+The API shapes below are inferred from CrowdStrike's Falcon Firewall
+documentation and FalconPy method signatures. We have no test tenant
+(see CLAUDE.md), so first-tenant interaction must verify each shape;
+discrepancies are localised to the translation helpers.
+
+**Firewall policy (FirewallPolicies.get_policies):**
+
+```python
+{
+  "id": "<uuid>",
+  "name": "ABC01-Endpoints-Windows-Test",
+  "description": "...",
+  "platform_name": "Windows",          # "Windows" | "Mac"
+  "enabled": True,
+  "groups": [{"id": "<uuid>", "name": "ABC01-Endpoints-Windows-Test"}],
+  "settings": {
+    "rule_group_ids": ["<uuid>", "<uuid>"],
+    # default_inbound/default_outbound surfaces on the apply side; the
+    # importer ignores them in v1.
+  },
+}
+```
+
+**Rule group (FirewallManagement.get_rule_groups):**
+
+```python
+{
+  "id": "<uuid>",
+  "name": "windows-baseline-Test",
+  "description": "...",
+  "platform": "0",                     # "0" Windows | "1" Mac
+  "enabled": True,
+  "rule_ids": ["<uuid>", "<uuid>"],
+}
+```
+
+**Rule (FirewallManagement.get_rules):**
+
+```python
+{
+  "id": "<uuid>",
+  "name": "Allow corp DNS outbound",
+  "enabled": True,
+  "action": "ALLOW",                   # "ALLOW" | "DENY" | "MONITOR"
+  "direction": "OUT",                  # "IN" | "OUT"
+  "protocol": "17",                    # "0"/"*" any, "1" icmp, "6" tcp, "17" udp
+  "fields": [{"name": "tcp_state", "value": "established"}],   # optional state
+  "local": {"addresses": [...], "ports": [{"start": N, "end": M}]},
+  "remote": {...},
+  "locations": [...],                  # slug list (csfwctl convention)
+}
+```
+
+**Network location (FirewallManagement.get_network_locations_details):**
+
+```python
+{
+  "id": "<uuid>",
+  "name": "corp-vpn",
+  "enabled": True,
+  "addresses": [{"address": "10.100.0.0/16"}],
+  "dns_servers": [{"address": "10.1.1.53"}],
+  "dns_resolution_targets": {"targets": [{"hostname": "corp.example.edu"}]},
+  "default_gateways": [],
+}
+```
+
+**Override rule-group folding.** The applier renders a policy's inline
+``rules`` field as an anonymous rule group named
+``<policy-slug>-overrides-<env>``. The importer detects that name shape
+and folds the group's rules back into the policy YAML's ``rules:``
+field; the override-group YAML itself is not written. Detection is in
+``exporter.is_override_group_name`` and the folding logic is in
+``policy_from_api``.
+
+**Round-trip contract.** The unit tests in ``test_exporter.py`` start
+with a hand-authored Pydantic model, render it into the API shapes
+above (via the ``*_to_api_shape`` helpers), drive the importer against
+a hand-rolled fake ``FalconClient``, and assert that the imported model
+equals the original. This is the "import → load → diff should be empty"
+guarantee from the project plan.
+
+## Fixture sanitisation (Phase 3)
+
+``csfwctl/fixtures.py`` ships a :class:`Sanitizer` that walks an API
+response and replaces sensitive tokens with deterministic fakes:
+
+| Token kind | Replacement                                                   |
+|------------|---------------------------------------------------------------|
+| UUID       | ``00000000-0000-0000-0000-XXXXXXXXXXXX`` counter              |
+| IPv4       | RFC 5737 ranges ``192.0.2.0/24`` / ``198.51.100.0/24`` / ``203.0.113.0/24`` |
+| IPv4 CIDR  | Same base ranges with the original prefix length preserved    |
+| IPv6       | ``2001:db8::N`` (RFC 3849)                                    |
+| Hostname   | ``host-NNN.example.test``                                     |
+| Email      | ``user-NNN@example.test``                                     |
+
+Mappings are stable for the lifetime of a :class:`Sanitizer` instance,
+so cross-references between fixture files (e.g. a UUID appearing in
+both ``policies-list.json`` and ``policies-query.json``) stay
+consistent. ``record-fixtures`` uses one sanitiser per invocation.
+
+The sanitiser is intentionally aggressive: when in doubt about whether
+a token is sensitive it replaces it. Tests can opt slugs out via
+``preserve_substrings``.
+
 ## Credentials and profiles
 
 - Env vars (`CSFWCTL_CLIENT_ID` / `CSFWCTL_CLIENT_SECRET`) take

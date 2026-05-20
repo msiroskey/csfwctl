@@ -91,6 +91,7 @@ def _not_implemented(command: str) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     repo: Annotated[
         Path | None,
         typer.Option("--repo", help="Path to the config repository.", show_default=False),
@@ -112,9 +113,7 @@ def main(
         log_format=_ObsLogFormat(log_format.value),
         quiet=quiet,
     )
-    # ``--repo``, ``--profile``, and ``--verbose`` plumbing lands when
-    # the subcommands that consume them are implemented.
-    del repo, profile, verbose
+    ctx.obj = {"repo": repo, "profile": profile.value, "verbose": verbose}
 
 
 @app.command()
@@ -216,54 +215,73 @@ def precedence(
 
 @import_app.command("policy")
 def import_policy(
+    ctx: typer.Context,
     name_or_uuid: Annotated[str, typer.Argument(help="Policy name or UUID.")],
     strip_env_suffix: Annotated[
-        bool, typer.Option("--strip-env-suffix", help="Strip -Test/-Pilot/-Production suffix.")
+        bool, typer.Option("--strip-env-suffix/--no-strip-env-suffix")
     ] = True,
     output: Annotated[Path | None, typer.Option("--output", help="Output YAML path.")] = None,
 ) -> None:
     """Bootstrap a policy YAML from a live CrowdStrike policy."""
-    del name_or_uuid, strip_env_suffix, output
-    _not_implemented("import policy")
+    from csfwctl.import_cmd import run_import_policy
+
+    run_import_policy(
+        name_or_uuid,
+        output=output,
+        strip_env_suffix=strip_env_suffix,
+        profile=_profile_from_ctx(ctx),
+    )
 
 
 @import_app.command("rule-group")
 def import_rule_group(
+    ctx: typer.Context,
     name_or_uuid: Annotated[str, typer.Argument(help="Rule group name or UUID.")],
     strip_env_suffix: Annotated[
-        bool, typer.Option("--strip-env-suffix", help="Strip env suffix from the name.")
+        bool, typer.Option("--strip-env-suffix/--no-strip-env-suffix")
     ] = True,
     output: Annotated[Path | None, typer.Option("--output", help="Output YAML path.")] = None,
 ) -> None:
     """Bootstrap a rule-group YAML from a live CrowdStrike rule group."""
-    del name_or_uuid, strip_env_suffix, output
-    _not_implemented("import rule-group")
+    from csfwctl.import_cmd import run_import_rule_group
+
+    run_import_rule_group(
+        name_or_uuid,
+        output=output,
+        strip_env_suffix=strip_env_suffix,
+        profile=_profile_from_ctx(ctx),
+    )
 
 
 @import_app.command("location")
 def import_location(
+    ctx: typer.Context,
     name_or_uuid: Annotated[str, typer.Argument(help="Location name or UUID.")],
     output: Annotated[Path | None, typer.Option("--output", help="Output YAML path.")] = None,
 ) -> None:
     """Bootstrap a location YAML from a live CrowdStrike location."""
-    del name_or_uuid, output
-    _not_implemented("import location")
+    from csfwctl.import_cmd import run_import_location
+
+    run_import_location(name_or_uuid, output=output, profile=_profile_from_ctx(ctx))
 
 
 @import_app.command("all")
 def import_all(
+    ctx: typer.Context,
     output_dir: Annotated[
         Path | None,
         typer.Option("--output-dir", help="Directory to write imported YAML into."),
     ] = None,
 ) -> None:
     """Bulk import every object in the tenant. Used for initial repo population."""
-    del output_dir
-    _not_implemented("import all")
+    from csfwctl.import_cmd import run_import_all
+
+    run_import_all(output_dir, profile=_profile_from_ctx(ctx))
 
 
 @app.command("record-fixtures")
 def record_fixtures(
+    ctx: typer.Context,
     operations: Annotated[
         str | None,
         typer.Option("--operations", help="Comma-separated operation names to record."),
@@ -273,8 +291,18 @@ def record_fixtures(
     ] = None,
 ) -> None:
     """Capture sanitized API responses for offline tests."""
-    del operations, output
-    _not_implemented("record-fixtures")
+    from csfwctl.record_fixtures_cmd import run_record_fixtures
+
+    run_record_fixtures(operations, output, profile=_profile_from_ctx(ctx))
+
+
+def _profile_from_ctx(ctx: typer.Context) -> str | None:
+    """Pull the resolved ``--profile`` value out of the Typer context."""
+    if isinstance(ctx.obj, dict):
+        profile = ctx.obj.get("profile")
+        if isinstance(profile, str):
+            return profile
+    return None
 
 
 @app.command()
