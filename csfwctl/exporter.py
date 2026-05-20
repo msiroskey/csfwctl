@@ -476,13 +476,15 @@ def policy_from_api(
     rule_groups_by_id: dict[str, dict[str, Any]] | None = None,
     rule_groups_by_slug: dict[str, RuleGroup] | None = None,
     strip_suffix: bool = True,
+    fold_overrides: bool = True,
 ) -> Policy:
     """Convert a CrowdStrike firewall-policy detail record.
 
     Inline override rule groups (named ``<policy>-overrides-<env>``) are
-    folded back into the policy's ``rules`` field when ``rule_groups_by_slug``
-    contains the matching :class:`RuleGroup`; otherwise they remain as a
-    regular rule-group reference and the user can hand-edit later.
+    folded back into the policy's ``rules`` field when ``fold_overrides``
+    is true (the importer's default). Set it to ``False`` when the
+    caller — e.g. the Phase 4 differ — wants to keep the override-group
+    reference visible in ``rule_groups`` instead.
     """
     rule_groups_by_id = rule_groups_by_id or {}
     rule_groups_by_slug = rule_groups_by_slug or {}
@@ -531,7 +533,7 @@ def policy_from_api(
         rg_base, _ = strip_env_suffix(rg_name)
         rg_slug = rg_base.lower()
         derived_base, override_env = is_override_group_name(rg_slug)
-        if override_env is not None and derived_base == base_policy_slug:
+        if fold_overrides and override_env is not None and derived_base == base_policy_slug:
             # Fold the synthesised override group back into inline rules.
             folded = rule_groups_by_slug.get(rg_slug)
             if folded is None:

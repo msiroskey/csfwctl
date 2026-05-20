@@ -42,13 +42,49 @@ Exit codes:
 - `0` — repository is valid; a summary table is written to stdout.
 - `1` — one or more validation errors; each is written to stderr.
 
-## `csfwctl diff` *(stub)*
+## `csfwctl diff`
+
+**Implemented (Phase 4).** Compares the loaded config repo against one
+environment's live CrowdStrike state and prints a structured change set.
+Read-only against the tenant.
 
 ```
 csfwctl diff --env {test|pilot|production} [--repo PATH] [--output FILE]
 ```
 
-Will compute YAML-vs-live diff for the named environment. Phase 4.
+What it produces:
+
+- A summary table on stdout listing the counts of creates, updates,
+  deletes, no-change objects, unmanaged live-only objects, and any
+  warnings.
+- Per-change detail blocks for each create / update / delete, with
+  field-level diffs (`path: before -> after`) and host-group add/remove
+  lines for policies.
+- A "no changes" line when desired and live converge.
+- The same change set as JSON written to ``--output PATH`` if given,
+  ready for MR comments and (in Phase 5) the applier to consume.
+
+Behaviour notes:
+
+- Comparison is in schema space: live API records are translated into
+  the same Pydantic models the loader produces, with env-suffixes
+  stripped from names before matching by slug.
+- Policy ``rules:`` inline overrides are synthesised on the desired
+  side into a rule group named ``<policy-slug>-overrides-<env>`` so the
+  comparison matches the applier's planned shape.
+- The ``description`` field is excluded from comparison — that's where
+  the applier writes the ``Managed by csfwctl | …`` metadata trailer,
+  and the differ does not race the applier on it.
+- Live objects without a matching YAML entry are reported as
+  ``unmanaged`` (no change queued). A live object can be queued for
+  deletion only by adding a matching tombstone in ``tombstones.yaml``.
+- Records that fail translation (corrupt or unexpected shape) are
+  skipped silently rather than aborting the whole diff; surviving
+  objects still get compared.
+
+Exit codes: ``0`` on success regardless of whether changes were
+detected. ``1`` if the config repo fails to load or if the live-state
+fetch errors out.
 
 ## `csfwctl apply` *(stub)*
 

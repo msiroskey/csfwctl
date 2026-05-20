@@ -131,6 +131,7 @@ def validate(
 
 @app.command()
 def diff(
+    ctx: typer.Context,
     env: Annotated[Env, typer.Option("--env", help="Target environment.")],
     repo: Annotated[Path | None, typer.Option("--repo", help="Config repo path.")] = None,
     output: Annotated[
@@ -139,8 +140,9 @@ def diff(
     ] = None,
 ) -> None:
     """Show YAML vs. live state for the named environment."""
-    del env, repo, output
-    _not_implemented("diff")
+    from csfwctl.diff_cmd import run_diff
+
+    run_diff(env.value, repo, output, profile=_profile_from_ctx(ctx))
 
 
 @app.command()

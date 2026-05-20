@@ -200,6 +200,56 @@ The sanitiser is intentionally aggressive: when in doubt about whether
 a token is sensitive it replaces it. Tests can opt slugs out via
 ``preserve_substrings``.
 
+## Differ (Phase 4)
+
+``csfwctl/differ.py`` compares a loaded :class:`ConfigRepo` against one
+environment's live tenant state and emits a structured
+:class:`ChangeSet`. The same change set is what the Phase 5 applier will
+consume and what the drift-check job will surface to notifiers.
+
+**Schema-domain comparison.** Live API records are translated into
+Pydantic models via ``exporter.*_from_api`` (with env-suffix stripping
+on names) before being matched by slug against the desired state. We
+compare ``model_dump`` dicts rather than raw API payloads so that field
+ordering, integer-vs-string protocol IDs, and other API-shape noise
+don't bleed into the diff.
+
+**Per-env projection.** A policy's ``host_groups`` field carries every
+env in the YAML; before comparison the desired side is filtered to the
+env's group only, matching what the live record exposes. Locations are
+tenant-global and are diffed once per run.
+
+**Override-RG synthesis.** Inline policy ``rules:`` are inverted into an
+anonymous rule group named ``<policy-slug>-overrides-<env>`` on the
+desired side, with the override slug prepended to ``rule_groups``. The
+live side is translated with ``policy_from_api(fold_overrides=False)``
+so the override-RG reference stays visible on both sides.
+
+**Managed-vs-unmanaged classification.** The differ decides solely from
+the live ``description``: presence of ``Managed by csfwctl`` →
+``managed``, absence → ``unmanaged``. Unmanaged objects are reported
+but never queued for change. Deletes require a matching entry in
+``tombstones.yaml``; the entry kind (``policies`` / ``rule_groups`` /
+``locations``) gates which live records can be removed.
+
+**Field-level diffs.** :func:`_diff_dicts` walks two model dumps and
+emits one :class:`FieldChange` per leaf difference, recording dotted
+paths like ``platform`` or ``priority``. Lists are treated as opaque
+scalars: a single FieldChange records the full before/after list when
+they differ. This keeps the operator-facing summary terse while keeping
+the JSON payload machine-parseable for the future applier and the
+GitLab notifier.
+
+**Description ignored in comparison.** The applier owns the description
+trailer (``Managed by csfwctl | version: N | git_sha: X | …``). The
+differ strips ``description`` from both sides before comparing so it
+does not race the applier on that field.
+
+**Translation failures are warnings, not aborts.** Individual live
+records that fail to translate (corrupt or unexpected shape) are
+skipped; surviving objects still get diffed. Operators see a
+``warnings`` count on the summary table.
+
 ## Credentials and profiles
 
 - Env vars (`CSFWCTL_CLIENT_ID` / `CSFWCTL_CLIENT_SECRET`) take
