@@ -1,0 +1,26 @@
+# Shared Windows baseline rule group used by the minimal-fixture policy.
+name: windows-baseline
+platform: windows
+status: enabled
+description: Baseline allow/deny rules for Windows endpoints.
+
+rules:
+  - name: Allow established inbound
+    enabled: true
+    action: allow
+    direction: inbound
+    protocol: tcp
+    state: established
+    locations: [any]
+
+  - name: Block SMB inbound from non-corp
+    enabled: true
+    action: block
+    direction: inbound
+    protocol: tcp
+    local:
+      ports: [445]
+    remote:
+      addresses_negated: true
+      addresses: [10.0.0.0/8]
+    locations: [any]

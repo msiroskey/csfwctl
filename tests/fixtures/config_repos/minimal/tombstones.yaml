@@ -1,0 +1,4 @@
+# No tombstones in the minimal fixture.
+policies: []
+rule_groups: []
+locations: []

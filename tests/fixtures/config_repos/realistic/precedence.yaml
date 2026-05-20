@@ -1,0 +1,5 @@
+# Realistic fixture: force the research lab ahead of the generic windows
+# endpoint policy in the same bucket.
+overrides:
+  - before: research-lab-7-windows
+    after: abc01-endpoints-windows

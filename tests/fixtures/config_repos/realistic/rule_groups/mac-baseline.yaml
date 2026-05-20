@@ -1,0 +1,13 @@
+name: mac-baseline
+platform: mac
+status: enabled
+description: Baseline allow/deny rules for macOS endpoints.
+
+rules:
+  - name: Allow established inbound
+    enabled: true
+    action: allow
+    direction: inbound
+    protocol: tcp
+    state: established
+    locations: [any]

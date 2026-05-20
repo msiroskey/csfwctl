@@ -1,0 +1,13 @@
+name: corp-vpn
+status: enabled
+description: Corporate VPN address ranges.
+
+addresses:
+  - 10.100.0.0/16
+  - 10.101.0.0/16
+
+dns_servers:
+  - 10.1.1.53
+
+dns_resolution_targets:
+  - corp.example.edu

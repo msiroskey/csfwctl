@@ -1,0 +1,89 @@
+"""Policy schema model."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from csfwctl.schema._common import (
+    DisplayName,
+    HostGroupEnv,
+    Platform,
+    PrecedenceBucket,
+    Slug,
+    Status,
+)
+from csfwctl.schema.rule import Rule
+
+
+class Policy(BaseModel):
+    """A firewall policy.
+
+    Each policy file represents one logical policy. Three CrowdStrike
+    objects are managed for it — one per environment — sharing this base
+    ``name`` with the environment suffix appended at apply time.
+
+    ``rules`` are inline policy-specific overrides that the applier
+    renders as an anonymous rule group named
+    ``<policy-name>-overrides-<env>`` and inserts at the top of the
+    policy's rule-group list. ``rule_groups`` lists shared rule-group
+    slugs in precedence order.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: DisplayName
+    platform: Platform
+    priority: PrecedenceBucket = PrecedenceBucket.default
+    status: Status = Status.enabled
+    description: str = Field(default="", max_length=2000)
+    host_groups: dict[DisplayName, HostGroupEnv] = Field(default_factory=dict)
+    rules: list[Rule] = Field(default_factory=list)
+    rule_groups: list[Slug] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _rule_names_unique(self) -> Policy:
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for rule in self.rules:
+            if rule.name in seen:
+                duplicates.add(rule.name)
+            seen.add(rule.name)
+        if duplicates:
+            joined = ", ".join(sorted(duplicates))
+            raise ValueError(f"duplicate inline rule names within policy: {joined}")
+        return self
+
+    @model_validator(mode="after")
+    def _rule_groups_unique(self) -> Policy:
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for slug in self.rule_groups:
+            if slug in seen:
+                duplicates.add(slug)
+            seen.add(slug)
+        if duplicates:
+            joined = ", ".join(sorted(duplicates))
+            raise ValueError(f"duplicate rule-group references in policy: {joined}")
+        return self
+
+    @model_validator(mode="after")
+    def _host_group_envs_unique(self) -> Policy:
+        envs_seen: dict[HostGroupEnv, str] = {}
+        for group_name, env in self.host_groups.items():
+            if env in envs_seen:
+                raise ValueError(
+                    f"multiple host groups mapped to env {env.value!r}: "
+                    f"{envs_seen[env]!r} and {group_name!r}"
+                )
+            envs_seen[env] = group_name
+        return self
+
+    def referenced_locations(self) -> set[str]:
+        """Union of non-``any`` location slugs referenced by inline rules."""
+        result: set[str] = set()
+        for rule in self.rules:
+            result.update(rule.referenced_locations())
+        return result
+
+
+__all__ = ["Policy"]

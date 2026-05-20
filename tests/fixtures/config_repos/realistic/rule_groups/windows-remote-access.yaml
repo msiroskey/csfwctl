@@ -1,0 +1,23 @@
+name: windows-remote-access
+platform: windows
+status: enabled
+description: Shared remote-access allow rules for Windows hosts.
+
+rules:
+  - name: Allow RDP outbound to corp-vpn
+    enabled: true
+    action: allow
+    direction: outbound
+    protocol: tcp
+    locations: [corp-vpn]
+    remote:
+      ports: [3389]
+
+  - name: Allow SSH outbound to corp-vpn
+    enabled: true
+    action: allow
+    direction: outbound
+    protocol: tcp
+    locations: [corp-vpn]
+    remote:
+      ports: [22]
