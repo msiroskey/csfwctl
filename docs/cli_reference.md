@@ -157,21 +157,114 @@ object carries the `Managed by csfwctl` signature).
   a safety rail refused, an API call failed, or an apply-time invariant
   was violated. Errors are written to stderr.
 
-## `csfwctl status` *(stub)*
+## `csfwctl status`
+
+**Implemented (Phase 6).** Reads every policy, rule group, and location
+in the tenant, parses the `Managed by csfwctl` metadata trailer off
+each description, and prints a per-`(kind, slug, env)` summary.
+Read-only.
 
 ```
 csfwctl status [--all-envs] [--format {table|json}]
 ```
 
-Phase 6. Reads metadata signatures from each tenant object.
+### Output modes
 
-## `csfwctl precedence` *(stub)*
+- **Default (flat table)** — one row per `(kind, slug, env)` triple,
+  with `Managed`, version, short `git_sha`, and `applied` timestamp
+  columns. Easy to grep for "what's the version on the rule group
+  named X in env Y?".
+- **`--all-envs`** — pivots into one row per logical object with one
+  column per env (`test` / `pilot` / `production`). Cell value is
+  `vN@sha` for managed objects, `U` for present-but-unmanaged, blank
+  when the env has no matching live record. Quick way to spot version
+  drift across the three environments.
+- **`--format json`** — emits the same data as a structured JSON
+  document (suitable for dashboards, drift-check alerts, and the
+  Phase 8 notifiers). Schema:
+
+  ```json
+  {
+    "summary": {"total": 12, "managed": 9, "unmanaged": 3,
+                "by_kind": {"policy": 4, "rule-group": 6, "location": 2}},
+    "entries": [
+      {
+        "kind": "policy", "slug": "abc01-endpoints-windows",
+        "display_name": "ABC01-Endpoints-Windows", "managed": true,
+        "envs": {
+          "test": {
+            "env": "test", "object_id": "…uuid…",
+            "display_name": "ABC01-Endpoints-Windows-Test",
+            "managed": true,
+            "signature": {"version": 7, "git_sha": "abc1234",
+                          "applied": "2026-05-19T14:30:00Z", "env": "test"}
+          }
+        }
+      }
+    ]
+  }
+  ```
+
+### Behaviour notes
+
+- Env labels come from the live display-name suffix
+  (`-Test` / `-Pilot` / `-Production`) for policies and rule groups.
+  Locations are tenant-global; their env tag is whatever the
+  signature most recently recorded (or the literal `any` when no
+  signature is present).
+- Hand-rolled console objects without an env suffix appear in the
+  pseudo-env column `(no-env)` so they remain visible.
+- A description carrying the `Managed by csfwctl` token but a
+  malformed trailer counts as `managed=true` with `signature=null`;
+  the pivot view shows that as `M (unparseable)`.
+
+### Exit codes
+
+- `0` — snapshot rendered.
+- `1` — live-state fetch failed.
+
+## `csfwctl precedence`
+
+**Implemented (Phase 6).** Resolves bucket-based precedence to an
+ordinal order using `precedence.yaml` overrides and prints the
+result per platform. Optionally compares against the live tenant
+order. Read-only.
 
 ```
-csfwctl precedence [--env ENV]
+csfwctl precedence [--repo PATH] [--env {test|pilot|production}] [--format {table|json}]
 ```
 
-Phase 6. Resolves bucket-based precedence to an ordinal order.
+### What it does
+
+1. Loads and validates the config repo.
+2. For each platform (`windows`, `mac`), sorts policies by bucket
+   (`emergency` → `high` → `medium` → `default` → `low`) and then
+   alphabetically by display name.
+3. Applies each `precedence.yaml` override in declaration order:
+   `before: X, after: Y` raises `X` immediately ahead of `Y` if it
+   isn't already. Cycles surface as `1`-exit with an error.
+4. With `--env`, fetches the env-filtered live policy list (in current
+   precedence order) and compares against the resolved order. The
+   comparison strips env suffixes and skips live-only entries so the
+   diff is apples-to-apples with what the applier will eventually
+   push via `set_precedence`.
+
+### Behaviour notes
+
+- `status: deleted` policies are excluded — the resolver reflects what
+  the applier would actually write.
+- Overrides that reference slugs outside the current platform are
+  silently ignored (an override `mac-policy → win-policy` is a no-op
+  on both platforms).
+- The applier's Phase 5 precedence hook will consume the same
+  resolver output once it lands; this command exists so operators
+  can preview what that step will do.
+
+### Exit codes
+
+- `0` — resolved order rendered.
+- `1` — config repo failed to validate, override cycle detected, or
+  live fetch errored when `--env` was used.
 
 ## `csfwctl import`
 

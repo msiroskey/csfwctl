@@ -200,27 +200,44 @@ def apply(
 
 @app.command()
 def status(
+    ctx: typer.Context,
     all_envs: Annotated[
-        bool, typer.Option("--all-envs", help="Show all three environments.")
+        bool, typer.Option("--all-envs", help="Show all three environments side by side.")
     ] = False,
     output_format: Annotated[
         StatusFormat, typer.Option("--format", help="Output format.")
     ] = StatusFormat.table,
 ) -> None:
     """Show managed/unmanaged objects in the tenant with version/SHA per env."""
-    del all_envs, output_format
-    _not_implemented("status")
+    from csfwctl.status_cmd import run_status
+
+    run_status(
+        all_envs=all_envs,
+        output_format=output_format.value,
+        profile=_profile_from_ctx(ctx),
+    )
 
 
 @app.command()
 def precedence(
+    ctx: typer.Context,
     env: Annotated[
         Env | None, typer.Option("--env", help="Compare against this environment.")
     ] = None,
+    output_format: Annotated[
+        StatusFormat, typer.Option("--format", help="Output format.")
+    ] = StatusFormat.table,
+    repo: Annotated[Path | None, typer.Option("--repo", help="Config repo path.")] = None,
 ) -> None:
     """Print the resolved policy precedence order."""
-    del env
-    _not_implemented("precedence")
+    from csfwctl.precedence_cmd import run_precedence
+
+    run_precedence(
+        repo,
+        env.value if env is not None else None,
+        output_format=output_format.value,
+        profile=_profile_from_ctx(ctx),
+    )
 
 
 @import_app.command("policy")

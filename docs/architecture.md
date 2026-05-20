@@ -325,6 +325,92 @@ the same shape ``test_exporter.py`` uses for the round-trip tests
 (Phase 3). No real ``falconpy`` import lives in the applier or the
 safety module — the no-direct-FalconPy rule is preserved.
 
+## Status and precedence (Phase 6)
+
+``csfwctl/status.py`` and ``csfwctl/precedence_resolver.py`` are
+read-only modules: both consume a snapshot the differ already produces
+and translate it into operator-facing shapes. They share the env-suffix
+helpers (``exporter.strip_env_suffix``) and the metadata-trailer parser
+(``safety.parse_signature``) with the applier so a single source of
+truth governs how names map to slugs and how trailers are decoded.
+
+### Status engine
+
+``build_status_report(state: LiveState)`` groups every live record by
+``(kind, slug)`` with one :class:`status.EnvState` per environment.
+
+- **Env labels.** Policies and rule groups derive their env from the
+  display-name suffix (``-Test`` / ``-Pilot`` / ``-Production``). A
+  record whose name lacks a suffix lands in the ``(no-env)`` pseudo
+  bucket so console-created objects still appear in the report.
+- **Locations are tenant-global.** They have no env suffix, so the env
+  label comes from the most recently written signature (``signature.env``)
+  or the literal ``any`` when no signature is present. Operators
+  re-applying a location across environments will see the env tag
+  change with each apply; this is consistent with how the applier
+  writes them.
+- **Managed vs. unmanaged.** The literal substring ``Managed by csfwctl``
+  in the description is the sole signal — the same rule the differ
+  uses. A description with the substring but a malformed trailer counts
+  as ``managed=True`` with ``signature=None``; the pivot view shows
+  that as ``M (unparseable)`` so it cannot be mistaken for a healthy
+  managed entry.
+- **Sorting.** Entries sort by kind in apply-order (location → rule
+  group → policy), then by slug for determinism. JSON output preserves
+  the same order.
+
+### Status CLI
+
+``status_cmd.run_status`` renders either a flat table (one row per
+``(kind, slug, env)``), a pivot table (``--all-envs``, one row per
+logical object with one column per env), or a JSON document
+(``--format json``). The flat shape is easy to grep; the pivot shape
+makes version drift across environments visible at a glance. JSON is
+the form Phase 8 notifiers will consume.
+
+### Precedence resolver
+
+``resolve_precedence(repo)`` returns a per-platform list of
+:class:`precedence_resolver.ResolvedPolicy` records:
+
+1. **Base sort** — by bucket rank (``emergency`` → ``high`` → ``medium``
+   → ``default`` → ``low``) then by display name alphabetic. The slug
+   is the secondary tiebreaker so the sort is stable across runs.
+2. **Override application** — each ``precedence.yaml`` override
+   ``before/after`` pair is processed in declaration order. If ``before``
+   is already ahead of ``after``, no-op. Otherwise ``before`` is moved
+   to the slot immediately ahead of ``after``. Cycle detection raises
+   :class:`PrecedenceError` so the operator notices an unsatisfiable
+   pair instead of silently picking one.
+3. **Status filter** — policies with ``status: deleted`` are excluded
+   so the result reflects what the applier would actually push via
+   :meth:`PoliciesAPI.set_precedence`.
+
+``compare_to_live(resolved, live_records, *, env)`` strips env suffixes
+off live names, filters down to slugs present in the resolved list, and
+returns a :class:`PrecedenceComparison` whose ``matches`` field is true
+only when the two slug sequences are identical. Live-only extras
+(unmanaged hand-created policies) are filtered out so they don't
+dominate the comparison.
+
+### Phase 5 hook
+
+The applier's step-4 precedence hook (see :func:`apply_change_set`) is
+the natural follow-on: build the resolver output for the apply env,
+call :meth:`PoliciesAPI.set_precedence` per platform with the ordered
+IDs. The precedence command exists in advance of that wiring so
+operators can preview what the applier will eventually do.
+
+### Test pattern
+
+Same shape as the differ tests: ``test_status.py`` and
+``test_precedence_resolver.py`` build hand-rolled live records or
+:class:`csfwctl.loader.ConfigRepo` instances directly; the CLI
+command-body tests (``test_status_cmd.py``, ``test_precedence_cmd.py``)
+inject a stub state provider so no real FalconPy traffic happens.
+The realistic fixture's ``precedence.yaml`` exercises the override
+path end-to-end through the CLI.
+
 ## Credentials and profiles
 
 - Env vars (`CSFWCTL_CLIENT_ID` / `CSFWCTL_CLIENT_SECRET`) take
