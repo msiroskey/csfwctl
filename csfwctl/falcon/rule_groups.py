@@ -79,5 +79,21 @@ class RuleGroupsAPI:
             lambda: self._svc().delete_rule_groups(ids=ids),
         )
 
+    def get_rules(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Fetch full rule records for the given rule IDs.
+
+        Rule groups expose ``rule_ids``; the actual rule contents come
+        from a separate endpoint. The importer needs both to reconstruct
+        a rule-group YAML faithfully.
+        """
+        if not ids:
+            return []
+        result = self._client.call(
+            "firewall_rules.get",
+            lambda: self._svc().get_rules(ids=ids),
+        )
+        body = result.get("body") or {}
+        return list(body.get("resources") or [])
+
 
 __all__ = ["RuleGroupsAPI"]
