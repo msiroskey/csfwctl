@@ -155,9 +155,7 @@ def _change(
     slug: str = "p1",
     managed: ManagedStatus = ManagedStatus.managed,
 ) -> ObjectChange:
-    return ObjectChange(
-        kind=kind, op=op, slug=slug, display_name=slug, managed=managed
-    )
+    return ObjectChange(kind=kind, op=op, slug=slug, display_name=slug, managed=managed)
 
 
 def _cs(
@@ -213,9 +211,7 @@ def test_check_blast_radius_bootstrap_skips_change_cap_but_not_delete_cap() -> N
     # Delete cap still applies.
     cs_with_delete = _cs(deletes=2)
     with pytest.raises(BlastRadiusExceeded):
-        check_blast_radius(
-            cs_with_delete, SafetyOptions(max_deletes=1, initial_bootstrap=True)
-        )
+        check_blast_radius(cs_with_delete, SafetyOptions(max_deletes=1, initial_bootstrap=True))
 
 
 # ---- drift / enforce -----------------------------------------------------

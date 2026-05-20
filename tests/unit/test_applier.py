@@ -343,9 +343,7 @@ def test_apply_creates_locations_rule_groups_policies_in_order() -> None:
     # Policy create with the host-group id wired in.
     assert client.policies.created
     policy_payload = client.policies.created[0]
-    assert policy_payload["groups"] == [
-        {"id": "hg-test", "name": "ABC01-Endpoints-Windows-Test"}
-    ]
+    assert policy_payload["groups"] == [{"id": "hg-test", "name": "ABC01-Endpoints-Windows-Test"}]
     # Rule-group ids resolved to the freshly-created id, not fake-uuid.
     new_rg_id = f"rg-id-{client.rule_groups.created[0]['name']}"
     assert policy_payload["settings"]["rule_group_ids"] == [new_rg_id]

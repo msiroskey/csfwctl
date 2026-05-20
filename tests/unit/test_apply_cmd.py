@@ -113,9 +113,7 @@ def test_run_apply_surfaces_config_repo_errors(
     assert "failed to validate" in result.stderr
 
 
-def test_run_apply_writes_json_output(
-    realistic_repo_path: Path, tmp_path: Path
-) -> None:
+def test_run_apply_writes_json_output(realistic_repo_path: Path, tmp_path: Path) -> None:
     """``--output`` writes diff + apply payload to disk."""
     from csfwctl.differ import METADATA_SIGNATURE_TOKEN
 

@@ -276,11 +276,7 @@ def check_drift(change_set: ChangeSet, options: SafetyOptions) -> None:
     """
     if options.enforce or options.initial_bootstrap:
         return
-    drifted = [
-        change
-        for change in change_set.updates
-        if change.managed is ManagedStatus.managed
-    ]
+    drifted = [change for change in change_set.updates if change.managed is ManagedStatus.managed]
     if drifted:
         names = ", ".join(f"{c.kind}:{c.slug}" for c in drifted[:5])
         more = "" if len(drifted) <= 5 else f" (+{len(drifted) - 5} more)"

@@ -101,7 +101,9 @@ def run_apply(
         git_sha=sha,
         dry_run=dry_run,
         initial_bootstrap=initial_bootstrap,
-        host_group_policy=_host_group_policy(strict_groups=strict_groups, create_groups=create_groups),
+        host_group_policy=_host_group_policy(
+            strict_groups=strict_groups, create_groups=create_groups
+        ),
     )
 
     try:

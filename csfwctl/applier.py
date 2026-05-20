@@ -202,9 +202,7 @@ def _build_live_index(state: Any, env: str) -> _LiveIndex:
 # ---- payload builders -----------------------------------------------------
 
 
-def _signature_for(
-    description: str | None, options: ApplyOptions
-) -> tuple[str, MetadataSignature]:
+def _signature_for(description: str | None, options: ApplyOptions) -> tuple[str, MetadataSignature]:
     """Compute the new description trailer for one object.
 
     Returns ``(new_description, signature)`` so callers can stamp the
@@ -245,9 +243,7 @@ def _build_rule_group_payload(
     shape.pop("id", None)
     if live_id is not None:
         shape["id"] = live_id
-    new_description, _ = _signature_for(
-        live_description or rule_group.description, options
-    )
+    new_description, _ = _signature_for(live_description or rule_group.description, options)
     shape["description"] = new_description
     return shape
 
@@ -351,9 +347,7 @@ def _resolve_host_group_ids(
                 raise ApplyError(f"failed to create host group {name!r}: empty response")
             resolved[name] = str(created["id"])
             report.actions.append(
-                AppliedAction(
-                    kind="host-group", op="create", slug=name.lower(), display_name=name
-                )
+                AppliedAction(kind="host-group", op="create", slug=name.lower(), display_name=name)
             )
             continue
         # warn
@@ -585,9 +579,7 @@ def apply_change_set(
     for change in _ordered(change_set.deletes, KIND_POLICY):
         live = index.policies.get(change.slug)
         if live is None:
-            report.warnings.append(
-                f"delete policy {change.slug!r}: not in live state; skipped"
-            )
+            report.warnings.append(f"delete policy {change.slug!r}: not in live state; skipped")
             continue
         _do_delete(
             client,
@@ -601,9 +593,7 @@ def apply_change_set(
     for change in _ordered(change_set.deletes, KIND_RULE_GROUP):
         live = index.rule_groups.get(change.slug)
         if live is None:
-            report.warnings.append(
-                f"delete rule-group {change.slug!r}: not in live state; skipped"
-            )
+            report.warnings.append(f"delete rule-group {change.slug!r}: not in live state; skipped")
             continue
         _do_delete(
             client,
@@ -617,9 +607,7 @@ def apply_change_set(
     for change in _ordered(change_set.deletes, KIND_LOCATION):
         live = index.locations.get(change.slug)
         if live is None:
-            report.warnings.append(
-                f"delete location {change.slug!r}: not in live state; skipped"
-            )
+            report.warnings.append(f"delete location {change.slug!r}: not in live state; skipped")
             continue
         _do_delete(
             client,
@@ -801,9 +789,7 @@ def _do_write(
     """
     if options.dry_run:
         report.actions.append(
-            AppliedAction(
-                kind=kind, op=op, slug=slug, display_name=display_name, detail="dry-run"
-            )
+            AppliedAction(kind=kind, op=op, slug=slug, display_name=display_name, detail="dry-run")
         )
         # Even in dry-run, allocate a synthetic id so downstream payloads
         # (e.g. a policy referencing a freshly-created RG) still build.
