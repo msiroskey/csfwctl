@@ -250,6 +250,81 @@ records that fail to translate (corrupt or unexpected shape) are
 skipped; surviving objects still get diffed. Operators see a
 ``warnings`` count on the summary table.
 
+## Applier and safety rails (Phase 5)
+
+``csfwctl/applier.py`` consumes a :class:`csfwctl.differ.ChangeSet` and
+drives the FalconClient sub-clients to converge the tenant.
+``csfwctl/safety.py`` owns the gating checks that fire before any
+write. The split mirrors the differ/loader split: pure functions in
+``safety``; side-effects in ``applier``.
+
+**Operation order** is fixed and visible in :func:`apply_change_set`:
+
+1. Locations (creates, then updates).
+2. Rule groups (creates, then updates). Override rule groups
+   (``<policy-slug>-overrides-<env>``) materialise here so subsequent
+   policy payloads can reference their real IDs.
+3. Policies (creates, then updates). The policy payload carries the
+   resolved host-group membership in one round-trip.
+4. Host-group reassignments — recorded explicitly on the apply report
+   even though they ride on the policy update payload above.
+5. Precedence ordering — Phase 6 stub.
+6. Deletes — policies, then rule groups, then locations.
+
+**Metadata trailer.** Every touched object's ``description`` is
+rewritten to carry the canonical signature
+``Managed by csfwctl | version: N | git_sha: X | applied: TS | env: E``.
+The version is read off the live record (via
+``safety.parse_signature``) and incremented; pre-existing free-text in
+the description is preserved (``safety.inject_signature`` strips just
+the trailer block and re-appends the new line). Bootstrap mode rewrites
+only that field; it does not touch rule content, status, or
+assignments.
+
+**Safety rails.** Each gate is a small pure function in
+``csfwctl/safety.py``:
+
+- ``check_bootstrap`` — refuses a normal apply against a tenant where
+  no live object carries the metadata signature. ``--initial-bootstrap``
+  bypasses this check (and only this check) so the first run can install
+  signatures.
+- ``check_drift`` — refuses updates against managed objects unless
+  ``--enforce`` is passed. Bootstrap mode skips the check because it
+  never modifies rule content.
+- ``check_deletes`` — refuses deletes unless ``--allow-delete`` is
+  passed (in addition to the tombstone the differ already required).
+  Bootstrap mode refuses deletes outright.
+- ``check_blast_radius`` — caps creates + updates + deletes at
+  ``--max-changes`` and deletes at ``--max-deletes``. The change cap
+  is exempt under ``--initial-bootstrap`` (the explicit goal of that
+  run is to write the metadata to every live object); the delete cap
+  still applies.
+
+**Host-group handling.** Three policies on missing host groups:
+``warn`` (default, skips the assignment with a report warning),
+``strict`` (raises ``ApplyError``, aborts the run), and ``create``
+(creates the group as an empty static group before the policy write).
+``--strict-groups`` and ``--create-groups`` are mutually exclusive at
+the CLI.
+
+**API-payload construction** reuses the exporter's ``*_to_api_shape``
+helpers (which the differ already round-trips), then patches up three
+things: the fake ``id`` is dropped on creates and replaced with the
+live id on updates; the policy's ``groups`` list gets real host-group
+IDs from ``host_groups.find_by_name``; and ``settings.rule_group_ids``
+gets real rule-group IDs from the live index (or freshly-created ids
+returned by the rule-group create that ran moments earlier). Dry-run
+mode allocates synthetic IDs so downstream payload construction still
+succeeds without making writes.
+
+**Test pattern.** ``test_applier.py`` builds a hand-rolled
+``FakeFalconClient`` whose sub-clients record every write call,
+exercises the real differ to produce the change set, and then asserts
+on the recorded API calls and the resulting ``ApplyReport``. This is
+the same shape ``test_exporter.py`` uses for the round-trip tests
+(Phase 3). No real ``falconpy`` import lives in the applier or the
+safety module — the no-direct-FalconPy rule is preserved.
+
 ## Credentials and profiles
 
 - Env vars (`CSFWCTL_CLIENT_ID` / `CSFWCTL_CLIENT_SECRET`) take
