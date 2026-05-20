@@ -86,7 +86,11 @@ Exit codes: ``0`` on success regardless of whether changes were
 detected. ``1`` if the config repo fails to load or if the live-state
 fetch errors out.
 
-## `csfwctl apply` *(stub)*
+## `csfwctl apply`
+
+**Implemented (Phase 5).** Converges one environment's live state to the
+loaded YAML config. Every safety rail from CLAUDE.md fires before any
+write.
 
 ```
 csfwctl apply --env {test|pilot|production}
@@ -94,11 +98,64 @@ csfwctl apply --env {test|pilot|production}
               [--strict-groups] [--create-groups]
               [--initial-bootstrap]
               [--max-deletes N] [--max-changes N]
-              [--repo PATH]
+              [--repo PATH] [--output FILE]
 ```
 
-Phase 5. Safety rails (`--initial-bootstrap`, blast-radius limits,
-tombstones+`--allow-delete` for deletions) are non-negotiable.
+### What it does
+
+1. Loads and validates the config repo (same path as `validate`).
+2. Pulls live tenant state.
+3. Computes a diff for the named environment.
+4. Runs the safety rails (`safety.check_*`) — refuses to proceed on any
+   failure.
+5. Applies the change set in fixed order:
+   1. **Locations** (creates, then updates).
+   2. **Rule groups** (creates, then updates). Override rule groups
+      (`<policy-slug>-overrides-<env>`) materialise here so the policy
+      payload can reference real IDs.
+   3. **Policies** (creates, then updates) — host-group membership is
+      written on the policy payload itself.
+   4. **Host-group reassignments** appear as explicit report rows even
+      though they ride on the policy update payload.
+   5. **Precedence ordering** — Phase 6 stub.
+   6. **Deletes** — policies, then rule groups, then locations.
+6. Rewrites the metadata trailer on every touched object's description:
+   `Managed by csfwctl | version: N | git_sha: X | applied: TS | env: E`.
+   The previous version is read off the live record and incremented;
+   pre-existing free-text in the description is preserved verbatim.
+
+### Safety flags
+
+| Flag                  | Purpose                                                                                                     |
+|-----------------------|-------------------------------------------------------------------------------------------------------------|
+| `--dry-run`           | Plan + safety checks; no API writes.                                                                        |
+| `--enforce`           | Permit updates against managed-but-drifted live objects. Without it, drift aborts the apply.                |
+| `--allow-delete`      | Required (in addition to a tombstone) to delete an object.                                                  |
+| `--strict-groups`     | Fail if a policy references a host group that is absent in the tenant.                                      |
+| `--create-groups`     | Create missing host groups as empty static groups before the policy write. Mutually exclusive with `--strict-groups`. |
+| `--initial-bootstrap` | First-run mode. Refuses unless run against an unbootstrapped tenant; only rewrites metadata trailers.        |
+| `--max-deletes N`     | Refuse to proceed if the plan has more than `N` deletes (default: from `csfwctl.toml`).                     |
+| `--max-changes N`     | Refuse to proceed if creates + updates + deletes exceeds `N` (default: from `csfwctl.toml`). Bootstrap mode is exempt. |
+| `--output PATH`       | Persist the diff + apply payload as JSON to `PATH`.                                                         |
+
+### Initial bootstrap
+
+First-ever apply against a tenant uses `--initial-bootstrap`. In this
+mode the applier writes only the `description` field on each live
+object whose name matches a YAML file (after appending the env suffix);
+rule content, status, and assignments are left alone. Live objects
+without a YAML counterpart and YAML objects without a live counterpart
+are reported as warnings. A subsequent normal apply will then converge
+content the usual way. Normal apply refuses to run against an
+unbootstrapped tenant (a tenant counts as bootstrapped once *any* live
+object carries the `Managed by csfwctl` signature).
+
+### Exit codes
+
+- `0` — apply (or dry-run) completed.
+- `1` — config repo failed to validate, the live-state fetch errored,
+  a safety rail refused, an API call failed, or an apply-time invariant
+  was violated. Errors are written to stderr.
 
 ## `csfwctl status` *(stub)*
 

@@ -147,6 +147,7 @@ def diff(
 
 @app.command()
 def apply(
+    ctx: typer.Context,
     env: Annotated[Env, typer.Option("--env", help="Target environment.")],
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Plan only; no writes.")] = False,
     enforce: Annotated[bool, typer.Option("--enforce", help="Overwrite drifted state.")] = False,
@@ -173,21 +174,28 @@ def apply(
         int, typer.Option("--max-changes", help="Blast-radius limit for total changes.")
     ] = 10,
     repo: Annotated[Path | None, typer.Option("--repo", help="Config repo path.")] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", help="Write JSON apply record to this path."),
+    ] = None,
 ) -> None:
     """Idempotent apply. Refuses destructive ops without explicit flags."""
-    del (
-        env,
-        dry_run,
-        enforce,
-        allow_delete,
-        strict_groups,
-        create_groups,
-        initial_bootstrap,
-        max_deletes,
-        max_changes,
-        repo,
+    from csfwctl.apply_cmd import run_apply
+
+    run_apply(
+        env=env.value,
+        repo=repo,
+        dry_run=dry_run,
+        enforce=enforce,
+        allow_delete=allow_delete,
+        strict_groups=strict_groups,
+        create_groups=create_groups,
+        initial_bootstrap=initial_bootstrap,
+        max_deletes=max_deletes,
+        max_changes=max_changes,
+        profile=_profile_from_ctx(ctx),
+        output=output,
     )
-    _not_implemented("apply")
 
 
 @app.command()

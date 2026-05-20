@@ -5,7 +5,62 @@ Project plan: ./csfwctl-project-plan.md
 
 ## Current phase
 
-Phase 4: Differ
+Phase 5: Applier and safety rails
+
+## Phase 5 tasks
+
+- [x] `safety.py`: `MetadataSignature` dataclass plus
+      `render_signature` / `parse_signature` / `strip_signature` /
+      `inject_signature` / `next_signature` so the trailer
+      `Managed by csfwctl | version: N | git_sha: X | applied: TS | env: E`
+      round-trips. Free-text in the description is preserved verbatim.
+- [x] `safety.py`: `SafetyOptions` and the four gates —
+      `check_bootstrap`, `check_drift`, `check_deletes`,
+      `check_blast_radius` — each a pure function with its own
+      exception type (`UnbootstrappedTenantError`, `DriftBlocked`,
+      `SafetyError`, `BlastRadiusExceeded`).
+- [x] `safety.current_git_sha`: env-var first (`CSFWCTL_GIT_SHA`),
+      fallback to `git rev-parse HEAD`, finally `"unknown"`.
+- [x] `applier.py`: `ApplyOptions`, `HostGroupPolicy`, `AppliedAction`,
+      `ApplyReport`. Single public entrypoint `apply_change_set` that
+      runs the four safety gates and then dispatches creates → updates
+      → host-group reassignments → deletes in the fixed kind order
+      (locations → rule groups → policies, deletes last in reverse).
+- [x] Override-RG materialisation: rule-group create runs before the
+      policy create that references it, and the freshly-minted id is
+      threaded into the policy payload (no extra round-trip).
+- [x] Host-group resolution with three modes (`warn` / `strict` /
+      `create`); `--strict-groups` and `--create-groups` are mutually
+      exclusive at the CLI.
+- [x] Metadata trailer rewrite on every touched object: version
+      monotonically increments off the previous signature parsed from
+      live; bootstrap path issues metadata-only updates and refuses to
+      modify rule content.
+- [x] `--dry-run`: no writes, but actions still recorded and synthetic
+      IDs threaded into downstream payloads so the full plan builds.
+- [x] `apply_cmd.py`: CLI body following the `validate_cmd` /
+      `diff_cmd` pattern with `--output` JSON dump; resolves
+      credentials, fetches live state, computes diff, runs the
+      applier, and renders a per-action summary.
+- [x] Wire `csfwctl apply` through `cli.py` (was previously a stub).
+- [x] Docs: `docs/cli_reference.md` documents the apply command, its
+      flags, and exit codes; `docs/architecture.md` carries the
+      Phase 5 design notes.
+- [x] Unit tests: 256 passing total (53 new):
+      31 safety tests (`test_safety.py`) covering signature render /
+      parse / strip / inject / next-version, bootstrap detection,
+      blast-radius limits (changes + deletes + bootstrap exempt),
+      drift gate, delete gate, and the git-sha resolver
+      (env / subprocess / OSError fallbacks).
+      17 applier tests (`test_applier.py`) covering bootstrap gate,
+      create/update/delete ordering, override-RG materialisation,
+      metadata version bumping, drift refusal, blast-radius refusal,
+      host-group modes (warn / strict / create), dry-run no-writes,
+      bootstrap metadata-only writes, ApplyReport JSON serialization,
+      and description free-text preservation.
+      5 CLI command-body tests (`test_apply_cmd.py`) for dry-run flow,
+      JSON output, config-repo error surfacing, mutually-exclusive
+      host-group flags, and end-to-end Typer dispatch.
 
 ## Phase 4 tasks
 
@@ -166,51 +221,44 @@ Phase 4: Differ
 
 ## Notes for next session
 
-- **Next phase: Phase 5 — Applier.**
-  - Consume a `ChangeSet` produced by `csfwctl.differ.compute_diff`
-    and execute the creates / updates / deletes against the tenant.
-    Order: locations → rule groups → policies → host-group reassignments
-    → precedence ordering. Deletes last and only with `--allow-delete`
-    + matching tombstone.
-  - Reuse `exporter.*_to_api_shape` to render desired state into API
-    payloads (the differ already proves they round-trip through
-    `*_from_api`). The applier writes the metadata signature trailer
-    into each touched object's description (`Managed by csfwctl |
-    version: N | git_sha: X | applied: TS | env: E`).
-  - `--initial-bootstrap` mode only writes the metadata trailer; it
-    never modifies rule content. Refuses to run a normal apply against
-    an unbootstrapped tenant.
-  - Safety rails (`csfwctl.safety`): blast-radius limits
-    (`--max-deletes`, `--max-changes`) checked before any write.
-    `--enforce` is the only way to overwrite drifted state.
-  - `--dry-run` runs the differ + safety checks but skips writes,
-    printing the same change set the live apply would produce.
-- **Differ contract reminders for Phase 5:**
-  - Override-RGs are synthesised on the desired side as
-    `<policy-slug>-overrides-<env>` and prepended to `rule_groups`;
-    the applier must materialise them when applying policies with
-    inline rules. See `synthesise_override_rule_groups` and
-    `project_policy_for_env`.
-  - `policy_from_api` now takes `fold_overrides=False`; the differ
-    uses it so live override-RG references stay visible during
-    comparison. The importer still defaults to `True`.
-  - The `description` field is excluded from differ comparisons
-    because the applier owns the metadata trailer. The applier must
-    preserve any pre-existing free-text in the description while
-    rewriting the trailer.
-  - `ChangeSet.unmanaged` lists live objects without a YAML
-    counterpart and without a tombstone. The applier must not touch
-    these unless `--enforce` is passed and a tombstone is added.
+- **Next phase: Phase 6 — Status and precedence.**
+  - `csfwctl status` reads `safety.parse_signature` off every live
+    object's description and groups by (kind, slug, env). Two output
+    modes (`--format table` / `--format json`) and an `--all-envs`
+    flag that shows all three columns side by side.
+  - `csfwctl precedence` resolves bucket → ordinal precedence using
+    `csfwctl/precedence_resolver.py` (currently a stub), applies the
+    overrides in `precedence.yaml`, and prints the resulting policy
+    order per platform. Optionally compares against live ordering
+    when `--env` is passed.
+  - The applier already has a precedence hook at the right spot
+    (step 4 in `apply_change_set`); wiring `client.policies.set_precedence`
+    from the resolver is the natural follow-on.
+- **Applier contract reminders for Phase 6+:**
+  - The metadata trailer format is parsed by `safety.parse_signature`.
+    Reuse it in the status command; do not re-derive the regex.
+  - `ApplyReport.to_json()` is the shape the GitLab notifier will
+    consume in Phase 8.
+  - Bootstrap mode writes metadata-only payloads (`{"id", "description"}`).
+    The status command should treat objects with a `version: 1` trailer
+    where `applied` == bootstrap timestamp as "bootstrapped only".
+- **Open questions surfaced during Phase 5:**
+  - Real-tenant verification: does `firewall_rule_groups.update` accept
+    a partial payload (just `id` + `description`) or does it require
+    the full rule list? The bootstrap path assumes partial works; the
+    first real-tenant run must confirm.
+  - `client.policies.update` payload shape for host-group changes — the
+    applier currently sends the full `groups` list; `perform_action`
+    is also available. Pick whichever the tenant proves cleaner.
 - **API shape assumptions** (recorded in `docs/architecture.md`) are
-  the contract Phase 5 writes against. If real-tenant interaction
+  the contract Phase 5 wrote against. If real-tenant interaction
   reveals discrepancies, all translation is localised to
   `csfwctl/exporter.py`'s `*_from_api` / `*_to_api_shape` helpers —
   the differ and applier do not parse API shapes directly.
-- **Round-trip test pattern** in `tests/unit/test_exporter.py` and
-  `tests/unit/test_differ.py` is the template Phase 5 should reuse:
-  hand-author a model, drive through translation, assert results.
-  Build a `FakeFalconClient` (see `test_exporter.py`) plus a
-  recording fake that captures write calls for assertion.
+- **Fake-client test pattern** lives in `tests/unit/test_applier.py`'s
+  `FakeFalconClient` — Phase 6 status tests can reuse it. Each
+  sub-client records `created` / `updated` / `deleted` lists so
+  assertions can pin down exact API call sequences.
 - **Location API spike** still has three confirmation items pending
   the first real-tenant interaction; see `docs/architecture.md`.
 - `Credentials.redacted()` is what to put in logs / notifier payloads
@@ -219,8 +267,8 @@ Phase 4: Differ
   the no-direct-`falconpy` rule a CI failure. New imports of FalconPy
   types must re-export from `csfwctl.falcon`.
 - Command-body pattern (one module per command, kept out of `cli.py`)
-  is now used by `validate_cmd.py`, `import_cmd.py`, and
-  `record_fixtures_cmd.py`. Apply the same shape for `diff`, `apply`,
-  `status`, `precedence`.
+  is now used by `validate_cmd.py`, `import_cmd.py`,
+  `record_fixtures_cmd.py`, `diff_cmd.py`, and `apply_cmd.py`. Apply
+  the same shape for `status` and `precedence`.
 - v0.0.1 tag intentionally left for a maintainer to apply locally; CI
   release workflow is not configured yet (lands in a later phase).
