@@ -5,7 +5,61 @@ Project plan: ./csfwctl-project-plan.md
 
 ## Current phase
 
-Phase 5: Applier and safety rails
+Phase 6: Status and precedence — complete. Next up is Phase 7
+(linter and validators).
+
+## Phase 6 tasks
+
+- [x] `status.py`: `EnvState` / `StatusEntry` / `StatusReport` plus
+      `build_status_report(state)` that groups every live record by
+      `(kind, slug)` with one `EnvState` per env. Env labels derive
+      from the display-name suffix for policies/rule groups and from
+      the parsed signature for tenant-global locations. Unsuffixed
+      records land in a `(no-env)` pseudo bucket so console-created
+      objects stay visible. Description substring `Managed by csfwctl`
+      is the sole managed-vs-unmanaged signal; malformed trailers parse
+      to `signature=None` while keeping `managed=True`.
+- [x] `status_cmd.py`: `run_status` mirroring the `validate_cmd` /
+      `diff_cmd` pattern, with three output modes — flat table
+      (one row per `(kind, slug, env)`), pivot table (`--all-envs`,
+      one row per logical object with per-env columns), and JSON.
+      State-provider injection point for tests.
+- [x] `precedence_resolver.py`: `BUCKET_ORDER` / `BUCKET_RANK`,
+      `ResolvedPolicy`, `PrecedenceComparison`. `resolve_precedence(repo)`
+      runs the base bucket+alphabetical sort, applies overrides in
+      declaration order, and raises `PrecedenceError` on cycles.
+      `compare_to_live` env-filters live records, strips suffixes, and
+      reports a clean match/mismatch verdict.
+- [x] `precedence_cmd.py`: `run_precedence` loads the repo, resolves
+      precedence, optionally fetches live and runs the comparison
+      (lazy-builds a `FalconClient` only when `--env` is set). Renders
+      per-platform tables plus a live-vs-resolved diff block, or a
+      JSON document.
+- [x] Wire `csfwctl status` and `csfwctl precedence` through `cli.py`
+      (both were stubs). `precedence` gained `--repo` and `--format`
+      options.
+- [x] Docs: `docs/cli_reference.md` documents both commands with their
+      output schemas and exit codes; `docs/architecture.md` carries
+      the Phase 6 design notes (status grouping, location env
+      handling, override topology, applier hook).
+- [x] Unit tests: 301 passing total (45 new):
+      15 status tests (`test_status.py`) covering env grouping,
+      managed-vs-unmanaged signal, signature field parsing, unsuffixed
+      and location records, garbled-input resilience, sort order,
+      summary counts, `managed_envs` ordering, and the JSON shape.
+      18 precedence resolver tests (`test_precedence_resolver.py`)
+      covering bucket constants, base sort, per-platform splitting,
+      `deleted` exclusion, override application (single, idempotent,
+      cross-platform, multiple), cycle detection, live-state matching,
+      mismatch detection, env filtering, live-only filtering, empty
+      input, and the JSON shape.
+      6 CLI command-body tests (`test_status_cmd.py`) for run_status
+      direct invocation, JSON mode, table dispatch, `--all-envs` pivot,
+      JSON output via Typer, and fetch-failure surfacing.
+      6 CLI command-body tests (`test_precedence_cmd.py`) for the
+      realistic-fixture resolver, env-comparison provider wiring,
+      end-to-end table render, JSON dispatch, config-repo error
+      surfacing, and the end-to-end `--env` flow.
 
 ## Phase 5 tasks
 
@@ -221,19 +275,34 @@ Phase 5: Applier and safety rails
 
 ## Notes for next session
 
-- **Next phase: Phase 6 — Status and precedence.**
-  - `csfwctl status` reads `safety.parse_signature` off every live
-    object's description and groups by (kind, slug, env). Two output
-    modes (`--format table` / `--format json`) and an `--all-envs`
-    flag that shows all three columns side by side.
-  - `csfwctl precedence` resolves bucket → ordinal precedence using
-    `csfwctl/precedence_resolver.py` (currently a stub), applies the
-    overrides in `precedence.yaml`, and prints the resulting policy
-    order per platform. Optionally compares against live ordering
-    when `--env` is passed.
-  - The applier already has a precedence hook at the right spot
-    (step 4 in `apply_change_set`); wiring `client.policies.set_precedence`
-    from the resolver is the natural follow-on.
+- **Next phase: Phase 7 — Linter and validators.**
+  - Beyond schema: precedence bucket conflicts, rule groups referenced
+    by no policy, policies with no host groups in any env, tombstones
+    without matching deletion in YAML, overly broad allow patterns
+    (configurable), cross-file platform invariants.
+  - The Phase 1 hook in `loader._platform_supports_protocol` is the
+    natural home for the per-platform protocol whitelist; widen it
+    rather than adding a new module.
+  - Plug-in linter rules: the project plan calls for a pluggable
+    architecture so site-specific lints can be added without touching
+    core. Mirror the notifier interface (Phase 8) — a `Lint` protocol
+    plus a registry — and emit findings as a list of
+    `LoadError`-shaped records so `validate` can surface them.
+- **Phase 6 hooks that Phase 7+ should pick up:**
+  - `precedence_resolver.resolve_precedence` already raises
+    `PrecedenceError` on cycles. The linter can promote the same check
+    to a non-fatal warning emitted at `validate` time so the operator
+    catches it before getting near the apply.
+  - `status.build_status_report` exposes managed-vs-unmanaged counts
+    via `StatusReport.managed` / `.unmanaged`. The drift-check job
+    (Phase 10) can compare those counts run-over-run; the JSON shape
+    in `to_json()` is the contract.
+  - The applier's step-4 precedence hook is still a stub. The natural
+    follow-on is calling `PoliciesAPI.set_precedence` per platform
+    with the IDs threaded through `resolve_precedence` →
+    `_build_live_index` → `_apply_precedence`. Lands cleanly inside
+    `apply_change_set` between the policy create/update block and
+    the deletes.
 - **Applier contract reminders for Phase 6+:**
   - The metadata trailer format is parsed by `safety.parse_signature`.
     Reuse it in the status command; do not re-derive the regex.

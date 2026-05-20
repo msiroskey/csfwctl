@@ -35,9 +35,9 @@ def test_cli_help_lists_all_top_level_commands() -> None:
         assert command in result.stdout, f"missing {command!r} in help output"
 
 
-def test_status_is_stubbed() -> None:
-    """Stub subcommands exit with the documented 'not implemented' code."""
-    result = runner.invoke(app, ["status"])
+def test_promote_is_stubbed() -> None:
+    """``promote`` remains a Phase 0 stub until its build-out lands."""
+    result = runner.invoke(app, ["promote", "--from", "test", "--to", "pilot"])
     assert result.exit_code == NOT_IMPLEMENTED_EXIT
     assert "not implemented" in result.stderr.lower() or "not implemented" in result.output.lower()
 
