@@ -1,0 +1,7 @@
+# Realistic-fixture tombstones: one rule group folded into another.
+policies: []
+rule_groups:
+  - name: legacy-rdp-allow
+    deleted_in_sha: def5678
+    reason: Folded into windows-remote-access.
+locations: []

@@ -1,0 +1,27 @@
+# Minimal-fixture policy: one Windows endpoint policy referencing the
+# shared windows-baseline rule group and one inline override rule.
+name: ABC01-Endpoints-Windows
+platform: windows
+priority: default
+status: enabled
+description: >
+  Baseline firewall policy for ABC01-managed Windows endpoints.
+
+host_groups:
+  ABC01-Endpoints-Windows-Test: test
+  ABC01-Endpoints-Windows-Pilot: pilot
+  ABC01-Endpoints-Windows-Production: production
+
+rules:
+  - name: Allow corp DNS outbound
+    enabled: true
+    action: allow
+    direction: outbound
+    protocol: udp
+    locations: [any]
+    remote:
+      addresses: [10.1.1.53, 10.1.1.54]
+      ports: [53]
+
+rule_groups:
+  - windows-baseline

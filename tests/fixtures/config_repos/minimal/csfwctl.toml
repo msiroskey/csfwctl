@@ -1,0 +1,12 @@
+# Tool configuration for the minimal fixture repo.
+
+[tool]
+metadata_signature = "Managed by csfwctl"
+
+[safety]
+max_deletes = 1
+max_changes = 10
+require_bootstrap_for_unmanaged = true
+
+[notifications.log]
+events = ["*"]

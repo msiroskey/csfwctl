@@ -1,0 +1,139 @@
+"""Shared schema primitives.
+
+Enums, regex patterns, and lightweight type aliases used across the
+Pydantic models in this package.
+
+Naming conventions (see CLAUDE.md):
+
+- **Slugs** — filenames and cross-references. ``lowercase-kebab-case``:
+  a leading lowercase letter, then lowercase letters / digits / single
+  hyphens. No trailing hyphen, no consecutive hyphens.
+- **Display names** — what CrowdStrike sees. ``TitleCase-With-Hyphens``.
+  Validated separately by :class:`DisplayName`.
+"""
+
+from __future__ import annotations
+
+import re
+from enum import StrEnum
+from typing import Annotated, Final
+
+from pydantic import Field
+
+SLUG_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+"""Lowercase-kebab-case slug. Used for filenames and cross-references."""
+
+DISPLAY_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[A-Z][A-Za-z0-9]*(?:-[A-Z0-9][A-Za-z0-9]*)*$"
+)
+"""TitleCase-With-Hyphens display name (CrowdStrike-visible name)."""
+
+Slug = Annotated[
+    str,
+    Field(
+        pattern=SLUG_RE.pattern,
+        min_length=2,
+        max_length=80,
+        description="lowercase-kebab-case identifier",
+    ),
+]
+
+DisplayName = Annotated[
+    str,
+    Field(
+        pattern=DISPLAY_NAME_RE.pattern,
+        min_length=2,
+        max_length=80,
+        description="TitleCase-With-Hyphens display name as it appears in CrowdStrike",
+    ),
+]
+
+
+class Platform(StrEnum):
+    """Operating-system platform a policy or rule group applies to."""
+
+    windows = "windows"
+    mac = "mac"
+
+
+class Status(StrEnum):
+    """Lifecycle status for a managed object.
+
+    Maps directly to the CrowdStrike ``enabled`` attribute. ``deleted``
+    requires a matching tombstone entry and the ``--allow-delete`` flag
+    at apply time.
+    """
+
+    enabled = "enabled"
+    disabled = "disabled"
+    deleted = "deleted"
+
+
+class PrecedenceBucket(StrEnum):
+    """Coarse precedence bucket assigned to each policy.
+
+    Resolved to an ordinal precedence at apply time, with ties broken
+    alphabetically by policy name.
+    """
+
+    emergency = "emergency"
+    high = "high"
+    medium = "medium"
+    default = "default"
+    low = "low"
+
+
+class Action(StrEnum):
+    """Rule action."""
+
+    allow = "allow"
+    block = "block"
+    monitor = "monitor"
+
+
+class Direction(StrEnum):
+    """Rule direction."""
+
+    inbound = "inbound"
+    outbound = "outbound"
+
+
+class Protocol(StrEnum):
+    """Network-layer protocol a rule matches."""
+
+    any = "any"
+    tcp = "tcp"
+    udp = "udp"
+    icmp = "icmp"
+
+
+class ConnectionState(StrEnum):
+    """Optional TCP connection-state qualifier on a rule."""
+
+    new = "new"
+    established = "established"
+    related = "related"
+
+
+class HostGroupEnv(StrEnum):
+    """Environment a host group is bound to inside a policy."""
+
+    test = "test"
+    pilot = "pilot"
+    production = "production"
+
+
+__all__ = [
+    "SLUG_RE",
+    "DISPLAY_NAME_RE",
+    "Slug",
+    "DisplayName",
+    "Platform",
+    "Status",
+    "PrecedenceBucket",
+    "Action",
+    "Direction",
+    "Protocol",
+    "ConnectionState",
+    "HostGroupEnv",
+]

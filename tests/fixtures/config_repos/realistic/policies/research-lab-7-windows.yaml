@@ -1,0 +1,26 @@
+# One-off policy for a specific lab with elevated permissions and a
+# corp-vpn-scoped allow rule.
+name: Research-Lab-7-Windows
+platform: windows
+priority: default
+status: enabled
+description: Research Lab 7 Windows hosts. Allow internal RDP, restrict SMB.
+
+host_groups:
+  Research-Lab-7-Windows-Test: test
+  Research-Lab-7-Windows-Pilot: pilot
+  Research-Lab-7-Windows-Production: production
+
+rules:
+  - name: Allow RDP inbound from corp-vpn
+    enabled: true
+    action: allow
+    direction: inbound
+    protocol: tcp
+    locations: [corp-vpn]
+    local:
+      ports: [3389]
+
+rule_groups:
+  - windows-baseline
+  - windows-remote-access

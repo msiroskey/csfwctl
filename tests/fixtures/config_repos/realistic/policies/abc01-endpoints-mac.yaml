@@ -1,0 +1,13 @@
+name: ABC01-Endpoints-Mac
+platform: mac
+priority: default
+status: enabled
+description: Baseline policy for ABC01 macOS endpoints.
+
+host_groups:
+  ABC01-Endpoints-Mac-Test: test
+  ABC01-Endpoints-Mac-Pilot: pilot
+  ABC01-Endpoints-Mac-Production: production
+
+rule_groups:
+  - mac-baseline

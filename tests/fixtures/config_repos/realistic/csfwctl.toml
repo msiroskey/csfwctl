@@ -1,0 +1,14 @@
+[tool]
+metadata_signature = "Managed by csfwctl"
+
+[safety]
+max_deletes = 1
+max_changes = 10
+require_bootstrap_for_unmanaged = true
+
+[notifications.log]
+events = ["*"]
+
+[notifications.teams]
+url_env = "TEAMS_WEBHOOK_URL"
+events = ["apply.failed", "drift.detected"]

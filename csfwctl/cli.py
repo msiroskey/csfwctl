@@ -111,8 +111,9 @@ def validate(
     ] = None,
 ) -> None:
     """Schema and semantic lint. No API calls. Exit 1 on any error."""
-    del repo
-    _not_implemented("validate")
+    from csfwctl.validate_cmd import run_validate
+
+    run_validate(repo)
 
 
 @app.command()
