@@ -98,8 +98,9 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 files = ["csfwctl"]
 
-# Per-module ignores for untyped third-party libs (falconpy, ruamel.yaml)
-# will land alongside their first imports in later phases.
+[[tool.mypy.overrides]]
+module = ["falconpy", "falconpy.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"

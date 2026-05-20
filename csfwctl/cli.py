@@ -14,6 +14,15 @@ from typing import Annotated
 
 import typer
 
+from csfwctl.observability import (
+    LogFormat as _ObsLogFormat,
+)
+from csfwctl.observability import (
+    configure_logging,
+    new_request_id,
+    set_request_id,
+)
+
 NOT_IMPLEMENTED_EXIT = 2
 
 app = typer.Typer(
@@ -98,9 +107,14 @@ def main(
     quiet: Annotated[bool, typer.Option("--quiet", help="Suppress non-error output.")] = False,
 ) -> None:
     """Global options applied to every subcommand."""
-    # Global flag plumbing lands in a later phase; accepted here so the
-    # CLI surface matches the project plan from day one.
-    del repo, profile, log_format, verbose, quiet
+    set_request_id(new_request_id())
+    configure_logging(
+        log_format=_ObsLogFormat(log_format.value),
+        quiet=quiet,
+    )
+    # ``--repo``, ``--profile``, and ``--verbose`` plumbing lands when
+    # the subcommands that consume them are implemented.
+    del repo, profile, verbose
 
 
 @app.command()
