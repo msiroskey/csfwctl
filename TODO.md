@@ -5,8 +5,53 @@ Project plan: ./csfwctl-project-plan.md
 
 ## Current phase
 
-Phase 6: Status and precedence — complete. Next up is Phase 7
-(linter and validators).
+Phase 7: Linter and validators — complete. Next up is Phase 8
+(notifiers).
+
+## Phase 7 tasks
+
+- [x] `linter.py`: `Severity`, `LintFinding`, `LintContext`, `Lint`
+      protocol, and a `LINT_REGISTRY` dict plus `register_lint()` so
+      site-specific plug-ins can register at import time without
+      touching core. `LintFinding` mirrors `LoadError`'s shape (path,
+      line, field_path, message) so the validate renderer formats both
+      kinds of records through one code path; `to_json()` is the shape
+      Phase 8 notifiers will consume.
+- [x] Built-in rules registered in declaration order:
+      `precedence-cycle` (re-runs `resolve_precedence` and catches
+      `PrecedenceError`), `orphan-rule-group` (rule groups no active
+      policy lists), `policy-without-host-groups` (empty `host_groups`
+      map), `deleted-without-tombstone` (`status: deleted` lacking a
+      tombstone — the loader already rejects the inverse), and
+      `broad-allow` (heuristic on `action: allow` rules: world-open
+      addresses or no endpoint constraints; state-qualified rules
+      exempt; configurable via `[lint.options.broad-allow]`).
+- [x] `csfwctl.toml` `[lint]` section via new `LintSection` Pydantic
+      model: `disabled: list[str]` and `options: dict[str, dict]`.
+      Runtime overrides to `run_lints` union with file config.
+- [x] `validate_cmd`: runs lints after a successful load, emits findings
+      to stderr with Rich severity colours (path/rule id escaped so
+      Rich does not strip them as markup, `crop=False`/`soft_wrap=True`
+      so long paths survive). `error` findings always fatal; `--strict`
+      promotes warnings/infos to fatal. Stdout summary gains a yellow
+      `OK with N warning(s)` suffix when non-fatal findings fire.
+- [x] CLI: `csfwctl validate --strict` wired through Typer.
+- [x] Docs: `docs/cli_reference.md` documents the lint rule table and
+      `[lint]` configuration; `docs/architecture.md` carries the
+      Phase 7 design notes (rule architecture, finding shape, config
+      shape, built-in rules, validate integration, test pattern);
+      `docs/schema_reference.md` shows the new `[lint]` section.
+- [x] Unit tests: 335 passing total (34 new):
+      31 linter tests (`test_linter.py`) covering finding format/JSON,
+      `has_errors`, realistic/minimal repo pass-through (no findings
+      expected), each built-in rule's positive + negative + edge cases,
+      `run_lints` registry order + runtime `disabled` + `csfwctl.toml`
+      `disabled` + per-rule options, plug-in registration round-trip,
+      registry sanity, plus three in-memory `ConfigRepo` tests for the
+      states the loader rejects (deleted + tombstone, orphan-via-dead-
+      policy reference).
+      3 new `validate_cmd` tests for the warning-doesn't-fail-by-default
+      flow, `--strict` promotion, and the unchanged clean-run output.
 
 ## Phase 6 tasks
 
@@ -275,19 +320,33 @@ Phase 6: Status and precedence — complete. Next up is Phase 7
 
 ## Notes for next session
 
-- **Next phase: Phase 7 — Linter and validators.**
-  - Beyond schema: precedence bucket conflicts, rule groups referenced
-    by no policy, policies with no host groups in any env, tombstones
-    without matching deletion in YAML, overly broad allow patterns
-    (configurable), cross-file platform invariants.
-  - The Phase 1 hook in `loader._platform_supports_protocol` is the
-    natural home for the per-platform protocol whitelist; widen it
-    rather than adding a new module.
-  - Plug-in linter rules: the project plan calls for a pluggable
-    architecture so site-specific lints can be added without touching
-    core. Mirror the notifier interface (Phase 8) — a `Lint` protocol
-    plus a registry — and emit findings as a list of
-    `LoadError`-shaped records so `validate` can surface them.
+- **Next phase: Phase 8 — Notifiers.**
+  - Notifier protocol + registry that mirrors the linter's
+    (`register_notifier`, ordered map). Reuse the event/severity
+    pattern: `Event` carries `type`, `severity`, `env`, `git_sha`,
+    `summary`, `details`, `request_id` (request id already lives on a
+    contextvar in `observability`).
+  - Initial channels: log (JSONL to file), console (rich, suppressed
+    in CI), Teams (incoming webhook, MessageCard), GitLab (MR comments
+    via API), syslog (RFC 5424). All read their config from
+    `csfwctl.toml`'s `[notifications.<channel>]` table — that schema
+    already exists (`NotifierConfig` accepts extra fields).
+  - `csfwctl notify-test --channel CHANNEL` is wired as a stub in
+    `cli.py` and needs the body.
+  - Apply / drift / validate failure paths should emit events through
+    the bus. `ApplyReport.to_json()` is the payload contract for the
+    apply notifications; the linter's `LintFinding.to_json()` is the
+    contract for validate failures.
+- **Phase 7 hooks Phase 8+ should pick up:**
+  - The linter's `register_lint()` + ordered `LINT_REGISTRY` is the
+    template to mirror for `register_notifier()`. Same shape: protocol
+    + ordered dict + idempotent insertion-order iteration.
+  - `LintFinding.to_json()` is what a `validate.failed` event should
+    embed under `details.findings`.
+  - The `Severity` enum in `linter.py` and the `severity` field on
+    `Event` should agree. Reuse the same enum if it makes sense, or at
+    least keep the string values consistent (`error` / `warning` /
+    `info`).
 - **Phase 6 hooks that Phase 7+ should pick up:**
   - `precedence_resolver.resolve_precedence` already raises
     `PrecedenceError` on cycles. The linter can promote the same check

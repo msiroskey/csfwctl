@@ -411,6 +411,79 @@ inject a stub state provider so no real FalconPy traffic happens.
 The realistic fixture's ``precedence.yaml`` exercises the override
 path end-to-end through the CLI.
 
+## Linter (Phase 7)
+
+``csfwctl/linter.py`` adds the semantic checks that were intentionally
+left out of the loader. The split mirrors the differ/loader split: the
+loader runs the hard rules whose failure cannot be ignored (Pydantic
+schema validation, platform mismatches, missing cross-references, a
+tombstone that still has a YAML file); the linter runs softer rules
+whose findings the operator may legitimately want to suppress on a
+per-rule basis.
+
+**Rule architecture.** Every built-in is a small class implementing the
+:class:`csfwctl.linter.Lint` protocol — a stable ``rule_id``, a
+``default_severity``, and a ``check(ctx) -> list[LintFinding]`` method.
+Instances are kept in :data:`LINT_REGISTRY`, an ordered dict keyed by
+``rule_id``. ``register_lint(my_lint)`` is the public seam for
+site-specific rules to plug in at import time without touching the
+core module.
+
+**Findings.** :class:`LintFinding` carries the same fields as a
+:class:`csfwctl.loader.LoadError` (path, line, dotted field path,
+message) plus a ``rule_id`` and a :class:`Severity`. The shared shape
+lets the ``validate`` renderer format loader errors and lint findings
+through the same code path. ``LintFinding.to_json()`` is the form the
+Phase 8 notifiers consume.
+
+**Configuration.** The ``[lint]`` section of ``csfwctl.toml`` carries
+two knobs:
+
+- ``disabled``: list of ``rule_id`` strings to skip entirely.
+- ``options``: dict keyed by ``rule_id``; the matching rule interprets
+  its own options (see :class:`BroadAllowLint` for an example shape).
+
+Runtime overrides may be passed to :func:`run_lints` directly; they
+union with the file-based config so command-line flags can always
+loosen but not tighten the rule set.
+
+**Built-in rules.**
+
+- ``precedence-cycle`` calls
+  :func:`csfwctl.precedence_resolver.resolve_precedence` and catches
+  :class:`PrecedenceError`, surfacing the cycle at validate time so the
+  operator catches it before the differ does.
+- ``orphan-rule-group`` walks every active policy's ``rule_groups`` and
+  flags rule groups no policy lists. Deleted-status rule groups are
+  skipped (covered by ``deleted-without-tombstone``).
+- ``policy-without-host-groups`` flags policies whose ``host_groups``
+  map is empty — they cannot apply to anything.
+- ``deleted-without-tombstone`` flags any YAML object with
+  ``status: deleted`` whose name does not appear in the matching
+  tombstone list. The loader already rejects the inverse (a tombstone
+  whose YAML file still exists), so the two checks cover the full
+  consistency contract together.
+- ``broad-allow`` is a heuristic on ``action: allow`` rules: it warns
+  when ``0.0.0.0/0`` or ``::/0`` appears in a non-negated address list,
+  or when the rule has neither address nor port constraints on either
+  endpoint. Rules with a connection-state qualifier (``established`` /
+  ``related``) are exempt — that's a meaningful constraint.
+
+**Validate integration.** ``run_validate`` runs the loader first; on
+success it calls :func:`run_lints` and prints every finding to stderr.
+``error`` findings always fail the command. ``warning``/``info`` are
+non-fatal by default; ``--strict`` promotes them to fatal so a CI job
+can require a clean run.
+
+**Test pattern.** ``tests/unit/test_linter.py`` exercises each rule
+with both filesystem-based fixtures (the realistic and minimal config
+repos plus an ``empty_repo`` builder) and hand-rolled in-memory
+:class:`ConfigRepo` instances for states the loader rejects (e.g., a
+deleted YAML object plus a matching tombstone — the loader rejects the
+"matching" case, but the lint must still get the answer right when
+called programmatically). ``test_validate_cmd.py`` covers the CLI
+integration including ``--strict``.
+
 ## Credentials and profiles
 
 - Env vars (`CSFWCTL_CLIENT_ID` / `CSFWCTL_CLIENT_SECRET`) take

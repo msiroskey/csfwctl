@@ -18,11 +18,11 @@ These apply to every subcommand:
 
 ## `csfwctl validate`
 
-**Implemented (Phase 1).** Schema and semantic lint of a config repo.
-No API calls.
+**Implemented (Phase 1, extended in Phase 7).** Schema, cross-reference,
+and semantic lint of a config repo. No API calls.
 
 ```
-csfwctl validate [--repo PATH]
+csfwctl validate [--repo PATH] [--strict]
 ```
 
 What it checks:
@@ -36,11 +36,48 @@ What it checks:
    groups with matching platforms; non-`any` location references
    resolve to locations; tombstones do not match still-present objects;
    precedence overrides reference known policies.
+4. Semantic linter (Phase 7): pluggable rules implemented in
+   `csfwctl.linter`. Built-ins are documented below under "Lint rules".
+
+The first three are fatal — any failure aborts with exit 1. The fourth
+emits findings with a severity (`error` / `warning` / `info`); only
+`error` findings (or any finding with `--strict`) fail the command.
 
 Exit codes:
 
-- `0` — repository is valid; a summary table is written to stdout.
-- `1` — one or more validation errors; each is written to stderr.
+- `0` — repository is valid; a summary table is written to stdout
+  (with a yellow `with N warning(s)` suffix when non-fatal lint
+  findings were emitted).
+- `1` — one or more validation errors, a lint error-severity finding,
+  or any lint finding when `--strict` was passed. Per-error / per-lint
+  listings are written to stderr.
+
+### Lint rules
+
+Built-in rules are registered at import time in
+`csfwctl.linter.LINT_REGISTRY`. Each has a stable `rule_id`:
+
+| Rule id                      | Severity | What it flags                                                              |
+|------------------------------|----------|----------------------------------------------------------------------------|
+| `precedence-cycle`           | warning  | Overrides in `precedence.yaml` resolve into a cycle on one platform.       |
+| `orphan-rule-group`          | warning  | A rule group is defined but no active policy lists it in `rule_groups`.    |
+| `policy-without-host-groups` | warning  | A policy's `host_groups` map is empty — it cannot apply to any host.       |
+| `deleted-without-tombstone`  | warning  | A YAML object with `status: deleted` has no matching tombstone entry.      |
+| `broad-allow`                | warning  | An `action: allow` rule is world-open (`0.0.0.0/0` / `::/0`) or has no address or port constraints. |
+
+Disabling rules: list rule ids in `csfwctl.toml`:
+
+```toml
+[lint]
+disabled = ["broad-allow"]
+
+[lint.options.broad-allow]
+unconstrained = false       # only flag world-open allow rules
+```
+
+Plug-in rules: import a module that calls
+`csfwctl.linter.register_lint(MyLint())` at load time; the lint runs in
+registration order alongside the built-ins.
 
 ## `csfwctl diff`
 
