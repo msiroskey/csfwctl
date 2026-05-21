@@ -321,3 +321,63 @@ def test_status_display_name_strips_env_suffix() -> None:
 def test_status_env_order_constant_is_canonical_apply_order() -> None:
     """``ENV_ORDER`` matches the project's test → pilot → production flow."""
     assert ENV_ORDER == ("test", "pilot", "production")
+
+
+# ---- platform extraction -------------------------------------------------
+
+
+def test_status_platform_extracted_from_policy_platform_name() -> None:
+    """``StatusEntry.platform`` is set from ``platform_name`` on policy records."""
+    state = _state(
+        policies=[
+            {
+                "id": "p-1",
+                "name": "Abc-Windows-Test",
+                "platform_name": "Windows",
+                "description": None,
+            },
+        ]
+    )
+    entry = build_status_report(state).entries[0]
+    assert entry.platform == "Windows"
+
+
+def test_status_platform_extracted_from_rule_group_platform_field() -> None:
+    """``StatusEntry.platform`` is set from the numeric ``platform`` field on rule groups."""
+    state = _state(
+        rule_groups=[
+            {
+                "id": "rg-1",
+                "name": "windows-baseline-Test",
+                "platform": "0",
+                "description": None,
+            }
+        ]
+    )
+    entry = build_status_report(state).entries[0]
+    assert entry.platform == "Windows"
+
+
+def test_status_platform_is_none_for_locations() -> None:
+    """Locations have no platform; ``StatusEntry.platform`` should be ``None``."""
+    state = _state(
+        locations=[_location_record(name="corp-vpn", description=None)]
+    )
+    entry = build_status_report(state).entries[0]
+    assert entry.platform is None
+
+
+def test_status_platform_in_json_output() -> None:
+    """``to_json`` includes the ``platform`` field on each entry."""
+    state = _state(
+        policies=[
+            {
+                "id": "p-1",
+                "name": "Abc-Mac-Test",
+                "platform_name": "Mac",
+                "description": None,
+            },
+        ]
+    )
+    payload = build_status_report(state).to_json()
+    assert payload["entries"][0]["platform"] == "macOS"

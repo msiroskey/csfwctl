@@ -104,10 +104,14 @@ class StatusEntry:
     ``envs`` is keyed by the env label discovered from the live name
     suffix (policies, rule groups) or the trailer (locations); a missing
     key means we found no live record for that env.
+
+    ``platform`` is ``"Windows"`` or ``"macOS"`` for policies and rule
+    groups; ``None`` for locations (which are tenant-global).
     """
 
     kind: str
     slug: str
+    platform: str | None = None
     envs: dict[str, EnvState] = field(default_factory=dict)
 
     @property
@@ -138,10 +142,36 @@ class StatusEntry:
         return {
             "kind": self.kind,
             "slug": self.slug,
+            "platform": self.platform,
             "display_name": self.display_name,
             "managed": self.is_managed,
             "envs": {env: state.to_json() for env, state in self.envs.items()},
         }
+
+
+_PLATFORM_LABEL: dict[str, str] = {
+    "windows": "Windows",
+    "Windows": "Windows",
+    "0": "Windows",
+    "mac": "macOS",
+    "Mac": "macOS",
+    "1": "macOS",
+}
+"""Map live API platform values to human-readable labels."""
+
+
+def _platform_from_record(record: dict[str, Any]) -> str | None:
+    """Return a display-friendly platform label from a live API record.
+
+    Policies carry ``platform_name`` ("Windows" / "Mac"); rule groups
+    carry ``platform`` ("0" / "1" or the string form). Locations have
+    neither, so ``None`` is returned.
+    """
+    raw = (
+        str(record.get("platform_name", "")).strip()
+        or str(record.get("platform", "")).strip()
+    )
+    return _PLATFORM_LABEL.get(raw)
 
 
 def _strip_env_label(display_name: str) -> str:
@@ -202,26 +232,34 @@ def build_status_report(state: LiveState) -> StatusReport:
     the differ's :func:`csfwctl.differ._record_matches_env`).
     """
     by_key: dict[tuple[str, str], dict[str, EnvState]] = defaultdict(dict)
+    by_key_platform: dict[tuple[str, str], str | None] = {}
 
     for record in state.policies:
         slug, env, es = _entry_from_suffixed(record, KIND_POLICY)
         if slug is None:
             continue
-        by_key[(KIND_POLICY, slug)][env] = es
+        key = (KIND_POLICY, slug)
+        by_key[key][env] = es
+        by_key_platform.setdefault(key, _platform_from_record(record))
     for record in state.rule_groups:
         slug, env, es = _entry_from_suffixed(record, KIND_RULE_GROUP)
         if slug is None:
             continue
-        by_key[(KIND_RULE_GROUP, slug)][env] = es
+        key = (KIND_RULE_GROUP, slug)
+        by_key[key][env] = es
+        by_key_platform.setdefault(key, _platform_from_record(record))
     for record in state.locations:
         slug, env, es = _entry_from_location(record)
         if slug is None:
             continue
-        by_key[(KIND_LOCATION, slug)][env] = es
+        key = (KIND_LOCATION, slug)
+        by_key[key][env] = es
+        by_key_platform.setdefault(key, None)
 
     entries: list[StatusEntry] = []
     for (kind, slug), envs in by_key.items():
-        entries.append(StatusEntry(kind=kind, slug=slug, envs=envs))
+        platform = by_key_platform.get((kind, slug))
+        entries.append(StatusEntry(kind=kind, slug=slug, platform=platform, envs=envs))
     entries.sort(key=lambda e: (KIND_ORDER.index(e.kind), e.slug))
     return StatusReport(entries=entries)
 

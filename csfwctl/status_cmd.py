@@ -107,6 +107,7 @@ def _render_flat_table(console: Console, report: StatusReport) -> None:
     table = Table(title="csfwctl status", title_justify="left")
     table.add_column("Kind", style="bold")
     table.add_column("Slug")
+    table.add_column("Platform")
     table.add_column("Env")
     table.add_column("Managed", justify="center")
     table.add_column("Ver", justify="right")
@@ -134,6 +135,7 @@ def _flat_row(entry: StatusEntry, env: str, state: EnvState) -> tuple[str, ...]:
     return (
         KIND_LABELS.get(entry.kind, entry.kind),
         entry.slug,
+        entry.platform or "-",
         env,
         managed,
         version,
@@ -151,6 +153,7 @@ def _render_pivot_table(console: Console, report: StatusReport) -> None:
     table = Table(title="csfwctl status --all-envs", title_justify="left")
     table.add_column("Kind", style="bold")
     table.add_column("Slug")
+    table.add_column("Platform")
     table.add_column("Display name")
     for env in ENV_ORDER:
         table.add_column(env)
@@ -160,6 +163,7 @@ def _render_pivot_table(console: Console, report: StatusReport) -> None:
         row = [
             KIND_LABELS.get(entry.kind, entry.kind),
             entry.slug,
+            entry.platform or "-",
             entry.display_name,
         ]
         for env in ENV_ORDER:
