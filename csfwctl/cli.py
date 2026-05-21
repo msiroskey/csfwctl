@@ -348,13 +348,17 @@ def promote(
 
 @app.command("notify-test")
 def notify_test(
+    ctx: typer.Context,
     channel: Annotated[
         str | None, typer.Option("--channel", help="Notifier channel to test.")
     ] = None,
+    repo: Annotated[Path | None, typer.Option("--repo", help="Config repo path.")] = None,
 ) -> None:
     """Send a test notification to verify channel configuration."""
-    del channel
-    _not_implemented("notify-test")
+    from csfwctl.notify_test_cmd import run_notify_test
+
+    effective_repo = repo or (ctx.obj.get("repo") if isinstance(ctx.obj, dict) else None)
+    run_notify_test(channel, repo=effective_repo)
 
 
 if __name__ == "__main__":

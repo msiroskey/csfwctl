@@ -37,6 +37,7 @@ from csfwctl.differ import (
 )
 from csfwctl.falcon.client import FalconAPIError, FalconClient
 from csfwctl.loader import ConfigRepo, ConfigRepoError, load_config_repo
+from csfwctl.notifiers import emit, make_event, setup_notifiers
 from csfwctl.safety import (
     SafetyError,
     SafetyOptions,
@@ -82,11 +83,33 @@ def run_apply(
 
     config = _load_config_or_exit(err, repo_path)
     sha = git_sha if git_sha is not None else current_git_sha(repo_path)
+    notifiers = setup_notifiers(config.tool_config)
 
     client = _build_client(client_factory, profile, err)
     state = _fetch_state(state_provider, client, err)
 
     change_set = compute_diff(config, env, state)
+
+    emit(
+        make_event(
+            "apply.started",
+            severity="info",
+            env=env,
+            git_sha=sha,
+            summary=f"apply started for env={env} dry_run={dry_run}",
+            details={
+                "env": env,
+                "dry_run": dry_run,
+                "bootstrap": initial_bootstrap,
+                "changes": {
+                    "creates": len(change_set.creates),
+                    "updates": len(change_set.updates),
+                    "deletes": len(change_set.deletes),
+                },
+            },
+        ),
+        notifiers,
+    )
 
     safety_options = _build_safety_options(
         config=config,
@@ -117,7 +140,30 @@ def run_apply(
         )
     except (SafetyError, ApplyError, FalconAPIError) as exc:
         err.print(f"[red]apply: {exc}[/red]")
+        emit(
+            make_event(
+                "apply.failed",
+                severity="error",
+                env=env,
+                git_sha=sha,
+                summary=f"apply failed for env={env}: {exc}",
+                details={"env": env, "error": str(exc)},
+            ),
+            notifiers,
+        )
         raise typer.Exit(code=1) from exc
+
+    emit(
+        make_event(
+            "apply.succeeded",
+            severity="info",
+            env=env,
+            git_sha=sha,
+            summary=f"apply succeeded for env={env}",
+            details={"report": report.to_json()},
+        ),
+        notifiers,
+    )
 
     if output is not None:
         _write_json(output, change_set, report)

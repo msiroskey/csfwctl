@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import fnmatch
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -164,9 +164,7 @@ def emit(event: Event, notifiers: list[Notifier]) -> None:
         try:
             notifier.send(event)
         except Exception as exc:
-            _logger.warning(
-                "notifier %r failed for event %r: %s", notifier.name, event.type, exc
-            )
+            _logger.warning("notifier %r failed for event %r: %s", notifier.name, event.type, exc)
 
 
 def event_matches(event_type: str, patterns: list[str]) -> bool:

@@ -28,6 +28,7 @@ from csfwctl.differ import (
 )
 from csfwctl.falcon.client import FalconAPIError, FalconClient
 from csfwctl.loader import ConfigRepoError, load_config_repo
+from csfwctl.notifiers import emit, make_event, setup_notifiers
 
 
 def run_diff(
@@ -64,6 +65,28 @@ def run_diff(
         raise typer.Exit(code=1) from exc
 
     change_set = compute_diff(config, env, state)
+
+    if change_set.has_changes:
+        notifiers = setup_notifiers(config.tool_config)
+        emit(
+            make_event(
+                "diff.changes_detected",
+                severity="warn",
+                env=env,
+                summary=(
+                    f"diff: {len(change_set.creates)} create(s),"
+                    f" {len(change_set.updates)} update(s),"
+                    f" {len(change_set.deletes)} delete(s)"
+                ),
+                details={
+                    "env": env,
+                    "creates": len(change_set.creates),
+                    "updates": len(change_set.updates),
+                    "deletes": len(change_set.deletes),
+                },
+            ),
+            notifiers,
+        )
 
     if output is not None:
         _write_json(output, change_set)

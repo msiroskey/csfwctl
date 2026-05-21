@@ -25,6 +25,7 @@ from rich.table import Table
 
 from csfwctl.linter import LintFinding, Severity, has_errors, run_lints
 from csfwctl.loader import ConfigRepo, ConfigRepoError, LoadError, load_config_repo
+from csfwctl.notifiers import emit, make_event, setup_notifiers
 
 
 def run_validate(repo: Path | None, *, strict: bool = False) -> None:
@@ -43,8 +44,10 @@ def run_validate(repo: Path | None, *, strict: bool = False) -> None:
         config = load_config_repo(repo_path)
     except ConfigRepoError as exc:
         _render_errors(err, exc.errors)
+        # Emit without notifiers since we don't have tool_config yet.
         raise typer.Exit(code=1) from exc
 
+    notifiers = setup_notifiers(config.tool_config)
     findings = run_lints(config)
     if findings:
         _render_findings(err, findings)
@@ -53,6 +56,18 @@ def run_validate(repo: Path | None, *, strict: bool = False) -> None:
     if fatal_lints:
         err.print(
             f"[red]validate: {_count_label(findings)} (strict={strict}); exiting non-zero[/red]"
+        )
+        emit(
+            make_event(
+                "validate.failed",
+                severity="error",
+                summary=f"validate: {_count_label(findings)}",
+                details={
+                    "strict": strict,
+                    "findings": [f.to_json() for f in findings],
+                },
+            ),
+            notifiers,
         )
         raise typer.Exit(code=1)
 
