@@ -81,6 +81,22 @@ class PoliciesAPI:
             lambda: self._svc().delete_policies(ids=ids),
         )
 
+    def get_policy_containers(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Return firewall policy container entities for the given policy IDs.
+
+        The ``getFirewallPolicies`` endpoint does not include rule group
+        assignments; those live in the policy container returned here.
+        Each container carries ``policy_id`` and ``rule_group_ids``.
+        """
+        if not ids:
+            return []
+        result = self._client.call(
+            "firewall_management.get_policy_containers",
+            lambda: self._client._firewall_management_service().get_policy_containers(ids=ids),  # noqa: SLF001
+        )
+        body = result.get("body") or {}
+        return list(body.get("resources") or [])
+
     def set_precedence(self, ids_in_order: list[str], *, platform_name: str) -> None:
         """Reorder policies for a platform.
 
