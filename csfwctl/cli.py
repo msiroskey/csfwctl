@@ -336,6 +336,45 @@ def _profile_from_ctx(ctx: typer.Context) -> str | None:
     return None
 
 
+@app.command("drift-check")
+def drift_check(
+    ctx: typer.Context,
+    env: Annotated[Env, typer.Option("--env", help="Target environment.")],
+    repo: Annotated[Path | None, typer.Option("--repo", help="Config repo path.")] = None,
+    state_file: Annotated[
+        Path | None,
+        typer.Option("--state-file", help="Path to the persisted drift-state file."),
+    ] = None,
+    no_state: Annotated[
+        bool,
+        typer.Option(
+            "--no-state",
+            help="Disable state persistence (drift.cleared will never fire).",
+        ),
+    ] = False,
+    fail_on_drift: Annotated[
+        bool,
+        typer.Option("--fail-on-drift", help="Exit with code 2 if drift was detected."),
+    ] = False,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", help="Write the drift report as JSON to this path."),
+    ] = None,
+) -> None:
+    """Scheduled drift monitor — emits drift.detected/drift.cleared on transitions."""
+    from csfwctl.drift_cmd import run_drift_check
+
+    run_drift_check(
+        env.value,
+        repo=repo,
+        state_file=state_file,
+        no_state=no_state,
+        fail_on_drift=fail_on_drift,
+        output=output,
+        profile=_profile_from_ctx(ctx),
+    )
+
+
 @app.command()
 def promote(
     source: Annotated[ImportEnv, typer.Option("--from", help="Source environment.")],

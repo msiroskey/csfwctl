@@ -14,8 +14,8 @@ Reference for the pluggable notifier system. Configure channels in
 | `apply.started` | `info` | `csfwctl apply` before any writes |
 | `apply.succeeded` | `info` | `csfwctl apply` on completion |
 | `apply.failed` | `error` | `csfwctl apply` on safety or API error |
-| `drift.detected` | `warn` | Drift-check job (Phase 10) |
-| `drift.cleared` | `info` | Drift-check job (Phase 10) |
+| `drift.detected` | `warn` | `csfwctl drift-check` whenever drift exists |
+| `drift.cleared` | `info` | `csfwctl drift-check` when prior drift has resolved |
 | `notify.test` | `info` | `csfwctl notify-test` only |
 
 ---
@@ -40,7 +40,10 @@ Every event carries:
 The `details` dict is event-specific. For `apply.succeeded` it contains
 the full `ApplyReport.to_json()` payload under the `"report"` key. For
 `validate.failed` it contains a `"findings"` list of
-`LintFinding.to_json()` objects.
+`LintFinding.to_json()` objects. For `drift.detected` it contains a
+`"summary"` dict of counts and the full `ChangeSet.to_json()` payload
+under `"change_set"`; `drift.cleared` carries the prior run's
+`"previous_summary"` and `"previous_run"` timestamp.
 
 ---
 

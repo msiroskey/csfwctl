@@ -5,8 +5,48 @@ Project plan: ./csfwctl-project-plan.md
 
 ## Current phase
 
-Phase 8: Notifiers — complete. Next up is Phase 9 (drift-check job) or
-Phase 10 per the plan.
+Phase 9: Drift-check job — complete. Next up is Phase 10
+(operational hardening) per the plan.
+
+## Phase 9 tasks
+
+- [x] `drift_cmd.py`: `DriftState` dataclass (env, has_drift, last_run,
+      summary) with JSON round-trip helpers; `load_drift_state` /
+      `save_drift_state` (atomic .tmp+rename, malformed → None);
+      `default_state_path` under `<repo>/.csfwctl/drift-state-<env>.json`;
+      `change_set_summary` / `has_drift` summary helpers; `run_drift_check`
+      mirrors `run_diff` but adds the prior-state read, the four-way
+      transition model (`stable` / `detected` / `ongoing` / `cleared`),
+      and the post-run state write.
+- [x] Notifier events: `drift.detected` (severity `warn`) on every
+      drifted run; `drift.cleared` (severity `info`) only on the
+      drift→clean transition. `drift.detected` carries the full
+      `ChangeSet.to_json()` under `details.change_set`; `drift.cleared`
+      carries `previous_summary` + `previous_run`. No emit on a stable
+      run (no prior drift, no current drift) — healthy monitor stays
+      quiet.
+- [x] CLI: `csfwctl drift-check --env` wired through `cli.py` with
+      `--state-file`, `--no-state`, `--fail-on-drift`, `--output`,
+      `--repo` options. `--fail-on-drift` exits `2` to distinguish from
+      `1` (infra failure).
+- [x] `--output`: writes a JSON report with the transition label, the
+      summary counts, and the full change set — same shape downstream
+      MR comments and dashboards already consume.
+- [x] Docs: `docs/cli_reference.md` documents the command, state-file
+      shape, and exit codes; `docs/architecture.md` carries the Phase 9
+      design notes (state file, transition model, payload shape, test
+      pattern); `docs/notifications.md` now lists drift events as
+      implemented and documents the `details` shape.
+- [x] Unit tests: 399 passing total (22 new in `test_drift_cmd.py`)
+      covering DriftState JSON round-trip, save/load round-trip,
+      missing/malformed/wrong-shape state-file handling, default state
+      path, summary + has_drift on empty / realistic repos, all four
+      transitions (first run clean → no emit, first run drifted →
+      `detected`, drift→clear → `cleared`, stable → no emit, repeated
+      drift → `detected` again), `--no-state` skips persistence,
+      `--fail-on-drift` exits 2 on drift / 0 when clean, `--output`
+      JSON report shape, config-repo and live-fetch error surfacing,
+      and end-to-end Typer dispatch in both drift and no-drift modes.
 
 ## Phase 8 tasks
 
@@ -348,10 +388,27 @@ Phase 10 per the plan.
 
 ## Notes for next session
 
-- **Next phase: Phase 9/10 — Drift-check job.**
-  - `drift.detected` / `drift.cleared` event types are already
-    registered in `docs/notifications.md`; notifier routing is in place.
-    The drift-check job only needs to call `emit()` with these events.
+- **Next phase: Phase 10 — Operational hardening.**
+  - Alert dedupe / windowing for `drift.detected` is the headline
+    Phase 10 deliverable. The current job re-emits `drift.detected` on
+    every drifted run; the state file (`DriftState.last_run`) is the
+    natural place to layer a "skip emit if last detected event was
+    within N minutes" check, but the timestamp of the *last emitted*
+    event is not stored yet — Phase 10 should add `last_alerted` (or
+    similar) to `DriftState`.
+  - Rollback runbook and onboarding doc are the other Phase 10 items;
+    those live under `docs/operations.md`.
+- **Phase 9 hooks Phase 10+ should pick up:**
+  - `DriftState` is the dedupe substrate. Extend it (don't replace it)
+    so existing state files keep deserialising — `from_json` already
+    treats missing fields gracefully via `data.get(...)`.
+  - The `_transition_name` helper in `drift_cmd.py` is the canonical
+    label set (`stable` / `detected` / `ongoing` / `cleared`). Reuse it
+    from any dashboard renderer or follow-on alerting logic instead of
+    re-deriving the four-way truth table.
+  - `save_drift_state` writes atomically via `.tmp` + rename. Anything
+    else that wants to update the state file in place (e.g., an
+    "acknowledge alert" command) should follow the same dance.
 - **Phase 7 hooks Phase 8+ should pick up:**
   - The linter's `register_lint()` + ordered `LINT_REGISTRY` is the
     template to mirror for `register_notifier()`. Same shape: protocol

@@ -123,6 +123,77 @@ Exit codes: ``0`` on success regardless of whether changes were
 detected. ``1`` if the config repo fails to load or if the live-state
 fetch errors out.
 
+## `csfwctl drift-check`
+
+**Implemented (Phase 9).** Scheduled drift monitor. Same engine as
+`diff` but with persistent per-env state so the command can recognise
+the transition from "drifted" to "clean" and emit a `drift.cleared`
+event in addition to `drift.detected`. Read-only against the tenant.
+
+```
+csfwctl drift-check --env {test|pilot|production}
+                    [--repo PATH]
+                    [--state-file PATH] [--no-state]
+                    [--fail-on-drift]
+                    [--output PATH]
+```
+
+### What it does
+
+1. Loads and validates the config repo.
+2. Pulls live tenant state.
+3. Computes a diff for `--env` (same logic as `csfwctl diff --env`).
+4. Reads the prior drift verdict from the state file (if any).
+5. Emits one notifier event per transition:
+   - `drift.detected` (severity `warn`) — whenever drift exists.
+   - `drift.cleared` (severity `info`) — when the prior run had drift
+     and this run does not.
+6. Writes the new verdict to the state file (unless `--no-state`).
+
+### State file
+
+Default path: `<repo>/.csfwctl/drift-state-<env>.json`. Override with
+`--state-file PATH`. One file per environment so independent schedules
+don't trample each other. The file holds:
+
+```json
+{
+  "env":      "production",
+  "has_drift": true,
+  "last_run":  "2026-05-21T14:00:00+00:00",
+  "summary":   { "creates": 0, "updates": 1, "deletes": 0, "unmanaged": 0 }
+}
+```
+
+Missing or malformed state files are treated as "no prior run" so a
+corrupted file never blocks the monitor; the next save replaces it.
+
+### Flags
+
+| Flag                 | Purpose                                                                                        |
+|----------------------|------------------------------------------------------------------------------------------------|
+| `--state-file PATH`  | Override the per-env state-file path.                                                          |
+| `--no-state`         | Skip the read+write. `drift.cleared` will never fire; suitable for ad-hoc runs.                |
+| `--fail-on-drift`    | Exit `2` when drift was detected. Default exits `0` to keep cron quiet.                        |
+| `--output PATH`      | Write the drift report (transition + change set) as JSON for dashboards or downstream tools.   |
+
+### Exit codes
+
+- `0` — drift-check ran to completion (no drift, or drift detected but
+  `--fail-on-drift` not passed).
+- `1` — config repo failed to load, or the live-state fetch errored.
+- `2` — drift was detected and `--fail-on-drift` was passed.
+
+### Notes
+
+- Phase 9 always emits `drift.detected` on every run that finds drift;
+  alert dedupe and noise reduction land in Phase 10.
+- The events follow the standard payload shape documented in
+  `docs/notifications.md`. Routing patterns like `drift.*` match both
+  `drift.detected` and `drift.cleared`.
+- The state file is per-environment. Running `drift-check --env test`
+  and `--env production` against the same repo keeps independent state.
+
 ## `csfwctl apply`
 
 **Implemented (Phase 5).** Converges one environment's live state to the
