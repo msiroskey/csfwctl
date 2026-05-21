@@ -799,6 +799,32 @@ def _pick_lowest_env(records: list[dict[str, Any]]) -> dict[str, Any]:
 # ---- import entrypoints ---------------------------------------------------
 
 
+def _enrich_policy_records_with_containers(
+    client: FalconClient, policy_records: list[dict[str, Any]]
+) -> None:
+    """Inject rule_group_ids from policy containers into policy records in-place.
+
+    ``getFirewallPolicies`` does not include rule group assignments — those
+    come from the ``get_policy_containers`` endpoint.  The importer and
+    differ both call this before handing records to :func:`policy_from_api`.
+    """
+    ids = [str(r["id"]) for r in policy_records if "id" in r]
+    if not ids:
+        return
+    containers = client.policies.get_policy_containers(ids)
+    by_policy_id: dict[str, dict[str, Any]] = {}
+    for c in containers:
+        pid = str(c.get("policy_id") or c.get("id") or "")
+        if pid:
+            by_policy_id[pid] = c
+    for record in policy_records:
+        container = by_policy_id.get(str(record.get("id", "")))
+        if container is None:
+            continue
+        rg_ids = list(container.get("rule_group_ids") or [])
+        record.setdefault("settings", {})["rule_group_ids"] = rg_ids
+
+
 def _fetch_rules_for_groups(
     client: FalconClient, rg_records: list[dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
@@ -833,6 +859,7 @@ def import_policy(
     validated by Pydantic before writing.
     """
     record = find_policy_record(client, name_or_uuid)
+    _enrich_policy_records_with_containers(client, [record])
     settings = record.get("settings") or {}
     rule_group_ids = list(settings.get("rule_group_ids") or record.get("rule_group_ids") or [])
     rg_records: list[dict[str, Any]] = []
@@ -967,6 +994,7 @@ def import_all(client: FalconClient, output_dir: Path) -> list[ImportResult]:
 
     # Policies last.
     policy_records = client.policies.list_all()
+    _enrich_policy_records_with_containers(client, policy_records)
     written_policy_slugs: set[str] = set()
     # Sort so that Test variants are imported before Pilot/Production; the
     # importer skips duplicates so subsequent envs reuse Test's YAML.

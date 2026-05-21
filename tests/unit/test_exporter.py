@@ -81,6 +81,21 @@ class FakeSubclient:
     def get_rules(self, ids: list[str]) -> list[dict[str, Any]]:
         return [self.rules[i] for i in ids if i in self.rules]
 
+    def get_policy_containers(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Synthesize container records from stored policy records."""
+        result = []
+        for id_ in ids:
+            record = self.records.get(id_)
+            if record:
+                settings = record.get("settings") or {}
+                result.append(
+                    {
+                        "policy_id": id_,
+                        "rule_group_ids": list(settings.get("rule_group_ids") or []),
+                    }
+                )
+        return result
+
 
 @dataclass
 class FakeFalconClient:

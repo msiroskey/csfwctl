@@ -132,6 +132,31 @@ def test_locations_list_all_calls_details_endpoint(mocked_api: responses.Request
     assert locs[0]["name"] == "corp-vpn"
 
 
+def test_policies_get_policy_containers(mocked_api: responses.RequestsMock) -> None:
+    mocked_api.add(
+        responses.GET,
+        f"{BASE}/fwmgr/entities/policies/v1",
+        json={
+            "resources": [
+                {"policy_id": "pol-1", "rule_group_ids": ["rg-a", "rg-b"]},
+            ],
+            "errors": [],
+        },
+        status=200,
+    )
+    client = _client()
+    containers = client.policies.get_policy_containers(["pol-1"])
+    assert len(containers) == 1
+    assert containers[0]["policy_id"] == "pol-1"
+    assert containers[0]["rule_group_ids"] == ["rg-a", "rg-b"]
+
+
+def test_policies_get_policy_containers_empty_ids(mocked_api: responses.RequestsMock) -> None:
+    client = _client()
+    result = client.policies.get_policy_containers([])
+    assert result == []
+
+
 def test_retry_path_with_http(mocked_api: responses.RequestsMock) -> None:
     mocked_api.add(
         responses.GET,

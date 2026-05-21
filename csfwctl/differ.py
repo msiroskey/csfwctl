@@ -32,6 +32,7 @@ from typing import Any
 
 from csfwctl.exporter import (
     OVERRIDE_SUFFIX_RE,
+    _enrich_policy_records_with_containers,
     is_override_group_name,
     location_from_api,
     policy_from_api,
@@ -299,6 +300,7 @@ def fetch_live_state(client: FalconClient) -> LiveState:
     Read-only. Used by the ``diff`` and (later) drift-check commands.
     """
     policies = client.policies.list_all()
+    _enrich_policy_records_with_containers(client, policies)
     rule_groups = client.rule_groups.list_all()
     locations = client.locations.list_all()
     rule_ids: list[str] = []
