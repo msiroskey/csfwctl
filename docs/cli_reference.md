@@ -12,9 +12,21 @@ These apply to every subcommand:
 |-------------------|-------------------------|---------|------------------------------------------|
 | `--repo PATH`     | path                    | cwd     | Path to a csfwctl-config repository.     |
 | `--profile`       | `prod` \| `dev`         | `prod`  | Credential profile selector.             |
+| `--credentials-file PATH` | path            | unset   | Overrides `$CSFWCTL_CREDENTIALS_PATH` and the `/etc/csfwctl/credentials.toml` default. |
 | `--log-format`    | `text` \| `json`        | `text`  | Output format for logs / machine output. |
 | `--verbose`       | bool                    | off     |                                          |
 | `--quiet`         | bool                    | off     |                                          |
+
+Credential resolution order, highest precedence first:
+
+1. `CSFWCTL_CLIENT_ID` + `CSFWCTL_CLIENT_SECRET` env vars (intended for CI).
+2. The TOML file pointed at by `--credentials-file PATH`.
+3. The TOML file pointed at by `$CSFWCTL_CREDENTIALS_PATH`.
+4. `/etc/csfwctl/credentials.toml`.
+
+`load_credentials` logs the selected source at INFO; if env vars
+override a configured file the log line calls that out so it is not
+silent.
 
 ## `csfwctl validate`
 

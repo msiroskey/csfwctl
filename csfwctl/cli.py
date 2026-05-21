@@ -100,6 +100,16 @@ def main(
         Profile,
         typer.Option("--profile", help="Credential profile to use."),
     ] = Profile.prod,
+    credentials_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--credentials-file",
+            help=(
+                "Path to credentials TOML. Overrides $CSFWCTL_CREDENTIALS_PATH "
+                "and the default /etc/csfwctl/credentials.toml."
+            ),
+        ),
+    ] = None,
     log_format: Annotated[
         LogFormat,
         typer.Option("--log-format", help="Output format for logs and machine output."),
@@ -113,7 +123,12 @@ def main(
         log_format=_ObsLogFormat(log_format.value),
         quiet=quiet,
     )
-    ctx.obj = {"repo": repo, "profile": profile.value, "verbose": verbose}
+    ctx.obj = {
+        "repo": repo,
+        "profile": profile.value,
+        "credentials_file": credentials_file,
+        "verbose": verbose,
+    }
 
 
 @app.command()
@@ -146,7 +161,13 @@ def diff(
     """Show YAML vs. live state for the named environment."""
     from csfwctl.diff_cmd import run_diff
 
-    run_diff(env.value, repo, output, profile=_profile_from_ctx(ctx))
+    run_diff(
+        env.value,
+        repo,
+        output,
+        profile=_profile_from_ctx(ctx),
+        credentials_file=_credentials_file_from_ctx(ctx),
+    )
 
 
 @app.command()
@@ -198,6 +219,7 @@ def apply(
         max_deletes=max_deletes,
         max_changes=max_changes,
         profile=_profile_from_ctx(ctx),
+        credentials_file=_credentials_file_from_ctx(ctx),
         output=output,
     )
 
@@ -219,6 +241,7 @@ def status(
         all_envs=all_envs,
         output_format=output_format.value,
         profile=_profile_from_ctx(ctx),
+        credentials_file=_credentials_file_from_ctx(ctx),
     )
 
 
@@ -241,6 +264,7 @@ def precedence(
         env.value if env is not None else None,
         output_format=output_format.value,
         profile=_profile_from_ctx(ctx),
+        credentials_file=_credentials_file_from_ctx(ctx),
     )
 
 
@@ -261,6 +285,7 @@ def import_policy(
         output=output,
         strip_env_suffix=strip_env_suffix,
         profile=_profile_from_ctx(ctx),
+        credentials_file=_credentials_file_from_ctx(ctx),
     )
 
 
@@ -281,6 +306,7 @@ def import_rule_group(
         output=output,
         strip_env_suffix=strip_env_suffix,
         profile=_profile_from_ctx(ctx),
+        credentials_file=_credentials_file_from_ctx(ctx),
     )
 
 
@@ -293,7 +319,12 @@ def import_location(
     """Bootstrap a location YAML from a live CrowdStrike location."""
     from csfwctl.import_cmd import run_import_location
 
-    run_import_location(name_or_uuid, output=output, profile=_profile_from_ctx(ctx))
+    run_import_location(
+        name_or_uuid,
+        output=output,
+        profile=_profile_from_ctx(ctx),
+        credentials_file=_credentials_file_from_ctx(ctx),
+    )
 
 
 @import_app.command("all")
@@ -307,7 +338,11 @@ def import_all(
     """Bulk import every object in the tenant. Used for initial repo population."""
     from csfwctl.import_cmd import run_import_all
 
-    run_import_all(output_dir, profile=_profile_from_ctx(ctx))
+    run_import_all(
+        output_dir,
+        profile=_profile_from_ctx(ctx),
+        credentials_file=_credentials_file_from_ctx(ctx),
+    )
 
 
 @app.command("record-fixtures")
@@ -324,7 +359,12 @@ def record_fixtures(
     """Capture sanitized API responses for offline tests."""
     from csfwctl.record_fixtures_cmd import run_record_fixtures
 
-    run_record_fixtures(operations, output, profile=_profile_from_ctx(ctx))
+    run_record_fixtures(
+        operations,
+        output,
+        profile=_profile_from_ctx(ctx),
+        credentials_file=_credentials_file_from_ctx(ctx),
+    )
 
 
 def _profile_from_ctx(ctx: typer.Context) -> str | None:
@@ -333,6 +373,15 @@ def _profile_from_ctx(ctx: typer.Context) -> str | None:
         profile = ctx.obj.get("profile")
         if isinstance(profile, str):
             return profile
+    return None
+
+
+def _credentials_file_from_ctx(ctx: typer.Context) -> Path | None:
+    """Pull the resolved ``--credentials-file`` value out of the Typer context."""
+    if isinstance(ctx.obj, dict):
+        path = ctx.obj.get("credentials_file")
+        if isinstance(path, Path):
+            return path
     return None
 
 
@@ -372,6 +421,7 @@ def drift_check(
         fail_on_drift=fail_on_drift,
         output=output,
         profile=_profile_from_ctx(ctx),
+        credentials_file=_credentials_file_from_ctx(ctx),
     )
 
 

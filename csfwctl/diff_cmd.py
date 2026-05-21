@@ -37,6 +37,7 @@ def run_diff(
     output: Path | None,
     *,
     profile: str | None = None,
+    credentials_file: Path | None = None,
     state_provider: Any = None,
 ) -> None:
     """Compute a ``ConfigRepo``-vs-live diff for ``env`` and render it.
@@ -57,7 +58,7 @@ def run_diff(
             err.print(f"  {entry.format()}")
         raise typer.Exit(code=1) from exc
 
-    provider = state_provider or _default_state_provider(profile)
+    provider = state_provider or _default_state_provider(profile, credentials_file)
     try:
         state = provider()
     except (FalconAPIError, Exception) as exc:  # noqa: BLE001 — surface and exit
@@ -95,11 +96,11 @@ def run_diff(
     _render_text(out, change_set)
 
 
-def _default_state_provider(profile: str | None) -> Any:
+def _default_state_provider(profile: str | None, credentials_file: Path | None) -> Any:
     """Build the lambda that, on call, returns live state from the tenant."""
 
     def _provider() -> LiveState:
-        creds = load_credentials(profile)
+        creds = load_credentials(profile, credentials_path=credentials_file)
         client = FalconClient(creds)
         return fetch_live_state(client)
 

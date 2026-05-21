@@ -109,6 +109,22 @@ def test_env_credentials_path_expands_user_and_vars(
     assert creds.client_id == "dev-id"
 
 
+def test_explicit_path_arg_overrides_env_credentials_path(tmp_path: Path) -> None:
+    """The ``credentials_path=`` argument wins over $CSFWCTL_CREDENTIALS_PATH."""
+    arg_file = tmp_path / "arg.toml"
+    arg_file.write_text('[profile.readonly]\nclient_id = "arg-id"\nclient_secret = "arg-secret"\n')
+    env_file = tmp_path / "env.toml"
+    env_file.write_text('[profile.readonly]\nclient_id = "env-id"\nclient_secret = "env-secret"\n')
+
+    creds = load_credentials(
+        "readonly",
+        credentials_path=arg_file,
+        env={"CSFWCTL_CREDENTIALS_PATH": str(env_file)},
+    )
+    assert creds.client_id == "arg-id"
+    assert creds.source == str(arg_file)
+
+
 def test_logs_warn_when_credentials_path_ignored_due_to_env_vars(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

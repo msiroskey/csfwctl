@@ -31,9 +31,10 @@ def run_import_policy(
     output: Path | None,
     strip_env_suffix: bool,
     profile: str | None = None,
+    credentials_file: Path | None = None,
 ) -> None:
     """``csfwctl import policy <name|uuid>`` body."""
-    client = _build_client(profile)
+    client = _build_client(profile, credentials_file)
     output_dir, target_path = _split_single_output(output, "policies")
     try:
         result = import_policy(
@@ -58,9 +59,10 @@ def run_import_rule_group(
     output: Path | None,
     strip_env_suffix: bool,
     profile: str | None = None,
+    credentials_file: Path | None = None,
 ) -> None:
     """``csfwctl import rule-group <name|uuid>`` body."""
-    client = _build_client(profile)
+    client = _build_client(profile, credentials_file)
     output_dir, target_path = _split_single_output(output, "rule_groups")
     try:
         result = import_rule_group(
@@ -84,9 +86,10 @@ def run_import_location(
     *,
     output: Path | None,
     profile: str | None = None,
+    credentials_file: Path | None = None,
 ) -> None:
     """``csfwctl import location <name|uuid>`` body."""
-    client = _build_client(profile)
+    client = _build_client(profile, credentials_file)
     output_dir, target_path = _split_single_output(output, "locations")
     try:
         result = import_location(client, name_or_uuid, output_dir=output_dir)
@@ -100,9 +103,14 @@ def run_import_location(
     _print_single(result)
 
 
-def run_import_all(output_dir: Path | None, *, profile: str | None = None) -> None:
+def run_import_all(
+    output_dir: Path | None,
+    *,
+    profile: str | None = None,
+    credentials_file: Path | None = None,
+) -> None:
     """``csfwctl import all`` body."""
-    client = _build_client(profile)
+    client = _build_client(profile, credentials_file)
     target = (output_dir or Path.cwd()).resolve()
     target.mkdir(parents=True, exist_ok=True)
     try:
@@ -115,10 +123,10 @@ def run_import_all(output_dir: Path | None, *, profile: str | None = None) -> No
 # ---- helpers --------------------------------------------------------------
 
 
-def _build_client(profile: str | None) -> FalconClient:
+def _build_client(profile: str | None, credentials_file: Path | None) -> FalconClient:
     """Resolve credentials and return an authenticated ``FalconClient``."""
     try:
-        creds = load_credentials(profile)
+        creds = load_credentials(profile, credentials_path=credentials_file)
     except Exception as exc:
         _abort(str(exc))
     return FalconClient(creds)

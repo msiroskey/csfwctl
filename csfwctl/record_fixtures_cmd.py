@@ -29,6 +29,7 @@ def run_record_fixtures(
     output: Path | None,
     *,
     profile: str | None = None,
+    credentials_file: Path | None = None,
 ) -> None:
     """``csfwctl record-fixtures`` body.
 
@@ -39,7 +40,7 @@ def run_record_fixtures(
     target = (output or Path.cwd() / "tests" / "fixtures" / "api_responses").resolve()
 
     try:
-        creds = load_credentials(profile)
+        creds = load_credentials(profile, credentials_path=credentials_file)
     except Exception as exc:
         _abort(str(exc))
     client = FalconClient(creds)

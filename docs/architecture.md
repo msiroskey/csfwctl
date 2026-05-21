@@ -556,6 +556,13 @@ hand-writing the prior state and exercising one call.
   stage).
 - File fallback at `/etc/csfwctl/credentials.toml` with
   `[profile.<name>]` tables. `--profile` selects which.
+- File path resolution order: `--credentials-file PATH` flag, then
+  `$CSFWCTL_CREDENTIALS_PATH`, then `/etc/csfwctl/credentials.toml`.
+  The flag is the explicit override for local development where
+  exporting env vars is inconvenient.
 - The CLI's `--profile {prod|dev}` from the project plan maps directly
   to a TOML profile name; ``readonly``/``readwrite`` is the convention
   for production CI.
+- ``load_credentials`` logs the resolved source at INFO so operators
+  can confirm which credentials file was read (or that env vars were
+  used) without enabling debug output.
