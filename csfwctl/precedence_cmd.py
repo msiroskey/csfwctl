@@ -45,6 +45,7 @@ def run_precedence(
     *,
     output_format: str = "table",
     profile: str | None = None,
+    credentials_file: Path | None = None,
     client_factory: Any = None,
     live_provider: Any = None,
 ) -> dict[Platform, list[ResolvedPolicy]]:
@@ -79,6 +80,7 @@ def run_precedence(
             env=env,
             err=err,
             profile=profile,
+            credentials_file=credentials_file,
             client_factory=client_factory,
             live_provider=live_provider,
         )
@@ -112,6 +114,7 @@ def _gather_comparisons(
     env: str,
     err: Console,
     profile: str | None,
+    credentials_file: Path | None,
     client_factory: Any,
     live_provider: Any,
 ) -> dict[Platform, PrecedenceComparison]:
@@ -123,7 +126,12 @@ def _gather_comparisons(
     provider = (
         live_provider
         if live_provider is not None
-        else _default_live_provider(profile=profile, client_factory=client_factory, err=err)
+        else _default_live_provider(
+            profile=profile,
+            credentials_file=credentials_file,
+            client_factory=client_factory,
+            err=err,
+        )
     )
     comparisons: dict[Platform, PrecedenceComparison] = {}
     for platform, resolved_list in resolved.items():
@@ -139,6 +147,7 @@ def _gather_comparisons(
 def _default_live_provider(
     *,
     profile: str | None,
+    credentials_file: Path | None,
     client_factory: Any,
     err: Console,
 ) -> Any:
@@ -149,7 +158,7 @@ def _default_live_provider(
             stub: FalconClient = client_factory()
             return stub
         try:
-            creds = load_credentials(profile)
+            creds = load_credentials(profile, credentials_path=credentials_file)
         except Exception as exc:  # noqa: BLE001
             err.print(f"[red]precedence: {exc}[/red]")
             raise typer.Exit(code=1) from exc

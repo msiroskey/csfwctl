@@ -166,6 +166,7 @@ def run_drift_check(
     fail_on_drift: bool = False,
     output: Path | None = None,
     profile: str | None = None,
+    credentials_file: Path | None = None,
     state_provider: StateProvider | None = None,
 ) -> None:
     """Compute drift for ``env`` and emit ``drift.detected`` / ``drift.cleared``.
@@ -188,7 +189,7 @@ def run_drift_check(
             err.print(f"  {entry.format()}")
         raise typer.Exit(code=1) from exc
 
-    provider = state_provider or _default_state_provider(profile)
+    provider = state_provider or _default_state_provider(profile, credentials_file)
     try:
         live = provider()
     except (FalconAPIError, Exception) as exc:  # noqa: BLE001 — surface and exit
@@ -285,11 +286,11 @@ def _emit_drift_cleared(
     )
 
 
-def _default_state_provider(profile: str | None) -> StateProvider:
+def _default_state_provider(profile: str | None, credentials_file: Path | None) -> StateProvider:
     """Build the lambda that, on call, returns live state from the tenant."""
 
     def _provider() -> LiveState:
-        creds = load_credentials(profile)
+        creds = load_credentials(profile, credentials_path=credentials_file)
         client = FalconClient(creds)
         return fetch_live_state(client)
 

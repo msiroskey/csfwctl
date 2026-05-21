@@ -14,6 +14,7 @@ environments at a glance.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -50,6 +51,7 @@ def run_status(
     all_envs: bool,
     output_format: str,
     profile: str | None = None,
+    credentials_file: Path | None = None,
     state_provider: Any = None,
 ) -> StatusReport:
     """Fetch live state and render a status report.
@@ -62,7 +64,11 @@ def run_status(
     out = Console()
     err = Console(stderr=True)
 
-    provider = state_provider if state_provider is not None else _default_state_provider(profile)
+    provider = (
+        state_provider
+        if state_provider is not None
+        else _default_state_provider(profile, credentials_file)
+    )
     try:
         state = provider()
     except (FalconAPIError, Exception) as exc:  # noqa: BLE001 — surface and exit
@@ -82,11 +88,11 @@ def run_status(
     return report
 
 
-def _default_state_provider(profile: str | None) -> Any:
+def _default_state_provider(profile: str | None, credentials_file: Path | None) -> Any:
     """Build the lambda that, on call, returns live state from the tenant."""
 
     def _provider() -> LiveState:
-        creds = load_credentials(profile)
+        creds = load_credentials(profile, credentials_path=credentials_file)
         client = FalconClient(creds)
         return fetch_live_state(client)
 

@@ -58,6 +58,7 @@ def run_apply(
     max_deletes: int,
     max_changes: int,
     profile: str | None = None,
+    credentials_file: Path | None = None,
     state_provider: Any = None,
     client_factory: Any = None,
     git_sha: str | None = None,
@@ -85,7 +86,7 @@ def run_apply(
     sha = git_sha if git_sha is not None else current_git_sha(repo_path)
     notifiers = setup_notifiers(config.tool_config)
 
-    client = _build_client(client_factory, profile, err)
+    client = _build_client(client_factory, profile, credentials_file, err)
     state = _fetch_state(state_provider, client, err)
 
     change_set = compute_diff(config, env, state)
@@ -187,13 +188,18 @@ def _load_config_or_exit(err: Console, repo_path: Path) -> ConfigRepo:
         raise typer.Exit(code=1) from exc
 
 
-def _build_client(client_factory: Any, profile: str | None, err: Console) -> FalconClient:
+def _build_client(
+    client_factory: Any,
+    profile: str | None,
+    credentials_file: Path | None,
+    err: Console,
+) -> FalconClient:
     """Build a :class:`FalconClient` (or test stand-in)."""
     if client_factory is not None:
         stub: FalconClient = client_factory()
         return stub
     try:
-        creds = load_credentials(profile)
+        creds = load_credentials(profile, credentials_path=credentials_file)
     except Exception as exc:  # noqa: BLE001
         err.print(f"[red]apply: {exc}[/red]")
         raise typer.Exit(code=1) from exc

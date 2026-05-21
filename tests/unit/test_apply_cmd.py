@@ -198,7 +198,7 @@ def test_apply_cli_dispatch_runs_to_completion(
     )
     monkeypatch.setattr(
         "csfwctl.apply_cmd._build_client",
-        lambda factory, profile, err: _StubClient(),
+        lambda factory, profile, credentials_file, err: _StubClient(),
     )
     monkeypatch.setattr(
         "csfwctl.apply_cmd._fetch_state",
