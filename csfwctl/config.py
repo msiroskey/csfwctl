@@ -72,8 +72,9 @@ def load_credentials(
 
     ``profile`` defaults to ``readonly``. ``credentials_path`` defaults
     to ``$CSFWCTL_CREDENTIALS_PATH`` if set, otherwise
-    ``/etc/csfwctl/credentials.toml``. ``env`` is injectable for tests;
-    defaults to ``os.environ``.
+    ``/etc/csfwctl/credentials.toml``. When sourced from the env var,
+    ``~`` and ``$VAR`` references are expanded. ``env`` is injectable
+    for tests; defaults to ``os.environ``.
     """
     env_map = os.environ if env is None else env
 
@@ -89,9 +90,11 @@ def load_credentials(
         )
 
     profile_name = profile or DEFAULT_PROFILE
-    path = credentials_path or Path(
-        env_map.get(ENV_CREDENTIALS_PATH, str(DEFAULT_CREDENTIALS_PATH))
-    )
+    if credentials_path is not None:
+        path = credentials_path
+    else:
+        raw = env_map.get(ENV_CREDENTIALS_PATH, str(DEFAULT_CREDENTIALS_PATH))
+        path = Path(os.path.expandvars(raw)).expanduser()
     if not path.is_file():
         raise CredentialsError(
             f"No credentials found: env vars {ENV_CLIENT_ID}/{ENV_CLIENT_SECRET} "

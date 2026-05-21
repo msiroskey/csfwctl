@@ -87,6 +87,28 @@ def test_invalid_toml(tmp_path: Path) -> None:
         load_credentials("readonly", credentials_path=creds_file, env={})
 
 
+def test_env_credentials_path_expands_user_and_vars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    creds_file = tmp_path / "credentials.toml"
+    creds_file.write_text('[profile.dev]\nclient_id = "dev-id"\nclient_secret = "dev-secret"\n')
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CSFWCTL_CREDS_DIR", str(tmp_path))
+
+    creds = load_credentials(
+        "dev",
+        env={"CSFWCTL_CREDENTIALS_PATH": "$CSFWCTL_CREDS_DIR/credentials.toml"},
+    )
+    assert creds.client_id == "dev-id"
+    assert creds.source == str(creds_file)
+
+    creds = load_credentials(
+        "dev",
+        env={"CSFWCTL_CREDENTIALS_PATH": "~/credentials.toml"},
+    )
+    assert creds.client_id == "dev-id"
+
+
 def test_credentials_redacted_hides_secret() -> None:
     creds = Credentials(
         client_id="abcdef123456",
