@@ -656,7 +656,7 @@ def _bootstrap_metadata(
             client,
             kind=KIND_LOCATION,
             slug=slug,
-            display_name=str(slug),
+            display_name=desired_locations[slug].display_name or slug,
             live_id=live_id,
             new_description=new_description,
             options=options,
@@ -680,7 +680,7 @@ def _bootstrap_metadata(
             client,
             kind=KIND_RULE_GROUP,
             slug=slug,
-            display_name=f"{slug}{options.env_suffix}",
+            display_name=f"{desired_rule_groups[slug].display_name or slug}{options.env_suffix}",
             live_id=live_id,
             new_description=new_description,
             options=options,
@@ -700,7 +700,8 @@ def _bootstrap_metadata(
             )
             continue
         new_description, _ = _signature_for(live_description, options)
-        display = f"{desired_policies[slug].name}{options.env_suffix}"
+        pol = desired_policies[slug]
+        display = f"{pol.display_name or pol.name}{options.env_suffix}"
         _bootstrap_write(
             client,
             kind=KIND_POLICY,

@@ -156,7 +156,7 @@ def test_orphan_skips_rule_groups_referenced_only_by_deleted_policy(tmp_path: Pa
 
     rg = RuleGroup(name="rg-only-used-by-dead", platform=Platform.windows, rules=[])
     dead = Policy(
-        name="Pol-X-Windows",
+        name="pol-x-windows",
         platform=Platform.windows,
         priority=PrecedenceBucket.default,
         status=Status.deleted,
@@ -179,20 +179,20 @@ def test_orphan_skips_rule_groups_referenced_only_by_deleted_policy(tmp_path: Pa
 def test_policy_without_host_groups_flagged(empty_repo: Path) -> None:
     _write(
         empty_repo / "policies" / "abc01-policy.yaml",
-        "name: Abc01-Policy\nplatform: windows\nstatus: enabled\nhost_groups: {}\n",
+        "name: abc01-policy\nplatform: windows\nstatus: enabled\nhost_groups: {}\n",
     )
     repo = load_config_repo(empty_repo)
     findings = PolicyWithoutHostGroupsLint().check(LintContext(repo=repo))
     assert len(findings) == 1
     assert findings[0].rule_id == "policy-without-host-groups"
-    assert "Abc01-Policy" in findings[0].message
+    assert "abc01-policy" in findings[0].message
     assert findings[0].field_path == "host_groups"
 
 
 def test_policy_with_host_groups_passes(empty_repo: Path) -> None:
     _write(
         empty_repo / "policies" / "abc01-policy.yaml",
-        "name: Abc01-Policy\nplatform: windows\nstatus: enabled\n"
+        "name: abc01-policy\nplatform: windows\nstatus: enabled\n"
         "host_groups:\n  Abc01-Hosts-Test: test\n",
     )
     repo = load_config_repo(empty_repo)
@@ -205,7 +205,7 @@ def test_policy_without_host_groups_skips_deleted_status(tmp_path: Path) -> None
     from csfwctl.loader import ConfigRepo
 
     dead = Policy(
-        name="Abc01-Policy",
+        name="abc01-policy",
         platform=Platform.windows,
         priority=PrecedenceBucket.default,
         status=Status.deleted,
@@ -222,7 +222,7 @@ def test_policy_without_host_groups_skips_deleted_status(tmp_path: Path) -> None
 def test_deleted_policy_without_tombstone_flagged(empty_repo: Path) -> None:
     _write(
         empty_repo / "policies" / "abc01-policy.yaml",
-        "name: Abc01-Policy\nplatform: windows\nstatus: deleted\n"
+        "name: abc01-policy\nplatform: windows\nstatus: deleted\n"
         "host_groups:\n  Abc01-Hosts-Test: test\n",
     )
     repo = load_config_repo(empty_repo)
@@ -300,7 +300,7 @@ def test_precedence_no_cycle_passes(realistic_repo_path: Path) -> None:
 def test_broad_allow_world_open_remote_flagged(empty_repo: Path) -> None:
     _write(
         empty_repo / "policies" / "wide.yaml",
-        "name: Wide-Open\nplatform: windows\nstatus: enabled\n"
+        "name: wide\nplatform: windows\nstatus: enabled\n"
         "host_groups:\n  Wide-Open-Test: test\n"
         "rules:\n"
         "  - name: Allow from anywhere\n"
@@ -334,7 +334,7 @@ def test_broad_allow_unconstrained_flagged_in_rule_group(empty_repo: Path) -> No
     # Reference the orphan from a policy so we only get a broad-allow finding.
     _write(
         empty_repo / "policies" / "pol.yaml",
-        "name: Pol\nplatform: windows\nstatus: enabled\n"
+        "name: pol\nplatform: windows\nstatus: enabled\n"
         "host_groups:\n  Pol-Test: test\n"
         "rule_groups:\n  - wide-rg\n",
     )
@@ -361,7 +361,7 @@ def test_broad_allow_constrained_state_passes(empty_repo: Path) -> None:
     )
     _write(
         empty_repo / "policies" / "pol.yaml",
-        "name: Pol\nplatform: windows\nstatus: enabled\n"
+        "name: pol\nplatform: windows\nstatus: enabled\n"
         "host_groups:\n  Pol-Test: test\n"
         "rule_groups:\n  - rg\n",
     )
@@ -385,7 +385,7 @@ def test_broad_allow_block_actions_not_flagged(empty_repo: Path) -> None:
     )
     _write(
         empty_repo / "policies" / "pol.yaml",
-        "name: Pol\nplatform: windows\nstatus: enabled\n"
+        "name: pol\nplatform: windows\nstatus: enabled\n"
         "host_groups:\n  Pol-Test: test\n"
         "rule_groups:\n  - rg\n",
     )
@@ -397,7 +397,7 @@ def test_broad_allow_block_actions_not_flagged(empty_repo: Path) -> None:
 def test_broad_allow_options_disable(empty_repo: Path) -> None:
     _write(
         empty_repo / "policies" / "wide.yaml",
-        "name: Wide-Open\nplatform: windows\nstatus: enabled\n"
+        "name: wide\nplatform: windows\nstatus: enabled\n"
         "host_groups:\n  Wide-Open-Test: test\n"
         "rules:\n"
         "  - name: Allow from anywhere\n"
@@ -425,7 +425,7 @@ def test_broad_allow_skips_deleted_policy(tmp_path: Path) -> None:
         remote=Endpoint(addresses=["0.0.0.0/0"]),
     )
     dead = Policy(
-        name="Wide-Open",
+        name="wide-open",
         platform=Platform.windows,
         priority=PrecedenceBucket.default,
         status=Status.deleted,
@@ -485,7 +485,7 @@ def test_run_lints_disabled_via_csfwctl_toml(realistic_repo_copy: Path) -> None:
 def test_run_lints_passes_options_to_rules(empty_repo: Path) -> None:
     _write(
         empty_repo / "policies" / "wide.yaml",
-        "name: Wide-Open\nplatform: windows\nstatus: enabled\n"
+        "name: wide\nplatform: windows\nstatus: enabled\n"
         "host_groups:\n  Wide-Open-Test: test\n"
         "rules:\n"
         "  - name: Allow from anywhere\n"
@@ -571,7 +571,7 @@ def test_broad_allow_in_memory(tmp_path: Path) -> None:
         remote=Endpoint(addresses=["0.0.0.0/0"]),
     )
     policy = Policy(
-        name="Wide-Open",
+        name="wide-open",
         platform=Platform.windows,
         priority=PrecedenceBucket.default,
         rules=[rule],
@@ -588,13 +588,13 @@ def test_in_memory_precedence_cycle(tmp_path: Path) -> None:
     from csfwctl.loader import ConfigRepo
 
     pol_a = Policy(
-        name="Alpha-Windows",
+        name="alpha-windows",
         platform=Platform.windows,
         priority=PrecedenceBucket.default,
         host_groups={"Alpha-Test": "test"},
     )
     pol_b = Policy(
-        name="Beta-Windows",
+        name="beta-windows",
         platform=Platform.windows,
         priority=PrecedenceBucket.default,
         host_groups={"Beta-Test": "test"},

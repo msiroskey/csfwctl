@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from csfwctl.schema._common import Platform, Slug, Status
+from csfwctl.schema._common import CrowdStrikeName, Platform, Slug, Status
 from csfwctl.schema.rule import Rule
 
 
@@ -20,6 +20,7 @@ class RuleGroup(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     name: Slug
+    display_name: CrowdStrikeName | None = None
     platform: Platform
     status: Status = Status.enabled
     description: str = Field(default="", max_length=2000)

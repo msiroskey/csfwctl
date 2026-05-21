@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from csfwctl.schema._common import (
+    CrowdStrikeName,
     DisplayName,
     HostGroupEnv,
     Platform,
@@ -31,7 +32,8 @@ class Policy(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    name: DisplayName
+    name: Slug
+    display_name: CrowdStrikeName | None = None
     platform: Platform
     priority: PrecedenceBucket = PrecedenceBucket.default
     status: Status = Status.enabled

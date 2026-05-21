@@ -61,9 +61,15 @@ def test_display_name_to_slug_strips_suffix_and_lowercases() -> None:
     assert display_name_to_slug("ABC01-Endpoints-Windows-Pilot") == "abc01-endpoints-windows"
 
 
+def test_display_name_to_slug_normalises_spaces_and_underscores() -> None:
+    assert display_name_to_slug("Has Spaces") == "has-spaces"
+    assert display_name_to_slug("platform_default") == "platform-default"
+    assert display_name_to_slug("cs default-Test") == "cs-default"
+
+
 def test_display_name_to_slug_rejects_unrepresentable_names() -> None:
     with pytest.raises(ImporterError, match="cannot derive a valid slug"):
-        display_name_to_slug("Has Spaces")
+        display_name_to_slug("123-Starts-With-Digit")
 
 
 def test_host_group_env_reads_suffix() -> None:
@@ -234,7 +240,7 @@ def test_location_from_api_normalises_nested_address_dicts() -> None:
 
 def test_location_from_api_invalid_slug_raises() -> None:
     with pytest.raises(ImporterError, match="does not derive a valid slug"):
-        location_from_api({"name": "Has Spaces"})
+        location_from_api({"name": "123-Starts-With-Digit"})
 
 
 # ---- policy_from_api ------------------------------------------------------
@@ -264,7 +270,8 @@ def test_policy_from_api_resolves_host_groups_and_rule_groups() -> None:
     }
     policy = policy_from_api(_windows_policy(), rule_groups_by_id=rule_groups_by_id)
     assert isinstance(policy, Policy)
-    assert policy.name == "ABC01-Endpoints-Windows"
+    assert policy.name == "abc01-endpoints-windows"
+    assert policy.display_name == "ABC01-Endpoints-Windows"
     assert policy.platform is Platform.windows
     assert policy.status is Status.enabled
     assert policy.priority is PrecedenceBucket.default
@@ -329,8 +336,8 @@ def test_policy_from_api_unresolved_rule_group_raises() -> None:
 
 
 def test_policy_from_api_bad_base_name_raises() -> None:
-    record = _windows_policy(name="lowercase-bad-name-Test")
-    with pytest.raises(ImporterError, match="TitleCase-With-Hyphens"):
+    record = _windows_policy(name="123-Starts-With-Digit-Test")
+    with pytest.raises(ImporterError, match="does not derive a valid slug"):
         policy_from_api(record)
 
 
@@ -338,11 +345,21 @@ def test_policy_from_api_bad_base_name_raises() -> None:
 
 
 def test_policy_to_api_shape_appends_env_suffix() -> None:
-    policy = Policy(name="ABC01-Endpoints-Windows", platform=Platform.windows)
+    policy = Policy(
+        name="abc01-endpoints-windows",
+        display_name="ABC01-Endpoints-Windows",
+        platform=Platform.windows,
+    )
     shape = policy_to_api_shape(policy, "test")
     assert shape["name"] == "ABC01-Endpoints-Windows-Test"
     assert shape["platform_name"] == "Windows"
     assert shape["enabled"] is True
+
+
+def test_policy_to_api_shape_falls_back_to_slug_when_no_display_name() -> None:
+    policy = Policy(name="abc01-endpoints-windows", platform=Platform.windows)
+    shape = policy_to_api_shape(policy, "test")
+    assert shape["name"] == "abc01-endpoints-windows-Test"
 
 
 def test_rule_group_to_api_shape_emits_rule_ids_and_inline_rules() -> None:

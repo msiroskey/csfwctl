@@ -40,9 +40,17 @@ def _policy(
     bucket: PrecedenceBucket = PrecedenceBucket.default,
     status: Status = Status.enabled,
 ) -> Policy:
-    """Build a minimal Policy good enough for precedence resolution."""
+    """Build a minimal Policy good enough for precedence resolution.
+
+    ``name`` is the display name (TitleCase). The slug is derived via
+    ``to_slug`` so the Policy model's ``name`` field gets a valid slug.
+    """
+    from csfwctl.exporter import to_slug as _to_slug
+
+    slug = _to_slug(name)
     return Policy(
-        name=name,
+        name=slug,
+        display_name=name if name != slug else None,
         platform=platform,
         priority=bucket,
         status=status,

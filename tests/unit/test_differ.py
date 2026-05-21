@@ -79,7 +79,8 @@ def _abc_policy(with_inline: bool = True) -> Policy:
         else []
     )
     return Policy(
-        name="ABC01-Endpoints-Windows",
+        name="abc01-endpoints-windows",
+        display_name="ABC01-Endpoints-Windows",
         platform=Platform.windows,
         description="Baseline policy for ABC01 Windows endpoints.",
         host_groups={
@@ -206,7 +207,7 @@ def test_env_suffix_capitalizes() -> None:
 def test_synthesise_override_rule_groups_only_for_inline_rules() -> None:
     inline_policy = _abc_policy(with_inline=True)
     no_inline_policy = Policy(
-        name="Quiet-Policy",
+        name="quiet-policy",
         platform=Platform.windows,
         rule_groups=["windows-baseline"],
     )

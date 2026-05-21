@@ -196,7 +196,8 @@ def _corp_vpn_location() -> Location:
 
 def _abc01_policy() -> Policy:
     return Policy(
-        name="ABC01-Endpoints-Windows",
+        name="abc01-endpoints-windows",
+        display_name="ABC01-Endpoints-Windows",
         platform=Platform.windows,
         description="Baseline policy for ABC01 Windows endpoints.",
         host_groups={
@@ -252,7 +253,8 @@ def test_import_policy_folds_override_group_back_into_inline_rules() -> None:
     result = import_policy(client, "ABC01-Endpoints-Windows")  # type: ignore[arg-type]
 
     assert isinstance(result.model, Policy)
-    assert result.model.name == "ABC01-Endpoints-Windows"
+    assert result.model.name == "abc01-endpoints-windows"
+    assert result.model.display_name == "ABC01-Endpoints-Windows"
     assert result.model.rule_groups == ["windows-baseline", "windows-remote-access"]
     assert [r.name for r in result.model.rules] == ["Allow corp DNS outbound"]
     # Host groups carry across all three envs.
@@ -434,7 +436,7 @@ def test_imported_minimal_repo_loads(tmp_path: Path) -> None:
         client,
         policies=[
             Policy(
-                name="Tiny-Policy",
+                name="tiny-policy",
                 platform=Platform.windows,
                 rule_groups=["windows-baseline"],
             )

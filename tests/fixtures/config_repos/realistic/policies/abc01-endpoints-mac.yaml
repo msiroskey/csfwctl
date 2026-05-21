@@ -1,4 +1,5 @@
-name: ABC01-Endpoints-Mac
+name: abc01-endpoints-mac
+display_name: ABC01-Endpoints-Mac
 platform: mac
 priority: default
 status: enabled

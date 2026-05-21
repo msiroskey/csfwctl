@@ -412,6 +412,29 @@ Phase 10: Operational hardening — complete. All planned phases are done.
 
 (None at this time.)
 
+## Bug fixes applied post-v1
+
+- [x] **Bug 1 — `--repo` ignored on import**: `cli.py` import handlers
+      were ignoring the global `--repo` option. Added `_repo_from_ctx()`
+      helper; all four import handlers now fall back to `--repo` when no
+      explicit `--output-dir` is given.
+- [x] **Bug 2 — non-slug object names silently dropped on import**: Policy,
+      rule-group, and location names with spaces, underscores, or mixed-case
+      (e.g. `cs default`, `platform_default`) failed `SLUG_RE` validation and
+      were silently skipped. Fix:
+      - Added `to_slug()` normaliser (`spaces/underscores → hyphens, lowercase`).
+      - Added `display_name: CrowdStrikeName | None` field to `Policy`,
+        `RuleGroup`, and `Location` models. Stores the verbatim CrowdStrike
+        name when it doesn't match the derived slug.
+      - Changed `Policy.name` type from `DisplayName` (TitleCase) to `Slug`.
+        `display_name` carries the TitleCase original.
+      - Importer sets `display_name` automatically when the imported name
+        normalises to a different slug.
+      - Applier, differ, and precedence resolver use `display_name or name`
+        when constructing the CrowdStrike object name.
+      - Updated all four fixture YAML files, all affected tests, and
+        `docs/schema_reference.md`.
+
 ## Notes for next session
 
 - **All planned phases are complete.** v1 scope is done; see the

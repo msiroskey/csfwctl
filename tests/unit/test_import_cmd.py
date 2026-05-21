@@ -33,7 +33,7 @@ def test_import_policy_writes_to_default_subdir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: CliRunner
 ) -> None:
     """The CLI delegates to ``run_import_policy`` with the expected kwargs."""
-    fake_model = Policy(name="ABC01-Endpoints-Windows", platform=Platform.windows)
+    fake_model = Policy(name="abc01-endpoints-windows", platform=Platform.windows)
     target_path = tmp_path / "policies" / "abc01-endpoints-windows.yaml"
     target_path.parent.mkdir(parents=True)
     target_path.write_text("name: ABC01-Endpoints-Windows\n", encoding="utf-8")
@@ -63,7 +63,7 @@ def test_import_policy_writes_to_default_subdir(
 def test_import_policy_passes_no_strip_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: CliRunner
 ) -> None:
-    fake_model = Policy(name="ABC01-Endpoints-Windows", platform=Platform.windows)
+    fake_model = Policy(name="abc01-endpoints-windows", platform=Platform.windows)
 
     seen: dict[str, Any] = {}
 
@@ -142,7 +142,7 @@ def test_import_all_tabulates_counts(
 ) -> None:
     rg = RuleGroup(name="windows-baseline", platform=Platform.windows)
     loc = Location(name="corp-vpn")
-    pol = Policy(name="ABC01-Endpoints-Windows", platform=Platform.windows)
+    pol = Policy(name="abc01-endpoints-windows", platform=Platform.windows)
 
     def fake_import_all(client: Any, output_dir: Path) -> list[ImportResult]:
         return [
@@ -218,7 +218,7 @@ def test_import_policy_uses_repo_when_no_output(
     """``--repo`` set globally should be the base directory for ``import policy``."""
     repo_dir = tmp_path / "config-repo"
     repo_dir.mkdir()
-    fake_model = Policy(name="ABC01-Endpoints-Windows", platform=Platform.windows)
+    fake_model = Policy(name="abc01-endpoints-windows", platform=Platform.windows)
 
     seen: dict[str, Any] = {}
 

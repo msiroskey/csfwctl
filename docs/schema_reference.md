@@ -8,20 +8,25 @@ this file and the example YAML under `tests/fixtures/config_repos/`.
 
 - **Slugs** — filenames and cross-references. `lowercase-kebab-case`:
   must start with `[a-z]`, may contain `[a-z0-9-]`, no consecutive or
-  trailing hyphens. Used in cross-references and as the filename stem.
-- **Display names** — `TitleCase-With-Hyphens`. Used by policies as
-  their CrowdStrike-visible name (`-Test`/`-Pilot`/`-Production` is
-  appended at apply time).
+  trailing hyphens. All three kinds (`Policy`, `RuleGroup`, `Location`)
+  use their slug as both the filename stem and the `name` field.
+- **Display names** (`display_name`) — optional verbatim CrowdStrike
+  object name. Use this when the CrowdStrike name does not conform to
+  slug conventions (e.g. contains spaces, underscores, or mixed case).
+  If set, takes precedence over `name` at apply time for the
+  CrowdStrike-visible name (`-Test`/`-Pilot`/`-Production` is appended
+  at apply time). The importer sets this field automatically when the
+  imported name doesn't match its slug.
 
-Rule groups and locations use their slug as both their filename stem
-**and** their `name` field — they must match. Policies use a slug
-filename and a separate TitleCase `name`.
+All three kinds enforce that the YAML `name` field matches the filename
+stem (slug). Extra characters are rejected at load time.
 
 ## Policy (`policies/<slug>.yaml`)
 
 | Field         | Type                          | Required | Notes                                     |
 |---------------|-------------------------------|----------|-------------------------------------------|
-| `name`        | `DisplayName`                 | yes      | TitleCase. Env suffix appended at apply.  |
+| `name`        | `Slug`                        | yes      | `lowercase-kebab-case`. Must match filename stem. |
+| `display_name`| string (1-200)                | no       | Verbatim CrowdStrike name. Overrides `name` at apply time. Set by importer when needed. |
 | `platform`    | `windows` \| `mac`            | yes      | Linux deferred to a later sprint.         |
 | `priority`    | precedence bucket             | no       | Default `default`.                        |
 | `status`      | `enabled` \| `disabled` \| `deleted` | no | Default `enabled`.                        |
@@ -37,6 +42,7 @@ Precedence buckets: `emergency` `high` `medium` `default` `low`.
 | Field         | Type                  | Required | Notes                                |
 |---------------|-----------------------|----------|--------------------------------------|
 | `name`        | `Slug`                | yes      | Must equal the filename stem.        |
+| `display_name`| string (1-200)        | no       | Verbatim CrowdStrike name. Overrides `name` at apply time. Set by importer when needed. |
 | `platform`    | `windows` \| `mac`    | yes      | Must match every referencing policy. |
 | `status`      | status                | no       | Default `enabled`.                   |
 | `description` | string                | no       |                                      |
@@ -70,6 +76,7 @@ Precedence buckets: `emergency` `high` `medium` `default` `low`.
 | Field                    | Type     | Notes                          |
 |--------------------------|----------|--------------------------------|
 | `name`                   | `Slug`   | Must match filename stem.      |
+| `display_name`           | string (1-200) | Verbatim CrowdStrike name. Overrides `name` at apply time. Set by importer when needed. |
 | `status`                 | status   | Default `enabled`.             |
 | `description`            | string   |                                |
 | `addresses`              | list IP/CIDR |                            |

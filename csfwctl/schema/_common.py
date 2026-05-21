@@ -48,6 +48,19 @@ DisplayName = Annotated[
     ),
 ]
 
+CrowdStrikeName = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=200,
+        description=(
+            "Verbatim CrowdStrike object name. Used when the natural name "
+            "does not conform to slug or TitleCase conventions (e.g. contains "
+            "spaces or underscores). Takes precedence over ``name`` at apply time."
+        ),
+    ),
+]
+
 
 class Platform(StrEnum):
     """Operating-system platform a policy or rule group applies to."""
@@ -128,6 +141,7 @@ __all__ = [
     "DISPLAY_NAME_RE",
     "Slug",
     "DisplayName",
+    "CrowdStrikeName",
     "Platform",
     "Status",
     "PrecedenceBucket",
