@@ -24,6 +24,7 @@ runtime errors, so the CLI can surface a clear message.
 from __future__ import annotations
 
 import os
+import stat
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,9 @@ ENV_CLIENT_ID = "CSFWCTL_CLIENT_ID"
 ENV_CLIENT_SECRET = "CSFWCTL_CLIENT_SECRET"  # noqa: S105 — env-var name, not a secret
 ENV_BASE_URL = "CSFWCTL_BASE_URL"
 ENV_CREDENTIALS_PATH = "CSFWCTL_CREDENTIALS_PATH"
+
+_FORBIDDEN_PERM_BITS = 0o077
+"""Group + world bits. A credentials file with any of these set is rejected."""
 
 
 class CredentialsError(Exception):
@@ -118,10 +122,12 @@ def load_credentials(
                     "env_client_secret_set": env_secret_set,
                 },
             )
+        base_url = env_map.get(ENV_BASE_URL, DEFAULT_BASE_URL)
+        _check_base_url(base_url, source=f"${ENV_BASE_URL}")
         return Credentials(
             client_id=client_id_env,
             client_secret=client_secret_env,
-            base_url=env_map.get(ENV_BASE_URL, DEFAULT_BASE_URL),
+            base_url=base_url,
             profile="env",
             source="environment",
         )
@@ -161,6 +167,8 @@ def load_credentials(
             f"are unset and {path} does not exist."
         )
 
+    _check_credentials_permissions(path)
+
     try:
         with path.open("rb") as fp:
             data = tomllib.load(fp)
@@ -186,12 +194,51 @@ def load_credentials(
             f"profile {profile_name!r} in {path} is missing required fields: {', '.join(missing)}"
         )
 
+    base_url = str(entry.get("base_url", DEFAULT_BASE_URL))
+    _check_base_url(base_url, source=str(path))
     return Credentials(
         client_id=str(entry["client_id"]),
         client_secret=str(entry["client_secret"]),
-        base_url=str(entry.get("base_url", DEFAULT_BASE_URL)),
+        base_url=base_url,
         profile=profile_name,
         source=str(path),
+    )
+
+
+def _check_credentials_permissions(path: Path) -> None:
+    """Refuse to load a credentials file with group- or world-readable bits.
+
+    POSIX-only. On Windows (``os.name == "nt"``) the check is a no-op
+    because the POSIX mode bits do not meaningfully describe ACLs there.
+    """
+    if os.name == "nt":
+        return
+    try:
+        st = path.stat()
+    except OSError:
+        return  # the open() that follows will produce the canonical error
+    mode = stat.S_IMODE(st.st_mode)
+    if mode & _FORBIDDEN_PERM_BITS:
+        raise CredentialsError(
+            f"refusing to load credentials from {path}: file mode is {oct(mode)} "
+            f"(group/world bits set); run 'chmod 600 {path}' to restrict access"
+        )
+
+
+def _check_base_url(base_url: str, *, source: str) -> None:
+    """Require the credentials ``base_url`` to use HTTPS.
+
+    The OAuth2 client secret is sent on every token-refresh request, so
+    cleartext HTTP is unsafe even against tenants that happen to expose
+    an HTTP endpoint. Loopback HTTP is allowed for tests/local mocks.
+    """
+    if base_url.startswith("https://"):
+        return
+    if base_url.startswith(("http://localhost", "http://127.0.0.1", "http://[::1]")):
+        return
+    raise CredentialsError(
+        f"refusing base_url {base_url!r} from {source}: must use https:// "
+        "(loopback http:// is allowed for local testing only)"
     )
 
 

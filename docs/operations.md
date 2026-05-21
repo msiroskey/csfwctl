@@ -13,7 +13,8 @@ credential rotation.
 4. [Responding to drift alerts](#responding-to-drift-alerts)
 5. [Initial tenant bootstrap](#initial-tenant-bootstrap)
 6. [Credential rotation](#credential-rotation)
-7. [Troubleshooting](#troubleshooting)
+7. [Recording fixtures](#recording-fixtures)
+8. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -77,6 +78,11 @@ Credentials are resolved in this order (highest priority first):
 2. `--credentials-file PATH` flag.
 3. `$CSFWCTL_CREDENTIALS_PATH` env var pointing at a TOML file.
 4. `/etc/csfwctl/credentials.toml`.
+
+The credentials file **must be mode `0o600`** (owner read/write only). The
+loader refuses files with any group- or world-readable bits set; restrict
+access with `chmod 600 /etc/csfwctl/credentials.toml`. The `base_url`
+must use `https://`; loopback HTTP is only accepted for local testing.
 
 ### Clone the config repo
 
@@ -496,3 +502,36 @@ make test    # pytest
 
 Fix any issues before opening the MR. The CI pipeline mirrors these exact
 commands.
+
+---
+
+## Recording fixtures
+
+`csfwctl record-fixtures` captures sanitised API responses from a live
+tenant for the integration test suite. The built-in
+[`Sanitizer`](../csfwctl/fixtures.py) replaces UUIDs, IPv4/IPv6
+addresses, CIDRs, hostnames with TLDs, email addresses, and MAC
+addresses with deterministic stand-ins drawn from IANA-reserved
+documentation ranges (RFC 5737 / 3849 / 7042; `example.test`). Anything
+the regexes do not match is passed through verbatim.
+
+### Pre-commit review checklist
+
+After running `csfwctl record-fixtures --output tests/fixtures/api_responses`,
+review every changed file before committing:
+
+- [ ] No real CrowdStrike UUIDs (must start with `00000000-`).
+- [ ] No real IPv4/IPv6 addresses or CIDRs (must be in `192.0.2.0/24`,
+      `198.51.100.0/24`, `203.0.113.0/24`, or `2001:db8::/32`).
+- [ ] No real hostnames (must end in `.example.test`).
+- [ ] **No single-label internal hostnames** (e.g. `dc01`, `fileserver`,
+      `print-server`). These are not caught by the hostname regex and
+      must be added to `Sanitizer.preserve_substrings` or scrubbed
+      manually.
+- [ ] No MAC addresses outside the `00:00:5E` OUI.
+- [ ] No real usernames, account IDs, project names, or other
+      tenant-identifying tokens.
+- [ ] No CrowdStrike client IDs or secrets in any field.
+
+If anything slips through, scrub it manually before `git add`. The
+fixtures are committed to a **public** repository.

@@ -73,10 +73,32 @@ test:
 	$(PY) -m pytest --cov=csfwctl --cov-report=term-missing
 
 .PHONY: lint
-lint:
+lint: lint-security
 	$(VENV_BIN)/ruff check csfwctl tests
 	$(VENV_BIN)/ruff format --check csfwctl tests
 	$(VENV_BIN)/mypy
+
+# Cheap grep-based guards for the hard rules from CLAUDE.md:
+#   - no direct ``falconpy`` imports outside csfwctl/falcon/
+#   - no dynamic execution / unsafe deserialisation primitives
+#   - no shell=True on subprocess calls
+# These are intentionally not ruff rules so they keep firing even if
+# someone disables a ruff selector.
+.PHONY: lint-security
+lint-security:
+	@bad_falconpy=$$(grep -rnE '^(from|import) falconpy' csfwctl \
+		| grep -v '^csfwctl/falcon/' || true); \
+	if [ -n "$$bad_falconpy" ]; then \
+		echo "error: direct falconpy import outside csfwctl/falcon/:" >&2; \
+		echo "$$bad_falconpy" >&2; \
+		exit 1; \
+	fi
+	@bad_exec=$$(grep -rnE '\beval\(|\bexec\(|pickle\.loads?\(|yaml\.unsafe_load\(|shell=True' csfwctl || true); \
+	if [ -n "$$bad_exec" ]; then \
+		echo "error: forbidden dynamic-exec / unsafe-deserialise primitive:" >&2; \
+		echo "$$bad_exec" >&2; \
+		exit 1; \
+	fi
 
 .PHONY: format
 format:

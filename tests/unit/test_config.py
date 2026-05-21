@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,13 @@ from csfwctl.config import (
     CredentialsError,
     load_credentials,
 )
+
+
+def _write_creds(path: Path, content: str) -> Path:
+    """Write a credentials file with 0o600 perms so the loader accepts it."""
+    path.write_text(content)
+    os.chmod(path, 0o600)
+    return path
 
 
 @pytest.fixture
@@ -27,9 +35,9 @@ def _restore_csfwctl_propagation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_env_vars_take_precedence(tmp_path: Path) -> None:
-    creds_file = tmp_path / "credentials.toml"
-    creds_file.write_text(
-        '[profile.readonly]\nclient_id = "file-id"\nclient_secret = "file-secret"\n'
+    creds_file = _write_creds(
+        tmp_path / "credentials.toml",
+        '[profile.readonly]\nclient_id = "file-id"\nclient_secret = "file-secret"\n',
     )
     env = {
         "CSFWCTL_CLIENT_ID": "env-id",
@@ -44,12 +52,12 @@ def test_env_vars_take_precedence(tmp_path: Path) -> None:
 
 
 def test_file_profile_loaded_when_env_missing(tmp_path: Path) -> None:
-    creds_file = tmp_path / "credentials.toml"
-    creds_file.write_text(
+    creds_file = _write_creds(
+        tmp_path / "credentials.toml",
         "[profile.readwrite]\n"
         'client_id = "file-id"\n'
         'client_secret = "file-secret"\n'
-        'base_url = "https://api.eu-1.crowdstrike.com"\n'
+        'base_url = "https://api.eu-1.crowdstrike.com"\n',
     )
     creds = load_credentials("readwrite", credentials_path=creds_file, env={})
     assert creds.client_id == "file-id"
@@ -60,8 +68,10 @@ def test_file_profile_loaded_when_env_missing(tmp_path: Path) -> None:
 
 
 def test_default_base_url_when_unset(tmp_path: Path) -> None:
-    creds_file = tmp_path / "credentials.toml"
-    creds_file.write_text('[profile.readonly]\nclient_id = "id"\nclient_secret = "secret"\n')
+    creds_file = _write_creds(
+        tmp_path / "credentials.toml",
+        '[profile.readonly]\nclient_id = "id"\nclient_secret = "secret"\n',
+    )
     creds = load_credentials("readonly", credentials_path=creds_file, env={})
     assert creds.base_url == DEFAULT_BASE_URL
 
@@ -72,29 +82,30 @@ def test_missing_file_and_no_env_raises(tmp_path: Path) -> None:
 
 
 def test_unknown_profile_lists_available(tmp_path: Path) -> None:
-    creds_file = tmp_path / "credentials.toml"
-    creds_file.write_text(
+    creds_file = _write_creds(
+        tmp_path / "credentials.toml",
         "[profile.alpha]\n"
         'client_id = "x"\n'
         'client_secret = "y"\n'
         "[profile.beta]\n"
         'client_id = "x"\n'
-        'client_secret = "y"\n'
+        'client_secret = "y"\n',
     )
     with pytest.raises(CredentialsError, match="alpha, beta"):
         load_credentials("gamma", credentials_path=creds_file, env={})
 
 
 def test_profile_missing_required_field(tmp_path: Path) -> None:
-    creds_file = tmp_path / "credentials.toml"
-    creds_file.write_text('[profile.readonly]\nclient_id = "x"\n')
+    creds_file = _write_creds(
+        tmp_path / "credentials.toml",
+        '[profile.readonly]\nclient_id = "x"\n',
+    )
     with pytest.raises(CredentialsError, match="client_secret"):
         load_credentials("readonly", credentials_path=creds_file, env={})
 
 
 def test_invalid_toml(tmp_path: Path) -> None:
-    creds_file = tmp_path / "credentials.toml"
-    creds_file.write_text("not = valid = toml")
+    creds_file = _write_creds(tmp_path / "credentials.toml", "not = valid = toml")
     with pytest.raises(CredentialsError, match="invalid TOML"):
         load_credentials("readonly", credentials_path=creds_file, env={})
 
@@ -102,8 +113,10 @@ def test_invalid_toml(tmp_path: Path) -> None:
 def test_env_credentials_path_expands_user_and_vars(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    creds_file = tmp_path / "credentials.toml"
-    creds_file.write_text('[profile.dev]\nclient_id = "dev-id"\nclient_secret = "dev-secret"\n')
+    creds_file = _write_creds(
+        tmp_path / "credentials.toml",
+        '[profile.dev]\nclient_id = "dev-id"\nclient_secret = "dev-secret"\n',
+    )
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CSFWCTL_CREDS_DIR", str(tmp_path))
 
@@ -123,10 +136,14 @@ def test_env_credentials_path_expands_user_and_vars(
 
 def test_explicit_path_arg_overrides_env_credentials_path(tmp_path: Path) -> None:
     """The ``credentials_path=`` argument wins over $CSFWCTL_CREDENTIALS_PATH."""
-    arg_file = tmp_path / "arg.toml"
-    arg_file.write_text('[profile.readonly]\nclient_id = "arg-id"\nclient_secret = "arg-secret"\n')
-    env_file = tmp_path / "env.toml"
-    env_file.write_text('[profile.readonly]\nclient_id = "env-id"\nclient_secret = "env-secret"\n')
+    arg_file = _write_creds(
+        tmp_path / "arg.toml",
+        '[profile.readonly]\nclient_id = "arg-id"\nclient_secret = "arg-secret"\n',
+    )
+    env_file = _write_creds(
+        tmp_path / "env.toml",
+        '[profile.readonly]\nclient_id = "env-id"\nclient_secret = "env-secret"\n',
+    )
 
     creds = load_credentials(
         "readonly",
@@ -142,9 +159,9 @@ def test_logs_warn_when_credentials_path_ignored_due_to_env_vars(
     caplog: pytest.LogCaptureFixture,
     _restore_csfwctl_propagation: None,
 ) -> None:
-    creds_file = tmp_path / "credentials.toml"
-    creds_file.write_text(
-        '[profile.readonly]\nclient_id = "file-id"\nclient_secret = "file-secret"\n'
+    creds_file = _write_creds(
+        tmp_path / "credentials.toml",
+        '[profile.readonly]\nclient_id = "file-id"\nclient_secret = "file-secret"\n',
     )
     env = {
         "CSFWCTL_CLIENT_ID": "env-id",
@@ -163,14 +180,69 @@ def test_logs_source_when_loaded_from_file(
     caplog: pytest.LogCaptureFixture,
     _restore_csfwctl_propagation: None,
 ) -> None:
-    creds_file = tmp_path / "credentials.toml"
-    creds_file.write_text(
-        '[profile.readonly]\nclient_id = "file-id"\nclient_secret = "file-secret"\n'
+    creds_file = _write_creds(
+        tmp_path / "credentials.toml",
+        '[profile.readonly]\nclient_id = "file-id"\nclient_secret = "file-secret"\n',
     )
     with caplog.at_level("INFO", logger="csfwctl.config"):
         load_credentials("readonly", credentials_path=creds_file, env={})
     messages = [r.getMessage() for r in caplog.records]
     assert any(str(creds_file) in m and "profile=readonly" in m for m in messages)
+
+
+# ---- Hardening: permissions + scheme checks --------------------------------
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits only")
+def test_world_readable_credentials_file_refused(tmp_path: Path) -> None:
+    creds_file = tmp_path / "credentials.toml"
+    creds_file.write_text('[profile.readonly]\nclient_id = "x"\nclient_secret = "y"\n')
+    os.chmod(creds_file, 0o644)
+    with pytest.raises(CredentialsError, match="group/world bits set"):
+        load_credentials("readonly", credentials_path=creds_file, env={})
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits only")
+def test_group_readable_credentials_file_refused(tmp_path: Path) -> None:
+    creds_file = tmp_path / "credentials.toml"
+    creds_file.write_text('[profile.readonly]\nclient_id = "x"\nclient_secret = "y"\n')
+    os.chmod(creds_file, 0o640)
+    with pytest.raises(CredentialsError, match="group/world bits set"):
+        load_credentials("readonly", credentials_path=creds_file, env={})
+
+
+def test_http_base_url_refused_via_env(tmp_path: Path) -> None:
+    env = {
+        "CSFWCTL_CLIENT_ID": "id",
+        "CSFWCTL_CLIENT_SECRET": "secret",
+        "CSFWCTL_BASE_URL": "http://api.crowdstrike.com",
+    }
+    with pytest.raises(CredentialsError, match="must use https://"):
+        load_credentials("readonly", credentials_path=tmp_path / "x.toml", env=env)
+
+
+def test_http_base_url_refused_via_file(tmp_path: Path) -> None:
+    creds_file = _write_creds(
+        tmp_path / "credentials.toml",
+        "[profile.readonly]\n"
+        'client_id = "x"\n'
+        'client_secret = "y"\n'
+        'base_url = "http://api.crowdstrike.com"\n',
+    )
+    with pytest.raises(CredentialsError, match="must use https://"):
+        load_credentials("readonly", credentials_path=creds_file, env={})
+
+
+def test_http_loopback_base_url_accepted_for_local_testing(tmp_path: Path) -> None:
+    creds_file = _write_creds(
+        tmp_path / "credentials.toml",
+        "[profile.readonly]\n"
+        'client_id = "x"\n'
+        'client_secret = "y"\n'
+        'base_url = "http://localhost:8080"\n',
+    )
+    creds = load_credentials("readonly", credentials_path=creds_file, env={})
+    assert creds.base_url == "http://localhost:8080"
 
 
 def test_credentials_redacted_hides_secret() -> None:

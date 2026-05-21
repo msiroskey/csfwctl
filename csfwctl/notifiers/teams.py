@@ -11,16 +11,33 @@ Config table (``csfwctl.toml``):
     [notifications.teams]
     url_env = "TEAMS_WEBHOOK_URL"   # env var that holds the webhook URL
     events  = ["apply.failed", "drift.detected"]
+
+Security
+--------
+
+The notifier intentionally restricts which environment variables it will
+read and which URL schemes it will POST to. See
+:data:`TEAMS_URL_ENV_PATTERN` for the env-var-name allowlist and
+:func:`_check_url_scheme` for the URL constraint. A compromised
+``csfwctl.toml`` therefore cannot redirect this notifier at an arbitrary
+secret env var or an attacker-controlled endpoint without first satisfying
+both checks.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 
 from csfwctl.notifiers import Event, event_matches
 from csfwctl.schema.tool_config import NotifierConfig
+
+TEAMS_URL_ENV_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*(?:TEAMS|WEBHOOK)[A-Z0-9_]*$")
+"""Env-var names this notifier will read. Must contain ``TEAMS`` or
+``WEBHOOK`` so a malicious config can't ask the notifier to fetch an
+unrelated secret (e.g. ``CSFWCTL_CLIENT_SECRET``)."""
 
 _THEME_COLORS: dict[str, str] = {
     "error": "FF0000",
@@ -38,9 +55,15 @@ class TeamsNotifier:
         """Initialise the Teams notifier from ``config``."""
         extra = config.model_extra or {}
         url_env = str(extra.get("url_env", "TEAMS_WEBHOOK_URL"))
+        if not TEAMS_URL_ENV_PATTERN.match(url_env):
+            raise ValueError(
+                f"Teams notifier: env-var name {url_env!r} is not allowed; "
+                f"name must match {TEAMS_URL_ENV_PATTERN.pattern!r}"
+            )
         url = os.environ.get(url_env)
         if not url:
             raise ValueError(f"Teams notifier: env var {url_env!r} is not set or empty")
+        _check_url_scheme(url, source=f"${url_env}")
         self._url = url
         self._patterns: list[str] = config.events if config.events else ["*"]
 
@@ -71,7 +94,7 @@ class TeamsNotifier:
             ],
         }
         body = json.dumps(card).encode()
-        req = urllib.request.Request(  # noqa: S310
+        req = urllib.request.Request(  # noqa: S310 — scheme is validated above
             self._url,
             data=body,
             headers={"Content-Type": "application/json"},
@@ -79,3 +102,9 @@ class TeamsNotifier:
         )
         with urllib.request.urlopen(req, timeout=10) as _resp:  # noqa: S310
             pass
+
+
+def _check_url_scheme(url: str, *, source: str) -> None:
+    """Require ``url`` to be HTTPS so the webhook body isn't sent cleartext."""
+    if not url.startswith("https://"):
+        raise ValueError(f"Teams notifier: URL from {source} must use https:// (got {url!r})")

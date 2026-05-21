@@ -94,6 +94,10 @@ url_env = "TEAMS_WEBHOOK_URL"   # env var containing the webhook URL
 events  = ["apply.failed", "drift.detected"]
 ```
 
+The `url_env` name must contain `TEAMS` or `WEBHOOK` (case-sensitive); the
+resolved URL must use `https://`. See the [Security boundary](#security-boundary)
+section below.
+
 ### `gitlab` — GitLab MR comment
 
 Posts a Markdown comment to a GitLab merge request. Designed for use in
@@ -108,6 +112,11 @@ mr_iid_env     = "CI_MERGE_REQUEST_IID"  # or: mr_iid = "42"
 api_url        = "https://gitlab.com"    # optional; default gitlab.com
 events         = ["diff.changes_detected", "validate.failed"]
 ```
+
+The `token_env` name must start with `GITLAB_` or `CI_` and contain
+`TOKEN`; `project_id_env` / `mr_iid_env` must start with `GITLAB_` or
+`CI_`; `api_url` must use `https://`. See the
+[Security boundary](#security-boundary) section below.
 
 ### `syslog` — RFC 5424 UDP syslog
 
@@ -146,3 +155,33 @@ if all failed.
 2. Call `csfwctl.notifiers.register_notifier("my-channel", MyNotifier)`
    at import time from a site-local module.
 3. Add `[notifications.my-channel]` to `csfwctl.toml`.
+
+---
+
+## Security boundary
+
+`csfwctl.toml` lives in the config repo and is therefore as trusted as
+the rest of that repo — i.e. CODEOWNERS and merge-request review are the
+ultimate gate. The built-in `teams` and `gitlab` notifiers add a second
+layer of defence so a single bad PR cannot exfiltrate arbitrary
+environment variables:
+
+- **Env-var name allowlists** — `url_env` (Teams) and `token_env` /
+  `project_id_env` / `mr_iid_env` (GitLab) must match a fixed regex.
+  Adding `url_env = "CSFWCTL_CLIENT_SECRET"` is rejected at notifier
+  initialisation; the same applies to AWS, GitHub, or other unrelated
+  credentials.
+- **HTTPS-only outbound** — `api_url` (GitLab) and the resolved Teams
+  webhook URL must use `https://`. `http://` and `file://` are rejected.
+
+If you write a custom notifier that reads environment variables or makes
+outbound network calls, apply the same two checks. The
+`csfwctl.notifiers.teams` and `.gitlab` modules are reasonable references.
+
+Per-channel allowlist patterns:
+
+| Field | Pattern |
+|------|---------|
+| Teams `url_env` | `^[A-Z][A-Z0-9_]*(?:TEAMS\|WEBHOOK)[A-Z0-9_]*$` |
+| GitLab `token_env` | `^(?:GITLAB\|CI)_[A-Z0-9_]*TOKEN[A-Z0-9_]*$` |
+| GitLab `project_id_env`, `mr_iid_env` | `^(?:GITLAB\|CI)_[A-Z0-9_]+$` |
