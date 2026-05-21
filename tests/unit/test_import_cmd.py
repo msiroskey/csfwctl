@@ -189,6 +189,54 @@ def test_import_all_creates_target_dir(
     assert target.is_dir()
 
 
+def test_import_all_uses_repo_when_no_output_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: CliRunner
+) -> None:
+    """``--repo`` set globally should be used as the output directory for ``import all``."""
+    repo_dir = tmp_path / "config-repo"
+    repo_dir.mkdir()
+
+    captured: dict[str, Any] = {}
+
+    def fake_import_all(client: Any, output_dir: Path) -> list[ImportResult]:
+        captured["output_dir"] = output_dir
+        return []
+
+    monkeypatch.setattr(
+        "csfwctl.import_cmd._build_client", lambda profile, credentials_file: "FAKE-CLIENT"
+    )
+    monkeypatch.setattr("csfwctl.import_cmd.import_all", fake_import_all)
+
+    result = runner.invoke(app, ["--repo", str(repo_dir), "import", "all"])
+    assert result.exit_code == 0, result.output + str(result.exception)
+    assert captured["output_dir"] == repo_dir.resolve()
+
+
+def test_import_policy_uses_repo_when_no_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: CliRunner
+) -> None:
+    """``--repo`` set globally should be the base directory for ``import policy``."""
+    repo_dir = tmp_path / "config-repo"
+    repo_dir.mkdir()
+    fake_model = Policy(name="ABC01-Endpoints-Windows", platform=Platform.windows)
+
+    seen: dict[str, Any] = {}
+
+    def fake_import(client: Any, name_or_uuid: str, **kwargs: Any) -> ImportResult:
+        seen["kwargs"] = kwargs
+        return ImportResult(kind="policy", slug="abc01-endpoints-windows", model=fake_model, path=None)
+
+    monkeypatch.setattr(
+        "csfwctl.import_cmd._build_client", lambda profile, credentials_file: "FAKE-CLIENT"
+    )
+    monkeypatch.setattr("csfwctl.import_cmd.import_policy", fake_import)
+
+    result = runner.invoke(app, ["--repo", str(repo_dir), "import", "policy", "ABC01-Endpoints-Windows-Test"])
+    assert result.exit_code == 0, result.output + str(result.exception)
+    # output_dir passed to import_policy should be repo_dir (not cwd)
+    assert seen["kwargs"]["output_dir"] == repo_dir.resolve()
+
+
 # ---- record-fixtures ------------------------------------------------------
 
 

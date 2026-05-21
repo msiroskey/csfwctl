@@ -880,6 +880,10 @@ def import_all(client: FalconClient, output_dir: Path) -> list[ImportResult]:
     """
     results: list[ImportResult] = []
 
+    from csfwctl.observability import get_logger
+
+    logger = get_logger("exporter")
+
     # Rule groups first so the policy importer can fold override groups.
     rg_records = client.rule_groups.list_all()
     rules_by_id = _fetch_rules_for_groups(client, rg_records)
@@ -891,7 +895,15 @@ def import_all(client: FalconClient, output_dir: Path) -> list[ImportResult]:
             rule_groups_by_id[str(record["id"])] = record
         try:
             model = rule_group_from_api(record, rules_by_id, strip_suffix=True)
-        except ImporterError:
+        except ImporterError as exc:
+            logger.warning(
+                "import skipped rule-group",
+                extra={
+                    "event": "import.rule_group.skipped",
+                    "rule_group_name": record.get("name"),
+                    "reason": str(exc),
+                },
+            )
             continue
         rule_groups_by_slug[model.name] = model
         # Skip override groups when writing; the policy importer folds them.
@@ -912,7 +924,18 @@ def import_all(client: FalconClient, output_dir: Path) -> list[ImportResult]:
     location_records = client.locations.list_all()
     written_locations: set[str] = set()
     for record in location_records:
-        location = location_from_api(record)
+        try:
+            location = location_from_api(record)
+        except ImporterError as exc:
+            logger.warning(
+                "import skipped location",
+                extra={
+                    "event": "import.location.skipped",
+                    "location_name": record.get("name"),
+                    "reason": str(exc),
+                },
+            )
+            continue
         if location.name in written_locations:
             continue
         written_locations.add(location.name)
@@ -920,9 +943,6 @@ def import_all(client: FalconClient, output_dir: Path) -> list[ImportResult]:
         results.append(ImportResult(kind="location", slug=location.name, model=location, path=path))
 
     # Policies last.
-    from csfwctl.observability import get_logger
-
-    logger = get_logger("exporter")
     policy_records = client.policies.list_all()
     written_policy_slugs: set[str] = set()
     # Sort so that Test variants are imported before Pilot/Production; the
