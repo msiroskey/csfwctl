@@ -514,9 +514,9 @@ corrupted state must never block the monitor.
 ``drift_now``) yield one of four labels — ``stable`` / ``detected`` /
 ``ongoing`` / ``cleared`` — and at most one event:
 
-- ``drift.detected`` (severity ``warn``) fires whenever ``drift_now``
-  is true, including the ``ongoing`` case. Phase 10 will layer dedupe
-  and alert-window logic on top of this primitive.
+- ``drift.detected`` (severity ``warn``) fires on ``detected``
+  transitions and on ``ongoing`` transitions whose ``last_alerted``
+  timestamp is outside the alert window (see Phase 10 section below).
 - ``drift.cleared`` (severity ``info``) fires only on the
   ``cleared`` transition.
 - ``stable`` runs (no prior drift, no current drift) emit nothing — a
@@ -547,6 +547,46 @@ event payload can be asserted in isolation. The state file lives in
 ``tmp_path`` per-test so the four transitions (first run clean, first
 run drifted, drift→clear, repeated drift) can be set up by
 hand-writing the prior state and exercising one call.
+
+## Alert deduplication (Phase 10)
+
+**Problem.** The Phase 9 drift-check job emits ``drift.detected`` on every
+run that finds drift, including the ``ongoing`` case. A one-hour cron job
+would page the Teams channel 24 times per day for a single unresolved
+incident — noisy enough that operators start ignoring it.
+
+**Solution.** Add ``last_alerted: str | None`` to ``DriftState``. The field
+records the ISO-8601 UTC timestamp of the last emitted ``drift.detected``
+event. A helper ``_should_alert(prior, alert_window_minutes)`` returns
+``False`` when the elapsed time since ``last_alerted`` is less than the
+configured window, suppressing the repeat page.
+
+```
+drift.detected fires when:
+  drift_now AND (
+    last_alerted is None          ← first alert for this incident
+    OR now - last_alerted ≥ window  ← window expired; re-page
+  )
+```
+
+``drift.cleared`` resets ``last_alerted`` to ``None`` in the saved state
+so the first recurrence after resolution always pages immediately regardless
+of the previous ``last_alerted`` value.
+
+**State file compatibility.** ``DriftState.from_json`` already uses
+``data.get(...)`` for optional fields; ``last_alerted`` defaults to ``None``
+for Phase 9 state files that lack the key. No migration needed.
+
+**CLI surface.** ``--alert-window N`` (default 60 minutes) exposes the
+window to operators. ``N=0`` disables windowing entirely (Phase 9
+behaviour) for environments that need every run to page, or for testing.
+
+**Test pattern.** Tests write a prior ``DriftState`` with a specific
+``last_alerted`` timestamp (either ``datetime.now(UTC).isoformat()`` for
+"inside window" or a day-old timestamp for "outside window") and assert
+whether the captured events list is empty or contains one event. The
+``DEFAULT_ALERT_WINDOW_MINUTES`` constant is exported so tests can assert
+its documented value without hard-coding the integer.
 
 ## Credentials and profiles
 

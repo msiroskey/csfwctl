@@ -405,6 +405,16 @@ def drift_check(
         bool,
         typer.Option("--fail-on-drift", help="Exit with code 2 if drift was detected."),
     ] = False,
+    alert_window: Annotated[
+        int,
+        typer.Option(
+            "--alert-window",
+            help=(
+                "Suppress repeated drift.detected alerts for ongoing drift within this "
+                "window (minutes). 0 disables deduplication."
+            ),
+        ),
+    ] = 60,
     output: Annotated[
         Path | None,
         typer.Option("--output", help="Write the drift report as JSON to this path."),
@@ -419,6 +429,7 @@ def drift_check(
         state_file=state_file,
         no_state=no_state,
         fail_on_drift=fail_on_drift,
+        alert_window=alert_window,
         output=output,
         profile=_profile_from_ctx(ctx),
         credentials_file=_credentials_file_from_ctx(ctx),
