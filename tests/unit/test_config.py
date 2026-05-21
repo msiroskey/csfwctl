@@ -109,6 +109,38 @@ def test_env_credentials_path_expands_user_and_vars(
     assert creds.client_id == "dev-id"
 
 
+def test_logs_warn_when_credentials_path_ignored_due_to_env_vars(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    creds_file = tmp_path / "credentials.toml"
+    creds_file.write_text(
+        '[profile.readonly]\nclient_id = "file-id"\nclient_secret = "file-secret"\n'
+    )
+    env = {
+        "CSFWCTL_CLIENT_ID": "env-id",
+        "CSFWCTL_CLIENT_SECRET": "env-secret",
+        "CSFWCTL_CREDENTIALS_PATH": str(creds_file),
+    }
+    with caplog.at_level("INFO", logger="csfwctl.config"):
+        creds = load_credentials("readonly", env=env)
+    assert creds.source == "environment"
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("ignored" in m and "CSFWCTL_CREDENTIALS_PATH" in m for m in messages)
+
+
+def test_logs_source_when_loaded_from_file(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    creds_file = tmp_path / "credentials.toml"
+    creds_file.write_text(
+        '[profile.readonly]\nclient_id = "file-id"\nclient_secret = "file-secret"\n'
+    )
+    with caplog.at_level("INFO", logger="csfwctl.config"):
+        load_credentials("readonly", credentials_path=creds_file, env={})
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(str(creds_file) in m and "profile=readonly" in m for m in messages)
+
+
 def test_credentials_redacted_hides_secret() -> None:
     creds = Credentials(
         client_id="abcdef123456",

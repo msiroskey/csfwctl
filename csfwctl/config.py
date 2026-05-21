@@ -28,6 +28,10 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from csfwctl.observability import get_logger
+
+_logger = get_logger("config")
+
 DEFAULT_CREDENTIALS_PATH = Path("/etc/csfwctl/credentials.toml")
 DEFAULT_BASE_URL = "https://api.crowdstrike.com"
 DEFAULT_PROFILE = "readonly"
@@ -80,7 +84,40 @@ def load_credentials(
 
     client_id_env = env_map.get(ENV_CLIENT_ID)
     client_secret_env = env_map.get(ENV_CLIENT_SECRET)
+    env_id_set = bool(client_id_env)
+    env_secret_set = bool(client_secret_env)
+    credentials_path_env = env_map.get(ENV_CREDENTIALS_PATH)
+
     if client_id_env and client_secret_env:
+        if credentials_path_env:
+            _logger.info(
+                "credentials resolved from environment variables; "
+                "%s=%r is set but ignored because both %s and %s are also set",
+                ENV_CREDENTIALS_PATH,
+                credentials_path_env,
+                ENV_CLIENT_ID,
+                ENV_CLIENT_SECRET,
+                extra={
+                    "event": "credentials.resolve",
+                    "selected_source": "environment",
+                    "env_client_id_set": env_id_set,
+                    "env_client_secret_set": env_secret_set,
+                    "env_credentials_path": credentials_path_env,
+                    "credentials_path_ignored": True,
+                },
+            )
+        else:
+            _logger.info(
+                "credentials resolved from environment variables (%s, %s)",
+                ENV_CLIENT_ID,
+                ENV_CLIENT_SECRET,
+                extra={
+                    "event": "credentials.resolve",
+                    "selected_source": "environment",
+                    "env_client_id_set": env_id_set,
+                    "env_client_secret_set": env_secret_set,
+                },
+            )
         return Credentials(
             client_id=client_id_env,
             client_secret=client_secret_env,
@@ -92,9 +129,32 @@ def load_credentials(
     profile_name = profile or DEFAULT_PROFILE
     if credentials_path is not None:
         path = credentials_path
+        path_origin = "argument"
+    elif credentials_path_env:
+        path = Path(os.path.expandvars(credentials_path_env)).expanduser()
+        path_origin = f"${ENV_CREDENTIALS_PATH}"
     else:
-        raw = env_map.get(ENV_CREDENTIALS_PATH, str(DEFAULT_CREDENTIALS_PATH))
-        path = Path(os.path.expandvars(raw)).expanduser()
+        path = DEFAULT_CREDENTIALS_PATH
+        path_origin = "default"
+    _logger.info(
+        "credentials resolved from file %s (origin=%s, profile=%s); "
+        "env vars considered: %s=%s, %s=%s",
+        path,
+        path_origin,
+        profile_name,
+        ENV_CLIENT_ID,
+        "set" if env_id_set else "unset",
+        ENV_CLIENT_SECRET,
+        "set" if env_secret_set else "unset",
+        extra={
+            "event": "credentials.resolve",
+            "selected_source": str(path),
+            "path_origin": path_origin,
+            "profile": profile_name,
+            "env_client_id_set": env_id_set,
+            "env_client_secret_set": env_secret_set,
+        },
+    )
     if not path.is_file():
         raise CredentialsError(
             f"No credentials found: env vars {ENV_CLIENT_ID}/{ENV_CLIENT_SECRET} "
