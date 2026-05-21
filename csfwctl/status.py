@@ -167,10 +167,7 @@ def _platform_from_record(record: dict[str, Any]) -> str | None:
     carry ``platform`` ("0" / "1" or the string form). Locations have
     neither, so ``None`` is returned.
     """
-    raw = (
-        str(record.get("platform_name", "")).strip()
-        or str(record.get("platform", "")).strip()
-    )
+    raw = str(record.get("platform_name", "")).strip() or str(record.get("platform", "")).strip()
     return _PLATFORM_LABEL.get(raw)
 
 

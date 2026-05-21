@@ -224,14 +224,18 @@ def test_import_policy_uses_repo_when_no_output(
 
     def fake_import(client: Any, name_or_uuid: str, **kwargs: Any) -> ImportResult:
         seen["kwargs"] = kwargs
-        return ImportResult(kind="policy", slug="abc01-endpoints-windows", model=fake_model, path=None)
+        return ImportResult(
+            kind="policy", slug="abc01-endpoints-windows", model=fake_model, path=None
+        )
 
     monkeypatch.setattr(
         "csfwctl.import_cmd._build_client", lambda profile, credentials_file: "FAKE-CLIENT"
     )
     monkeypatch.setattr("csfwctl.import_cmd.import_policy", fake_import)
 
-    result = runner.invoke(app, ["--repo", str(repo_dir), "import", "policy", "ABC01-Endpoints-Windows-Test"])
+    result = runner.invoke(
+        app, ["--repo", str(repo_dir), "import", "policy", "ABC01-Endpoints-Windows-Test"]
+    )
     assert result.exit_code == 0, result.output + str(result.exception)
     # output_dir passed to import_policy should be repo_dir (not cwd)
     assert seen["kwargs"]["output_dir"] == repo_dir.resolve()

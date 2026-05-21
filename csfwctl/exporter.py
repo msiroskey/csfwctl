@@ -514,9 +514,7 @@ def policy_from_api(
     base, _ = strip_env_suffix(raw_name) if strip_suffix else (raw_name, None)
     slug = to_slug(base)
     if not SLUG_RE.match(slug):
-        raise ImporterError(
-            f"policy name {raw_name!r} does not derive a valid slug ({slug!r})"
-        )
+        raise ImporterError(f"policy name {raw_name!r} does not derive a valid slug ({slug!r})")
     pol_display_name: str | None = base if base != slug else None
 
     platform = _PLATFORM_FROM_API.get(str(record.get("platform_name", "")))

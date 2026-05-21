@@ -360,9 +360,7 @@ def test_status_platform_extracted_from_rule_group_platform_field() -> None:
 
 def test_status_platform_is_none_for_locations() -> None:
     """Locations have no platform; ``StatusEntry.platform`` should be ``None``."""
-    state = _state(
-        locations=[_location_record(name="corp-vpn", description=None)]
-    )
+    state = _state(locations=[_location_record(name="corp-vpn", description=None)])
     entry = build_status_report(state).entries[0]
     assert entry.platform is None
 
