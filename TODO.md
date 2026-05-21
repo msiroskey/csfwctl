@@ -5,8 +5,34 @@ Project plan: ./csfwctl-project-plan.md
 
 ## Current phase
 
-Phase 9: Drift-check job — complete. Next up is Phase 10
-(operational hardening) per the plan.
+Phase 10: Operational hardening — complete. All planned phases are done.
+
+## Phase 10 tasks
+
+- [x] Alert deduplication for `drift.detected`: `last_alerted: str | None`
+      added to `DriftState`; `_should_alert(prior, alert_window_minutes)`
+      helper; `--alert-window N` CLI flag (default 60, 0 = always alert).
+      `drift.cleared` resets `last_alerted` to `None`. Phase 9 state files
+      deserialise without error (`last_alerted` defaults to `None`).
+- [x] `docs/operations.md`: full runbook covering onboarding, writing and
+      promoting a policy change, rollback (`git revert` + re-apply,
+      fast-path Production-only revert), drift response (investigate,
+      re-apply with `--enforce`, import console change as authoritative),
+      initial bootstrap, credential rotation, and troubleshooting.
+- [x] `docs/cli_reference.md`: updated drift-check section documents
+      `--alert-window`, updated state-file JSON shape with `last_alerted`,
+      updated exit-code note (alert suppression exits 0), new "Alert
+      deduplication" subsection.
+- [x] `docs/architecture.md`: Phase 9 transition-model paragraph updated
+      to reference Phase 10 windowing; new "Alert deduplication (Phase 10)"
+      section explains design, state-file compat, test pattern.
+- [x] Unit tests: 412 passing total (13 new in `test_drift_cmd.py`)
+      covering `last_alerted=None` JSON round-trip, `null` round-trip,
+      Phase 9 compat (missing key → None), save/load with None,
+      ongoing drift within window suppresses alert, outside window
+      re-emits, `alert_window=0` always emits, state saves `last_alerted`
+      on emit, state carries `last_alerted` forward when suppressed,
+      cleared resets `last_alerted` to None, constant value assertion.
 
 ## Phase 9 tasks
 
@@ -388,27 +414,19 @@ Phase 9: Drift-check job — complete. Next up is Phase 10
 
 ## Notes for next session
 
-- **Next phase: Phase 10 — Operational hardening.**
-  - Alert dedupe / windowing for `drift.detected` is the headline
-    Phase 10 deliverable. The current job re-emits `drift.detected` on
-    every drifted run; the state file (`DriftState.last_run`) is the
-    natural place to layer a "skip emit if last detected event was
-    within N minutes" check, but the timestamp of the *last emitted*
-    event is not stored yet — Phase 10 should add `last_alerted` (or
-    similar) to `DriftState`.
-  - Rollback runbook and onboarding doc are the other Phase 10 items;
-    those live under `docs/operations.md`.
-- **Phase 9 hooks Phase 10+ should pick up:**
-  - `DriftState` is the dedupe substrate. Extend it (don't replace it)
-    so existing state files keep deserialising — `from_json` already
-    treats missing fields gracefully via `data.get(...)`.
-  - The `_transition_name` helper in `drift_cmd.py` is the canonical
-    label set (`stable` / `detected` / `ongoing` / `cleared`). Reuse it
-    from any dashboard renderer or follow-on alerting logic instead of
-    re-deriving the four-way truth table.
-  - `save_drift_state` writes atomically via `.tmp` + rename. Anything
-    else that wants to update the state file in place (e.g., an
-    "acknowledge alert" command) should follow the same dance.
+- **All planned phases are complete.** v1 scope is done; see the
+  project plan's "Later sprints" section for post-v1 items.
+- **Phase 10 hooks for later work:**
+  - `DriftState.last_alerted` is the dedupe substrate. Any future
+    "acknowledge alert" command that wants to suppress pages without
+    resolving drift should update this field atomically via
+    `save_drift_state` (which uses `.tmp` + rename).
+  - `_transition_name` in `drift_cmd.py` is the canonical four-label
+    set (`stable` / `detected` / `ongoing` / `cleared`). Reuse it
+    from dashboard renderers rather than re-deriving the truth table.
+  - `DEFAULT_ALERT_WINDOW_MINUTES = 60` can be overridden per-repo via
+    `csfwctl.toml` `[drift]` section in a future sprint if per-env
+    windows become necessary.
 - **Phase 7 hooks Phase 8+ should pick up:**
   - The linter's `register_lint()` + ordered `LINT_REGISTRY` is the
     template to mirror for `register_notifier()`. Same shape: protocol

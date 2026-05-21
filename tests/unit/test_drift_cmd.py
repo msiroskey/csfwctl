@@ -19,6 +19,7 @@ from typer.testing import CliRunner
 from csfwctl.cli import app
 from csfwctl.differ import LiveState
 from csfwctl.drift_cmd import (
+    DEFAULT_ALERT_WINDOW_MINUTES,
     DRIFT_EXIT_CODE,
     DriftState,
     change_set_summary,
@@ -70,11 +71,39 @@ def test_drift_state_json_round_trip() -> None:
         env="production",
         has_drift=True,
         last_run="2026-05-21T00:00:00+00:00",
+        last_alerted="2026-05-21T00:00:00+00:00",
         summary={"creates": 1, "updates": 2, "deletes": 0, "unmanaged": 0},
     )
     payload = state.to_json()
     restored = DriftState.from_json(payload)
     assert restored == state
+
+
+def test_drift_state_json_round_trip_null_last_alerted() -> None:
+    """last_alerted=None round-trips correctly (Phase 9 compat and clean state)."""
+    state = DriftState(
+        env="test",
+        has_drift=False,
+        last_run="2026-05-21T00:00:00+00:00",
+        last_alerted=None,
+        summary={"creates": 0, "updates": 0, "deletes": 0, "unmanaged": 0},
+    )
+    payload = state.to_json()
+    assert payload["last_alerted"] is None
+    restored = DriftState.from_json(payload)
+    assert restored == state
+
+
+def test_drift_state_from_json_missing_last_alerted_defaults_none() -> None:
+    """Phase 9 state files without last_alerted deserialise without error."""
+    raw = {
+        "env": "production",
+        "has_drift": True,
+        "last_run": "2026-05-20T00:00:00+00:00",
+        "summary": {"creates": 1, "updates": 0, "deletes": 0, "unmanaged": 0},
+    }
+    state = DriftState.from_json(raw)
+    assert state.last_alerted is None
 
 
 def test_save_and_load_drift_state_round_trip(tmp_path: Path) -> None:
@@ -83,6 +112,7 @@ def test_save_and_load_drift_state_round_trip(tmp_path: Path) -> None:
         env="test",
         has_drift=False,
         last_run="2026-05-21T00:00:00+00:00",
+        last_alerted=None,
         summary={"creates": 0, "updates": 0, "deletes": 0, "unmanaged": 0},
     )
     save_drift_state(path, state)
@@ -207,6 +237,7 @@ def test_drift_check_transition_to_cleared_emits_cleared(
             env="production",
             has_drift=True,
             last_run="2026-05-20T00:00:00+00:00",
+            last_alerted="2026-05-20T00:00:00+00:00",
             summary={"creates": 2, "updates": 1, "deletes": 0, "unmanaged": 0},
         ),
     )
@@ -260,10 +291,10 @@ def test_drift_check_stable_no_drift_emits_nothing(
     assert captured_events == []
 
 
-def test_drift_check_repeat_drift_still_emits_detected(
+def test_drift_check_repeat_drift_no_last_alerted_still_emits(
     realistic_repo_path: Path, captured_events: list[Event], tmp_path: Path
 ) -> None:
-    """Repeated drift still emits drift.detected (Phase 10 will dedupe)."""
+    """Ongoing drift with no last_alerted (Phase 9 state) always emits."""
     state_file = tmp_path / "state.json"
     save_drift_state(
         state_file,
@@ -271,6 +302,7 @@ def test_drift_check_repeat_drift_still_emits_detected(
             env="test",
             has_drift=True,
             last_run="2026-05-20T00:00:00+00:00",
+            last_alerted=None,
             summary={"creates": 5, "updates": 0, "deletes": 0, "unmanaged": 0},
         ),
     )
@@ -287,6 +319,203 @@ def test_drift_check_repeat_drift_still_emits_detected(
 
     assert len(captured_events) == 1
     assert captured_events[0].type == "drift.detected"
+
+
+# ---- alert-window deduplication (Phase 10) --------------------------------
+
+
+def test_drift_check_ongoing_drift_within_window_suppresses_alert(
+    realistic_repo_path: Path, captured_events: list[Event], tmp_path: Path
+) -> None:
+    """Ongoing drift within the alert window does not re-emit drift.detected."""
+    from datetime import UTC, datetime
+
+    state_file = tmp_path / "state.json"
+    recent_alert = datetime.now(tz=UTC).isoformat()  # just now — inside 60 min window
+    save_drift_state(
+        state_file,
+        DriftState(
+            env="test",
+            has_drift=True,
+            last_run=recent_alert,
+            last_alerted=recent_alert,
+            summary={"creates": 5, "updates": 0, "deletes": 0, "unmanaged": 0},
+        ),
+    )
+
+    try:
+        run_drift_check(
+            "test",
+            repo=realistic_repo_path,
+            state_file=state_file,
+            alert_window=60,
+            state_provider=lambda: LiveState(),
+        )
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert captured_events == [], "alert should be suppressed within the window"
+
+
+def test_drift_check_ongoing_drift_outside_window_emits_again(
+    realistic_repo_path: Path, captured_events: list[Event], tmp_path: Path
+) -> None:
+    """Ongoing drift outside the alert window re-emits drift.detected."""
+    state_file = tmp_path / "state.json"
+    old_alert = "2026-05-20T00:00:00+00:00"  # yesterday — outside any sane window
+    save_drift_state(
+        state_file,
+        DriftState(
+            env="test",
+            has_drift=True,
+            last_run=old_alert,
+            last_alerted=old_alert,
+            summary={"creates": 5, "updates": 0, "deletes": 0, "unmanaged": 0},
+        ),
+    )
+
+    try:
+        run_drift_check(
+            "test",
+            repo=realistic_repo_path,
+            state_file=state_file,
+            alert_window=60,
+            state_provider=lambda: LiveState(),
+        )
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert len(captured_events) == 1
+    assert captured_events[0].type == "drift.detected"
+
+
+def test_drift_check_alert_window_zero_always_emits(
+    realistic_repo_path: Path, captured_events: list[Event], tmp_path: Path
+) -> None:
+    """alert_window=0 disables deduplication; alert fires every drifted run."""
+    from datetime import UTC, datetime
+
+    state_file = tmp_path / "state.json"
+    recent_alert = datetime.now(tz=UTC).isoformat()
+    save_drift_state(
+        state_file,
+        DriftState(
+            env="test",
+            has_drift=True,
+            last_run=recent_alert,
+            last_alerted=recent_alert,
+            summary={"creates": 5, "updates": 0, "deletes": 0, "unmanaged": 0},
+        ),
+    )
+
+    try:
+        run_drift_check(
+            "test",
+            repo=realistic_repo_path,
+            state_file=state_file,
+            alert_window=0,
+            state_provider=lambda: LiveState(),
+        )
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert len(captured_events) == 1
+    assert captured_events[0].type == "drift.detected"
+
+
+def test_drift_check_state_saves_last_alerted_on_emit(
+    realistic_repo_path: Path, captured_events: list[Event], tmp_path: Path
+) -> None:
+    """After emitting drift.detected, last_alerted is set in the saved state."""
+    state_file = tmp_path / "state.json"
+    try:
+        run_drift_check(
+            "test",
+            repo=realistic_repo_path,
+            state_file=state_file,
+            state_provider=lambda: LiveState(),
+        )
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert len(captured_events) == 1
+    saved = load_drift_state(state_file)
+    assert saved is not None
+    assert saved.last_alerted is not None
+
+
+def test_drift_check_state_carries_last_alerted_when_suppressed(
+    realistic_repo_path: Path, captured_events: list[Event], tmp_path: Path
+) -> None:
+    """When alert is suppressed, the saved state keeps the original last_alerted."""
+    from datetime import UTC, datetime
+
+    state_file = tmp_path / "state.json"
+    recent_alert = datetime.now(tz=UTC).isoformat()
+    save_drift_state(
+        state_file,
+        DriftState(
+            env="test",
+            has_drift=True,
+            last_run=recent_alert,
+            last_alerted=recent_alert,
+            summary={"creates": 5, "updates": 0, "deletes": 0, "unmanaged": 0},
+        ),
+    )
+
+    try:
+        run_drift_check(
+            "test",
+            repo=realistic_repo_path,
+            state_file=state_file,
+            alert_window=60,
+            state_provider=lambda: LiveState(),
+        )
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    saved = load_drift_state(state_file)
+    assert saved is not None
+    assert saved.last_alerted == recent_alert  # unchanged — not reset to now
+
+
+def test_drift_check_cleared_resets_last_alerted(
+    empty_repo: Path, captured_events: list[Event], tmp_path: Path
+) -> None:
+    """drift.cleared resets last_alerted to None so next occurrence pages immediately."""
+    state_file = tmp_path / "state.json"
+    save_drift_state(
+        state_file,
+        DriftState(
+            env="production",
+            has_drift=True,
+            last_run="2026-05-20T00:00:00+00:00",
+            last_alerted="2026-05-20T00:00:00+00:00",
+            summary={"creates": 2, "updates": 1, "deletes": 0, "unmanaged": 0},
+        ),
+    )
+
+    try:
+        run_drift_check(
+            "production",
+            repo=empty_repo,
+            state_file=state_file,
+            state_provider=lambda: LiveState(),
+        )
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert len(captured_events) == 1
+    assert captured_events[0].type == "drift.cleared"
+
+    saved = load_drift_state(state_file)
+    assert saved is not None
+    assert saved.last_alerted is None  # cleared so next drift pages immediately
+
+
+def test_drift_check_default_alert_window_constant() -> None:
+    """DEFAULT_ALERT_WINDOW_MINUTES is exported and has the documented value."""
+    assert DEFAULT_ALERT_WINDOW_MINUTES == 60
 
 
 # ---- --no-state and --fail-on-drift ---------------------------------------

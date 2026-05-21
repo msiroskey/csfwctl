@@ -12,11 +12,24 @@ State tracking
 To distinguish "still drifted" from "newly drifted" — and to know when
 to emit ``drift.cleared`` — the command persists a tiny per-environment
 state file under ``<repo>/.csfwctl/drift-state-<env>.json``. The file
-stores the previous drift verdict, last run timestamp, and the last
-change-set summary. ``--state-file`` overrides the path; ``--no-state``
-disables persistence entirely, in which case ``drift.detected`` fires
-whenever drift exists and ``drift.cleared`` never fires (Phase 10
-will layer dedupe and alert-window logic on top of this primitive).
+stores the previous drift verdict, last run timestamp, last change-set
+summary, and (Phase 10) the timestamp of the last emitted ``drift.detected``
+alert. ``--state-file`` overrides the path; ``--no-state`` disables
+persistence entirely, in which case ``drift.detected`` fires whenever drift
+exists and ``drift.cleared`` never fires.
+
+Alert deduplication
+-------------------
+
+``--alert-window N`` (default 60 minutes) suppresses repeated
+``drift.detected`` events while the same drift incident is ongoing.
+Once ``N`` minutes have elapsed since the last alert, the event fires
+again so the operator is reminded the condition persists. Set ``N=0``
+to disable windowing and always emit on every drifted run.
+
+``last_alerted`` in the state file records when the last
+``drift.detected`` event was emitted. It is cleared to ``null`` when
+drift resolves so the first reoccurrence always pages.
 
 Exit codes
 ----------
@@ -32,7 +45,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -74,27 +87,37 @@ class DriftState:
 
     Persisted between drift-check runs so the command can recognise the
     transition from "drift" to "no drift" and emit ``drift.cleared``.
+
+    ``last_alerted`` records when a ``drift.detected`` event was last
+    emitted. It is ``None`` when no alert has been sent for the current
+    drift incident (either because the state was created before Phase 10,
+    or because the previous run was clean). The alert-window check uses
+    this field to suppress repeated alerts within a configurable interval.
     """
 
     env: str
     has_drift: bool
     last_run: str  # ISO-8601 UTC timestamp
     summary: dict[str, int]
+    last_alerted: str | None = None  # ISO-8601 UTC; None = no prior alert
 
     def to_json(self) -> dict[str, Any]:
         return {
             "env": self.env,
             "has_drift": self.has_drift,
             "last_run": self.last_run,
+            "last_alerted": self.last_alerted,
             "summary": dict(self.summary),
         }
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DriftState:
+        raw_alerted = data.get("last_alerted")
         return cls(
             env=str(data["env"]),
             has_drift=bool(data["has_drift"]),
             last_run=str(data["last_run"]),
+            last_alerted=str(raw_alerted) if raw_alerted is not None else None,
             summary={k: int(v) for k, v in (data.get("summary") or {}).items()},
         )
 
@@ -133,6 +156,33 @@ def save_drift_state(path: Path, state: DriftState) -> None:
     tmp.replace(path)
 
 
+# ---- alert-window helper --------------------------------------------------
+
+DEFAULT_ALERT_WINDOW_MINUTES = 60
+"""Default alert-deduplication window in minutes."""
+
+
+def _should_alert(prior: DriftState | None, alert_window_minutes: int) -> bool:
+    """Return ``True`` when a ``drift.detected`` alert should be emitted.
+
+    ``False`` is returned when the prior state already has a recent
+    ``last_alerted`` timestamp that falls inside the deduplication window.
+    A window of ``0`` disables deduplication and always returns ``True``.
+    A malformed ``last_alerted`` timestamp is treated as "no prior alert"
+    so a corrupted state never silently swallows pages.
+    """
+    if alert_window_minutes <= 0:
+        return True
+    if prior is None or prior.last_alerted is None:
+        return True
+    try:
+        last_alerted_dt = datetime.fromisoformat(prior.last_alerted)
+        elapsed = datetime.now(tz=UTC) - last_alerted_dt
+        return elapsed >= timedelta(minutes=alert_window_minutes)
+    except ValueError:
+        return True
+
+
 # ---- summary helpers ------------------------------------------------------
 
 
@@ -164,6 +214,7 @@ def run_drift_check(
     state_file: Path | None = None,
     no_state: bool = False,
     fail_on_drift: bool = False,
+    alert_window: int = DEFAULT_ALERT_WINDOW_MINUTES,
     output: Path | None = None,
     profile: str | None = None,
     credentials_file: Path | None = None,
@@ -174,6 +225,10 @@ def run_drift_check(
     Mirrors :func:`csfwctl.diff_cmd.run_diff` for the load + fetch + diff
     path; the difference is the persistent-state dance and the event types.
     ``state_provider`` is the same test seam used by ``run_diff``.
+
+    ``alert_window`` controls deduplication: ``drift.detected`` is
+    suppressed for ongoing drift incidents if the last alert was emitted
+    fewer than ``alert_window`` minutes ago. ``0`` disables windowing.
     """
     out = Console()
     err = Console(stderr=True)
@@ -206,11 +261,20 @@ def run_drift_check(
 
     notifiers = setup_notifiers(config.tool_config)
     git_sha = current_git_sha(repo_path)
+    now_ts = datetime.now(tz=UTC).isoformat()
 
+    new_last_alerted: str | None
     if drift_now:
-        _emit_drift_detected(env, summary, git_sha, change_set, notifiers)
+        if _should_alert(prior, alert_window):
+            _emit_drift_detected(env, summary, git_sha, change_set, notifiers)
+            new_last_alerted = now_ts
+        else:
+            new_last_alerted = prior.last_alerted if prior is not None else None
     elif prior is not None and prior.has_drift:
         _emit_drift_cleared(env, prior, git_sha, notifiers)
+        new_last_alerted = None
+    else:
+        new_last_alerted = None
 
     if not no_state:
         save_drift_state(
@@ -218,7 +282,8 @@ def run_drift_check(
             DriftState(
                 env=env,
                 has_drift=drift_now,
-                last_run=datetime.now(tz=UTC).isoformat(),
+                last_run=now_ts,
+                last_alerted=new_last_alerted,
                 summary=summary,
             ),
         )
@@ -358,6 +423,7 @@ def _render_text(
 
 
 __all__ = [
+    "DEFAULT_ALERT_WINDOW_MINUTES",
     "DRIFT_EXIT_CODE",
     "DRIFT_STATE_DIRNAME",
     "DRIFT_STATE_FILENAME_TEMPLATE",
