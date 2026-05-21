@@ -484,6 +484,70 @@ deleted YAML object plus a matching tombstone — the loader rejects the
 called programmatically). ``test_validate_cmd.py`` covers the CLI
 integration including ``--strict``.
 
+## Drift-check job (Phase 9)
+
+``csfwctl/drift_cmd.py`` is the scheduled-monitor sibling of
+``diff_cmd``. The diff engine itself is shared: drift-check loads the
+config repo, fetches live state, and calls
+:func:`csfwctl.differ.compute_diff` with the named ``--env``. The two
+things drift-check adds on top are persistent state and a
+detected/cleared transition model on the notifier bus.
+
+**State file.** Per-env, JSON, default path
+``<repo>/.csfwctl/drift-state-<env>.json``. The shape is fixed:
+
+```json
+{
+  "env":      "production",
+  "has_drift": true,
+  "last_run":  "2026-05-21T14:00:00+00:00",
+  "summary":   { "creates": 1, "updates": 0, "deletes": 0, "unmanaged": 0 }
+}
+```
+
+``save_drift_state`` writes via a ``<name>.tmp`` + rename so a crashed
+job never leaves a half-written file. ``load_drift_state`` treats
+missing or malformed files as "no prior run" and logs at WARNING — a
+corrupted state must never block the monitor.
+
+**Transition model.** Two consecutive verdicts (``prior.has_drift`` and
+``drift_now``) yield one of four labels — ``stable`` / ``detected`` /
+``ongoing`` / ``cleared`` — and at most one event:
+
+- ``drift.detected`` (severity ``warn``) fires whenever ``drift_now``
+  is true, including the ``ongoing`` case. Phase 10 will layer dedupe
+  and alert-window logic on top of this primitive.
+- ``drift.cleared`` (severity ``info``) fires only on the
+  ``cleared`` transition.
+- ``stable`` runs (no prior drift, no current drift) emit nothing — a
+  healthy monitor stays quiet.
+
+The ``--no-state`` flag disables state read+write entirely;
+``drift.cleared`` cannot fire in that mode, and ``drift.detected``
+behaves like a stateless diff. Suitable for ad-hoc operator runs from a
+laptop.
+
+**Event payload.** ``drift.detected`` carries ``details = { env,
+summary, change_set }`` where ``change_set`` is the full
+:meth:`ChangeSet.to_json` payload — same shape MR comments and
+dashboards already consume. ``drift.cleared`` carries
+``previous_summary`` and ``previous_run`` so a receiver can show what
+just resolved.
+
+**Exit codes.** Default ``0`` regardless of verdict, so a cron line
+``csfwctl drift-check --env production`` stays quiet on success. The
+``--fail-on-drift`` flag swaps the drift case to exit ``2``, distinct
+from the ``1`` reserved for infrastructure failures (repo load or
+live-state fetch). CI pipelines that want a hard signal opt in.
+
+**Test pattern.** ``tests/unit/test_drift_cmd.py`` reuses the
+``state_provider`` test seam from ``diff_cmd`` and patches
+``csfwctl.drift_cmd.emit`` to a list-recorder so each transition's
+event payload can be asserted in isolation. The state file lives in
+``tmp_path`` per-test so the four transitions (first run clean, first
+run drifted, drift→clear, repeated drift) can be set up by
+hand-writing the prior state and exercising one call.
+
 ## Credentials and profiles
 
 - Env vars (`CSFWCTL_CLIENT_ID` / `CSFWCTL_CLIENT_SECRET`) take
