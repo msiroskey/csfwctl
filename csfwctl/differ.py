@@ -37,6 +37,7 @@ from csfwctl.exporter import (
     policy_from_api,
     rule_group_from_api,
     strip_env_suffix,
+    to_slug,
 )
 from csfwctl.falcon.client import FalconClient
 from csfwctl.loader import ConfigRepo
@@ -264,6 +265,7 @@ def project_policy_for_env(
         rules = []
     return Policy(
         name=policy.name,
+        display_name=policy.display_name,
         platform=policy.platform,
         priority=policy.priority,
         status=policy.status,
@@ -334,7 +336,7 @@ def _filter_live_records_by_env(
 def _slug_for_live_record(record: dict[str, Any]) -> str:
     """Derive the env-stripped slug from a live record's display name."""
     base, _ = strip_env_suffix(str(record.get("name", "")))
-    return base.lower()
+    return to_slug(base)
 
 
 @dataclass
@@ -474,7 +476,7 @@ def _diff_locations(
                 kind=KIND_LOCATION,
                 op=DiffOp.no_change if not changes else DiffOp.update,
                 slug=slug,
-                display_name=model.name,
+                display_name=model.display_name or model.name,
                 managed=managed,
                 field_changes=tuple(changes),
             )
@@ -485,7 +487,7 @@ def _diff_locations(
                     kind=KIND_LOCATION,
                     op=DiffOp.create,
                     slug=slug,
-                    display_name=model.name,
+                    display_name=model.display_name or model.name,
                     managed=ManagedStatus.new,
                 )
             )
@@ -497,7 +499,7 @@ def _diff_locations(
                     kind=KIND_LOCATION,
                     op=DiffOp.delete,
                     slug=slug,
-                    display_name=live_model.name,
+                    display_name=live_model.display_name or live_model.name,
                     managed=_classify_managed(live_record),
                     reason="tombstoned",
                 )
@@ -508,7 +510,7 @@ def _diff_locations(
                     kind=KIND_LOCATION,
                     op=DiffOp.no_change,
                     slug=slug,
-                    display_name=live_model.name,
+                    display_name=live_model.display_name or live_model.name,
                     managed=_classify_managed(live_record),
                     reason="not in YAML and not tombstoned",
                 )
@@ -529,7 +531,7 @@ def _diff_rule_groups(
         display_name = (
             _override_display_name(slug, env)
             if _is_override_slug(slug)
-            else (f"{model.name}{suffix}")
+            else f"{model.display_name or model.name}{suffix}"
         )
         if slug in live:
             live_model, live_record = live[slug]
@@ -556,7 +558,7 @@ def _diff_rule_groups(
             )
     for slug in sorted(set(live) - set(desired)):
         live_model, live_record = live[slug]
-        display = f"{live_model.name}{suffix}"
+        display = f"{live_model.display_name or live_model.name}{suffix}"
         if slug in tombstoned:
             cs.deletes.append(
                 ObjectChange(
@@ -598,7 +600,7 @@ def _diff_policies(
     tombstoned = {entry.name for entry in repo.tombstones.policies}
     suffix = env_suffix(env)
     for slug, model in sorted(desired.items()):
-        display_name = f"{model.name}{suffix}"
+        display_name = f"{model.display_name or model.name}{suffix}"
         if slug in live:
             live_model, live_record = live[slug]
             field_changes = _compare_models(model, live_model)
@@ -627,7 +629,7 @@ def _diff_policies(
             )
     for slug in sorted(set(live) - set(desired)):
         live_model, live_record = live[slug]
-        display = f"{live_model.name}{suffix}"
+        display = f"{live_model.display_name or live_model.name}{suffix}"
         if slug in tombstoned:
             cs.deletes.append(
                 ObjectChange(

@@ -1,6 +1,7 @@
 # One-off policy for a specific lab with elevated permissions and a
 # corp-vpn-scoped allow rule.
-name: Research-Lab-7-Windows
+name: research-lab-7-windows
+display_name: Research-Lab-7-Windows
 platform: windows
 priority: default
 status: enabled

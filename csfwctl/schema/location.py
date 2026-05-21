@@ -6,7 +6,7 @@ import ipaddress
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from csfwctl.schema._common import Slug, Status
+from csfwctl.schema._common import CrowdStrikeName, Slug, Status
 
 
 def _validate_address(value: str) -> str:
@@ -33,6 +33,7 @@ class Location(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     name: Slug
+    display_name: CrowdStrikeName | None = None
     status: Status = Status.enabled
     description: str = Field(default="", max_length=2000)
     addresses: list[str] = Field(default_factory=list)

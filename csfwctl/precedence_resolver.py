@@ -27,7 +27,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
-from csfwctl.exporter import strip_env_suffix
+from csfwctl.exporter import strip_env_suffix, to_slug
 from csfwctl.loader import ConfigRepo
 from csfwctl.schema import Platform, Policy, PrecedenceBucket, PrecedenceOverride
 
@@ -119,7 +119,7 @@ def resolve_precedence(repo: ConfigRepo) -> dict[Platform, list[ResolvedPolicy]]
         result[platform] = [
             ResolvedPolicy(
                 slug=slug,
-                name=by_slug[slug].name,
+                name=by_slug[slug].display_name or by_slug[slug].name,
                 platform=platform,
                 bucket=by_slug[slug].priority,
                 ordinal=index,
@@ -226,7 +226,7 @@ def _live_slugs(records: list[dict[str, Any]], *, env: str | None) -> list[str]:
         base, suffix_env = strip_env_suffix(name)
         if env is not None and suffix_env != env:
             continue
-        out.append(base.lower())
+        out.append(to_slug(base))
     return out
 
 

@@ -84,7 +84,8 @@ def _windows_policy(with_inline: bool = False) -> Policy:
             )
         )
     return Policy(
-        name="ABC01-Endpoints-Windows",
+        name="abc01-endpoints-windows",
+        display_name="ABC01-Endpoints-Windows",
         platform=Platform.windows,
         description="Baseline policy for ABC01 Windows endpoints.",
         host_groups={

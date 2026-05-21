@@ -42,7 +42,7 @@ from csfwctl.schema import (
     RuleGroup,
     Status,
 )
-from csfwctl.schema._common import DISPLAY_NAME_RE, SLUG_RE
+from csfwctl.schema._common import SLUG_RE
 
 ENV_SUFFIXES: tuple[str, ...] = ("-Production", "-Pilot", "-Test")
 """Environment suffixes appended to CrowdStrike display names. Longest first
@@ -69,6 +69,23 @@ METADATA_SIGNATURE_RE = re.compile(
 )
 """Metadata block appended to descriptions by the applier. The importer
 strips it so subsequent re-imports stay clean."""
+
+_SLUG_NORMALIZE_RE = re.compile(r"[\s_]+")
+_SLUG_COLLAPSE_RE = re.compile(r"-{2,}")
+
+
+def to_slug(name: str) -> str:
+    """Normalise an arbitrary CrowdStrike name to a lowercase-kebab slug.
+
+    Lowercases, replaces runs of whitespace or underscores with a single
+    hyphen, collapses consecutive hyphens, and strips leading/trailing
+    hyphens. Does **not** validate the result against :data:`SLUG_RE` —
+    callers that need strict validation should check afterward.
+    """
+    slug = name.lower()
+    slug = _SLUG_NORMALIZE_RE.sub("-", slug)
+    slug = _SLUG_COLLAPSE_RE.sub("-", slug)
+    return slug.strip("-")
 
 
 # ---- API shape translation: Action / Direction / Protocol / Status ----
@@ -172,14 +189,14 @@ def strip_env_suffix(display_name: str) -> tuple[str, str | None]:
 
 
 def display_name_to_slug(display_name: str) -> str:
-    """Derive a lowercase-kebab slug from a TitleCase display name.
+    """Derive a lowercase-kebab slug from a CrowdStrike display name.
 
-    Strips any env suffix first. Validates against :data:`SLUG_RE`; raises
-    :class:`ImporterError` if the derived value would not satisfy the
-    loader's filename-vs-name agreement check.
+    Strips any env suffix first, then normalises spaces and underscores to
+    hyphens. Raises :class:`ImporterError` if the result still does not
+    satisfy :data:`SLUG_RE` (e.g. a name starting with a digit).
     """
     base, _ = strip_env_suffix(display_name)
-    slug = base.lower()
+    slug = to_slug(base)
     if not SLUG_RE.match(slug):
         raise ImporterError(
             f"cannot derive a valid slug from display name {display_name!r}: "
@@ -391,9 +408,10 @@ def rule_group_from_api(
     """
     raw_name = str(record["name"])
     base, _ = strip_env_suffix(raw_name) if strip_suffix else (raw_name, None)
-    slug = base.lower()
+    slug = to_slug(base)
     if not SLUG_RE.match(slug):
         raise ImporterError(f"rule-group name {raw_name!r} does not derive a valid slug ({slug!r})")
+    rg_display_name: str | None = base if base != slug else None
 
     platform = _PLATFORM_FROM_API.get(str(record.get("platform", "")).lower())
     if platform is None:
@@ -427,6 +445,7 @@ def rule_group_from_api(
 
     return RuleGroup(
         name=slug,
+        display_name=rg_display_name,
         platform=platform,
         status=status,
         description=description,
@@ -436,13 +455,15 @@ def rule_group_from_api(
 
 def location_from_api(record: dict[str, Any]) -> Location:
     """Convert a network-location detail record."""
-    name = str(record["name"])
-    slug = name.lower()
+    raw_name = str(record["name"])
+    slug = to_slug(raw_name)
     if not SLUG_RE.match(slug):
-        raise ImporterError(f"location name {name!r} does not derive a valid slug ({slug!r})")
+        raise ImporterError(f"location name {raw_name!r} does not derive a valid slug ({slug!r})")
+    loc_display_name: str | None = raw_name if raw_name != slug else None
     status = Status.enabled if record.get("enabled", True) else Status.disabled
     return Location(
         name=slug,
+        display_name=loc_display_name,
         status=status,
         description=clean_description(record.get("description")),
         addresses=_flatten_addresses(record.get("addresses")),
@@ -491,11 +512,10 @@ def policy_from_api(
 
     raw_name = str(record["name"])
     base, _ = strip_env_suffix(raw_name) if strip_suffix else (raw_name, None)
-    if not DISPLAY_NAME_RE.match(base):
-        raise ImporterError(
-            f"policy name {raw_name!r} (base {base!r}) is not a TitleCase-With-Hyphens "
-            "display name; clean it up in CrowdStrike or pass --no-strip-env-suffix"
-        )
+    slug = to_slug(base)
+    if not SLUG_RE.match(slug):
+        raise ImporterError(f"policy name {raw_name!r} does not derive a valid slug ({slug!r})")
+    pol_display_name: str | None = base if base != slug else None
 
     platform = _PLATFORM_FROM_API.get(str(record.get("platform_name", "")))
     if platform is None:
@@ -520,7 +540,7 @@ def policy_from_api(
 
     inline_rules: list[Rule] = []
     referenced_slugs: list[str] = []
-    base_policy_slug = base.lower()
+    base_policy_slug = slug
 
     for rg_id in rule_group_ids:
         rg_record = rule_groups_by_id.get(str(rg_id))
@@ -531,7 +551,7 @@ def policy_from_api(
             )
         rg_name = str(rg_record.get("name", ""))
         rg_base, _ = strip_env_suffix(rg_name)
-        rg_slug = rg_base.lower()
+        rg_slug = to_slug(rg_base)
         derived_base, override_env = is_override_group_name(rg_slug)
         if fold_overrides and override_env is not None and derived_base == base_policy_slug:
             # Fold the synthesised override group back into inline rules.
@@ -545,7 +565,8 @@ def policy_from_api(
         referenced_slugs.append(rg_slug)
 
     return Policy(
-        name=base,
+        name=slug,
+        display_name=pol_display_name,
         platform=platform,
         priority=PrecedenceBucket.default,
         status=status,
@@ -568,10 +589,11 @@ def policy_to_api_shape(policy: Policy, env: str) -> dict[str, Any]:
     feeds that record back through the importer to verify round-tripping.
     """
     suffix = _env_suffix(env)
-    display_name = f"{policy.name}{suffix}"
+    cs_name = policy.display_name or policy.name
+    display_name = f"{cs_name}{suffix}"
     rule_group_refs = list(policy.rule_groups)
     if policy.rules:
-        override_slug = f"{policy.name.lower()}-overrides-{env}"
+        override_slug = f"{policy.name}-overrides-{env}"
         rule_group_refs.insert(0, override_slug)
     return {
         "id": _fake_uuid("policy", display_name),
@@ -601,7 +623,7 @@ def rule_group_to_api_shape(rule_group: RuleGroup, env: str) -> dict[str, Any]:
     populated, so it does not affect round-tripping.
     """
     suffix = _env_suffix(env)
-    display_name = f"{rule_group.name}{suffix}"
+    display_name = f"{rule_group.display_name or rule_group.name}{suffix}"
     rule_records = [
         _rule_to_api_shape(rule, display_name, index) for index, rule in enumerate(rule_group.rules)
     ]
@@ -618,9 +640,10 @@ def rule_group_to_api_shape(rule_group: RuleGroup, env: str) -> dict[str, Any]:
 
 def location_to_api_shape(location: Location) -> dict[str, Any]:
     """Render a :class:`Location` into API shape."""
+    cs_name = location.display_name or location.name
     return {
-        "id": _fake_uuid("location", location.name),
-        "name": location.name,
+        "id": _fake_uuid("location", cs_name),
+        "name": cs_name,
         "description": location.description,
         "enabled": location.status is Status.enabled,
         "addresses": [{"address": a} for a in location.addresses],
@@ -880,6 +903,10 @@ def import_all(client: FalconClient, output_dir: Path) -> list[ImportResult]:
     """
     results: list[ImportResult] = []
 
+    from csfwctl.observability import get_logger
+
+    logger = get_logger("exporter")
+
     # Rule groups first so the policy importer can fold override groups.
     rg_records = client.rule_groups.list_all()
     rules_by_id = _fetch_rules_for_groups(client, rg_records)
@@ -891,7 +918,15 @@ def import_all(client: FalconClient, output_dir: Path) -> list[ImportResult]:
             rule_groups_by_id[str(record["id"])] = record
         try:
             model = rule_group_from_api(record, rules_by_id, strip_suffix=True)
-        except ImporterError:
+        except ImporterError as exc:
+            logger.warning(
+                "import skipped rule-group",
+                extra={
+                    "event": "import.rule_group.skipped",
+                    "rule_group_name": record.get("name"),
+                    "reason": str(exc),
+                },
+            )
             continue
         rule_groups_by_slug[model.name] = model
         # Skip override groups when writing; the policy importer folds them.
@@ -912,7 +947,18 @@ def import_all(client: FalconClient, output_dir: Path) -> list[ImportResult]:
     location_records = client.locations.list_all()
     written_locations: set[str] = set()
     for record in location_records:
-        location = location_from_api(record)
+        try:
+            location = location_from_api(record)
+        except ImporterError as exc:
+            logger.warning(
+                "import skipped location",
+                extra={
+                    "event": "import.location.skipped",
+                    "location_name": record.get("name"),
+                    "reason": str(exc),
+                },
+            )
+            continue
         if location.name in written_locations:
             continue
         written_locations.add(location.name)
@@ -920,9 +966,6 @@ def import_all(client: FalconClient, output_dir: Path) -> list[ImportResult]:
         results.append(ImportResult(kind="location", slug=location.name, model=location, path=path))
 
     # Policies last.
-    from csfwctl.observability import get_logger
-
-    logger = get_logger("exporter")
     policy_records = client.policies.list_all()
     written_policy_slugs: set[str] = set()
     # Sort so that Test variants are imported before Pilot/Production; the
@@ -998,12 +1041,12 @@ def _trim_defaults(model: Policy | RuleGroup | Location) -> dict[str, Any]:
 
 
 def _trim_policy(data: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "name": data["name"],
-        "platform": data["platform"],
-        "priority": data.get("priority", PrecedenceBucket.default.value),
-        "status": data.get("status", Status.enabled.value),
-    }
+    out: dict[str, Any] = {"name": data["name"]}
+    if data.get("display_name"):
+        out["display_name"] = data["display_name"]
+    out["platform"] = data["platform"]
+    out["priority"] = data.get("priority", PrecedenceBucket.default.value)
+    out["status"] = data.get("status", Status.enabled.value)
     if data.get("description"):
         out["description"] = data["description"]
     if data.get("host_groups"):
@@ -1016,11 +1059,11 @@ def _trim_policy(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _trim_rule_group(data: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "name": data["name"],
-        "platform": data["platform"],
-        "status": data.get("status", Status.enabled.value),
-    }
+    out: dict[str, Any] = {"name": data["name"]}
+    if data.get("display_name"):
+        out["display_name"] = data["display_name"]
+    out["platform"] = data["platform"]
+    out["status"] = data.get("status", Status.enabled.value)
     if data.get("description"):
         out["description"] = data["description"]
     if data.get("rules"):
@@ -1029,10 +1072,10 @@ def _trim_rule_group(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _trim_location(data: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "name": data["name"],
-        "status": data.get("status", Status.enabled.value),
-    }
+    out: dict[str, Any] = {"name": data["name"]}
+    if data.get("display_name"):
+        out["display_name"] = data["display_name"]
+    out["status"] = data.get("status", Status.enabled.value)
     if data.get("description"):
         out["description"] = data["description"]
     for field in ("addresses", "dns_servers", "dns_resolution_targets", "default_gateways"):
@@ -1098,6 +1141,7 @@ __all__ = [
     "UUID_RE",
     "clean_description",
     "display_name_to_slug",
+    "to_slug",
     "dump_yaml",
     "find_location_record",
     "find_policy_record",

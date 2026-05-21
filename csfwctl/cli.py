@@ -282,7 +282,7 @@ def import_policy(
 
     run_import_policy(
         name_or_uuid,
-        output=output,
+        output=output or _repo_from_ctx(ctx),
         strip_env_suffix=strip_env_suffix,
         profile=_profile_from_ctx(ctx),
         credentials_file=_credentials_file_from_ctx(ctx),
@@ -303,7 +303,7 @@ def import_rule_group(
 
     run_import_rule_group(
         name_or_uuid,
-        output=output,
+        output=output or _repo_from_ctx(ctx),
         strip_env_suffix=strip_env_suffix,
         profile=_profile_from_ctx(ctx),
         credentials_file=_credentials_file_from_ctx(ctx),
@@ -321,7 +321,7 @@ def import_location(
 
     run_import_location(
         name_or_uuid,
-        output=output,
+        output=output or _repo_from_ctx(ctx),
         profile=_profile_from_ctx(ctx),
         credentials_file=_credentials_file_from_ctx(ctx),
     )
@@ -339,7 +339,7 @@ def import_all(
     from csfwctl.import_cmd import run_import_all
 
     run_import_all(
-        output_dir,
+        output_dir or _repo_from_ctx(ctx),
         profile=_profile_from_ctx(ctx),
         credentials_file=_credentials_file_from_ctx(ctx),
     )
@@ -380,6 +380,15 @@ def _credentials_file_from_ctx(ctx: typer.Context) -> Path | None:
     """Pull the resolved ``--credentials-file`` value out of the Typer context."""
     if isinstance(ctx.obj, dict):
         path = ctx.obj.get("credentials_file")
+        if isinstance(path, Path):
+            return path
+    return None
+
+
+def _repo_from_ctx(ctx: typer.Context) -> Path | None:
+    """Pull the resolved ``--repo`` value out of the Typer context."""
+    if isinstance(ctx.obj, dict):
+        path = ctx.obj.get("repo")
         if isinstance(path, Path):
             return path
     return None

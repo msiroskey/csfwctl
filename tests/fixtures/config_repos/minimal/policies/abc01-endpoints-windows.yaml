@@ -1,6 +1,7 @@
 # Minimal-fixture policy: one Windows endpoint policy referencing the
 # shared windows-baseline rule group and one inline override rule.
-name: ABC01-Endpoints-Windows
+name: abc01-endpoints-windows
+display_name: ABC01-Endpoints-Windows
 platform: windows
 priority: default
 status: enabled

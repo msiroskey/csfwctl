@@ -178,11 +178,10 @@ def _load_kind(
         model = _validate_model(model_cls, raw, path, errors)
         if model is None:
             continue
-        # For rule_groups and locations the filename stem must equal the
-        # in-document ``name``. Policies use a TitleCase display name so
-        # this check does not apply.
+        # The filename stem must equal the in-document ``name`` for all
+        # object kinds so cross-references resolve correctly.
         doc_name = getattr(model, "name", None)
-        if model_cls is not Policy and doc_name is not None and doc_name != slug:
+        if doc_name is not None and doc_name != slug:
             errors.append(
                 LoadError(
                     path=path,
