@@ -5,8 +5,36 @@ Project plan: ./csfwctl-project-plan.md
 
 ## Current phase
 
-Phase 7: Linter and validators — complete. Next up is Phase 8
-(notifiers).
+Phase 8: Notifiers — complete. Next up is Phase 9 (drift-check job) or
+Phase 10 per the plan.
+
+## Phase 8 tasks
+
+- [x] `csfwctl/notifiers/__init__.py`: `Event` dataclass, `make_event`,
+      `Notifier` protocol (runtime-checkable), `NOTIFIER_REGISTRY` dict,
+      `register_notifier`, `setup_notifiers`, `emit`, `event_matches`.
+      Built-in channel registration deferred inside `_register_builtins()`
+      to break the circular import.
+- [x] Five channels: `log` (JSONL append), `console` (Rich stderr,
+      suppressed in CI), `teams` (MessageCard webhook), `gitlab` (MR
+      comments via GitLab API), `syslog` (RFC 5424 UDP).
+- [x] `notify_test_cmd.py`: `run_notify_test` — sends `notify.test`
+      event directly (bypassing event routing) to one or all channels.
+- [x] `cli.py`: `notify-test` stub replaced with working implementation
+      wired to `run_notify_test`; added `--repo` local option.
+- [x] `validate_cmd.py`: emits `validate.failed` on fatal lint findings.
+- [x] `apply_cmd.py`: emits `apply.started`, `apply.succeeded`, and
+      `apply.failed` in the appropriate positions.
+- [x] `diff_cmd.py`: emits `diff.changes_detected` when the change set
+      is non-empty.
+- [x] `docs/notifications.md`: complete notifier reference replacing
+      the Phase 0 placeholder.
+- [x] Unit tests: 377 passing total (43 new in `test_notifiers.py`)
+      covering Event/make_event, event_matches glob, Notifier protocol
+      conformance, registry add/skip, setup_notifiers happy+error paths,
+      emit dispatch/skip/swallow/continue, all five channels (happy
+      path, missing-config errors, glob routing, UDP/HTTP mocking),
+      notify-test CLI (no notifiers, unknown channel, log channel).
 
 ## Phase 7 tasks
 
@@ -320,23 +348,10 @@ Phase 7: Linter and validators — complete. Next up is Phase 8
 
 ## Notes for next session
 
-- **Next phase: Phase 8 — Notifiers.**
-  - Notifier protocol + registry that mirrors the linter's
-    (`register_notifier`, ordered map). Reuse the event/severity
-    pattern: `Event` carries `type`, `severity`, `env`, `git_sha`,
-    `summary`, `details`, `request_id` (request id already lives on a
-    contextvar in `observability`).
-  - Initial channels: log (JSONL to file), console (rich, suppressed
-    in CI), Teams (incoming webhook, MessageCard), GitLab (MR comments
-    via API), syslog (RFC 5424). All read their config from
-    `csfwctl.toml`'s `[notifications.<channel>]` table — that schema
-    already exists (`NotifierConfig` accepts extra fields).
-  - `csfwctl notify-test --channel CHANNEL` is wired as a stub in
-    `cli.py` and needs the body.
-  - Apply / drift / validate failure paths should emit events through
-    the bus. `ApplyReport.to_json()` is the payload contract for the
-    apply notifications; the linter's `LintFinding.to_json()` is the
-    contract for validate failures.
+- **Next phase: Phase 9/10 — Drift-check job.**
+  - `drift.detected` / `drift.cleared` event types are already
+    registered in `docs/notifications.md`; notifier routing is in place.
+    The drift-check job only needs to call `emit()` with these events.
 - **Phase 7 hooks Phase 8+ should pick up:**
   - The linter's `register_lint()` + ordered `LINT_REGISTRY` is the
     template to mirror for `register_notifier()`. Same shape: protocol
