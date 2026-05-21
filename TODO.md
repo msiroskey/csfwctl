@@ -412,6 +412,32 @@ Phase 10: Operational hardening — complete. All planned phases are done.
 
 (None at this time.)
 
+## Security hardening applied post-v1
+
+- [x] **Notifier env-var allowlists + HTTPS-only outbound.** A
+      compromised `csfwctl.toml` could previously point the GitLab or
+      Teams notifier at any environment variable (`CSFWCTL_CLIENT_SECRET`,
+      `AWS_SECRET_ACCESS_KEY`, …) and exfiltrate it to an arbitrary URL.
+      `csfwctl/notifiers/gitlab.py` and `.../teams.py` now reject env-var
+      names that don't match the channel-specific allowlist regex, and
+      reject `api_url` / resolved webhook URLs that aren't `https://`.
+      See `docs/notifications.md` § Security boundary.
+- [x] **Credentials file permission check.** `load_credentials` refuses
+      to read a credentials TOML with any of the `0o077` (group/world)
+      bits set; suggested fix message: `chmod 600 …`. POSIX only.
+- [x] **HTTPS-only `base_url`.** `Credentials.base_url` must use
+      `https://`; loopback `http://` (localhost / 127.0.0.1 / [::1]) is
+      still allowed for local mocks.
+- [x] **Fixture sanitiser catches MAC addresses.** New `MAC_RE` rule
+      replaces IEEE 802 MACs with the IANA documentation OUI
+      (`00:00:5E…`, RFC 7042). Added a pre-commit review checklist
+      for recorded fixtures in `docs/operations.md`.
+- [x] **`make lint-security`.** Grep guards in `Makefile` fail the build
+      on direct `falconpy` imports outside `csfwctl/falcon/` and on
+      forbidden dynamic-exec / unsafe-deserialise primitives
+      (`eval(`, `exec(`, `pickle.loads(`, `yaml.unsafe_load(`,
+      `shell=True`). Hooked into `make lint` so it runs in CI.
+
 ## Bug fixes applied post-v1
 
 - [x] **Bug 1 — `--repo` ignored on import**: `cli.py` import handlers

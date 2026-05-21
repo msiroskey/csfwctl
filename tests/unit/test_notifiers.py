@@ -327,6 +327,21 @@ def test_teams_notifier_missing_url_raises(monkeypatch: pytest.MonkeyPatch) -> N
         TeamsNotifier(cfg)
 
 
+def test_teams_notifier_rejects_disallowed_env_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A malicious config can't ask the notifier to read an unrelated secret."""
+    monkeypatch.setenv("CSFWCTL_CLIENT_SECRET", "super-secret")
+    cfg = NotifierConfig(events=["*"], **{"url_env": "CSFWCTL_CLIENT_SECRET"})
+    with pytest.raises(ValueError, match="not allowed"):
+        TeamsNotifier(cfg)
+
+
+def test_teams_notifier_rejects_http_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEAMS_WEBHOOK_URL", "http://teams.example.com/hook")
+    cfg = NotifierConfig(events=["*"], **{"url_env": "TEAMS_WEBHOOK_URL"})
+    with pytest.raises(ValueError, match="https://"):
+        TeamsNotifier(cfg)
+
+
 def test_teams_notifier_sends_message_card(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MY_TEAMS_URL", "https://teams.example.com/webhook")
     cfg = NotifierConfig(events=["*"], **{"url_env": "MY_TEAMS_URL"})
@@ -356,8 +371,8 @@ def test_teams_notifier_sends_message_card(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_teams_notifier_supports_glob(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TW", "https://example.com/hook")
-    cfg = NotifierConfig(events=["apply.*"], **{"url_env": "TW"})
+    monkeypatch.setenv("TEAMS_WEBHOOK_URL", "https://example.com/hook")
+    cfg = NotifierConfig(events=["apply.*"], **{"url_env": "TEAMS_WEBHOOK_URL"})
     n = TeamsNotifier(cfg)
     assert n.supports("apply.failed")
     assert not n.supports("drift.detected")
@@ -435,6 +450,33 @@ def test_gitlab_notifier_supports_glob(monkeypatch: pytest.MonkeyPatch) -> None:
     n = GitLabNotifier(cfg)
     assert n.supports("diff.changes_detected")
     assert not n.supports("apply.started")
+
+
+def test_gitlab_notifier_rejects_disallowed_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A malicious config can't ask for ``CSFWCTL_CLIENT_SECRET`` etc."""
+    monkeypatch.setenv("CSFWCTL_CLIENT_SECRET", "super-secret")
+    monkeypatch.setenv("CI_PROJECT_ID", "42")
+    monkeypatch.setenv("CI_MERGE_REQUEST_IID", "7")
+    cfg = NotifierConfig(events=["*"], **{"token_env": "CSFWCTL_CLIENT_SECRET"})
+    with pytest.raises(ValueError, match="not allowed"):
+        GitLabNotifier(cfg)
+
+
+def test_gitlab_notifier_rejects_disallowed_project_id_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _gitlab_env(monkeypatch)
+    monkeypatch.setenv("AWS_ACCOUNT_ID", "123456789012")
+    cfg = NotifierConfig(events=["*"], **{"project_id_env": "AWS_ACCOUNT_ID"})
+    with pytest.raises(ValueError, match="not allowed"):
+        GitLabNotifier(cfg)
+
+
+def test_gitlab_notifier_rejects_http_api_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    _gitlab_env(monkeypatch)
+    cfg = NotifierConfig(events=["*"], **{"api_url": "http://gitlab.example.com"})
+    with pytest.raises(ValueError, match="https://"):
+        GitLabNotifier(cfg)
 
 
 # ---- SyslogNotifier -------------------------------------------------------

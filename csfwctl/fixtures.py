@@ -40,9 +40,14 @@ HOSTNAME_RE = re.compile(
 
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 
+MAC_RE = re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b")
+"""IEEE 802 MAC address in colon-or-hyphen-separated form."""
+
 # RFC 5737 / 3849 / 5156 reserved test ranges; safe to emit publicly.
 _FAKE_IPV4_NETS: tuple[str, ...] = ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")
 _FAKE_HOST_DOMAIN = "example.test"
+# IANA-reserved documentation OUI (RFC 7042 §2.1.1) — safe in public fixtures.
+_FAKE_MAC_OUI = "00:00:5E"
 
 
 @dataclass
@@ -61,6 +66,7 @@ class Sanitizer:
     cidr_map: dict[str, str] = field(default_factory=dict)
     hostname_map: dict[str, str] = field(default_factory=dict)
     email_map: dict[str, str] = field(default_factory=dict)
+    mac_map: dict[str, str] = field(default_factory=dict)
     preserve_substrings: tuple[str, ...] = field(default_factory=tuple)
     # ``preserve_substrings`` lets callers keep certain names (e.g.
     # ``corp-vpn``) unchanged so the imported YAML stays readable.
@@ -83,9 +89,12 @@ class Sanitizer:
         if any(sub in value for sub in self.preserve_substrings):
             return value
         # CIDR networks need to be handled before bare IPs so that the
-        # mask is preserved.
+        # mask is preserved. MACs run before UUIDs because the colon-
+        # separated form would otherwise be left alone but is more
+        # identifying than a UUID.
         value = self._replace_cidrs(value)
         value = self._replace_ips(value)
+        value = MAC_RE.sub(lambda m: self._fake_mac(m.group(0)), value)
         value = UUID_RE.sub(lambda m: self._fake_uuid(m.group(0)), value)
         value = EMAIL_RE.sub(lambda m: self._fake_email(m.group(0)), value)
         value = HOSTNAME_RE.sub(lambda m: self._fake_hostname(m.group(0)), value)
@@ -194,6 +203,18 @@ class Sanitizer:
         index = len(self.email_map) + 1
         fake = f"user-{index:03d}@{_FAKE_HOST_DOMAIN}"
         self.email_map[key] = fake
+        return fake
+
+    def _fake_mac(self, original: str) -> str:
+        key = original.lower()
+        if key in self.mac_map:
+            return self.mac_map[key]
+        sep = "-" if "-" in original else ":"
+        index = len(self.mac_map) + 1
+        nic = f"{(index >> 16) & 0xFF:02X}{sep}{(index >> 8) & 0xFF:02X}{sep}{index & 0xFF:02X}"
+        oui = _FAKE_MAC_OUI.replace(":", sep)
+        fake = f"{oui}{sep}{nic}"
+        self.mac_map[key] = fake
         return fake
 
 

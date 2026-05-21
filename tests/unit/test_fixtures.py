@@ -91,6 +91,27 @@ def test_sanitizer_no_op_on_unrecognised_strings() -> None:
     assert san.sanitize(True) is True
 
 
+def test_sanitizer_replaces_mac_addresses_with_doc_oui() -> None:
+    san = Sanitizer()
+    a = san.sanitize("device aa:bb:cc:dd:ee:ff is online")
+    # Replaced with the IANA documentation OUI (RFC 7042) — safe to publish.
+    assert "aa:bb:cc:dd:ee:ff" not in a
+    assert "00:00:5E" in a
+    # Same input → same output across calls.
+    b = san.sanitize("aa:bb:cc:dd:ee:ff")
+    assert b in a
+
+
+def test_sanitizer_preserves_mac_separator_style() -> None:
+    san = Sanitizer()
+    hyphen = san.sanitize("AA-BB-CC-DD-EE-FF")
+    assert "-" in hyphen
+    assert ":" not in hyphen
+    colon = san.sanitize("11:22:33:44:55:66")
+    assert ":" in colon
+    assert "-" not in colon
+
+
 def test_sanitizer_handles_empty_collections() -> None:
     san = Sanitizer()
     assert san.sanitize([]) == []
