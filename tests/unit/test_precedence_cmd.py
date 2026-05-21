@@ -143,7 +143,7 @@ def test_precedence_cli_dispatches_env_through_to_provider(
     # Patch the default-provider builder so no real client is instantiated.
     monkeypatch.setattr(
         "csfwctl.precedence_cmd._default_live_provider",
-        lambda *, profile, client_factory, err: provider,
+        lambda *, profile, credentials_file, client_factory, err: provider,
     )
     result = runner.invoke(
         app,

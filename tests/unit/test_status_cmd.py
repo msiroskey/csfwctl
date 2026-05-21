@@ -91,7 +91,7 @@ def test_status_cli_dispatches_to_run_status(
     state = _live_state_with_three_envs()
     monkeypatch.setattr(
         "csfwctl.status_cmd._default_state_provider",
-        lambda profile: lambda: state,
+        lambda profile, credentials_file: lambda: state,
     )
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output + result.stderr
@@ -109,7 +109,7 @@ def test_status_cli_all_envs_pivot_emits_per_env_columns(
     state = _live_state_with_three_envs()
     monkeypatch.setattr(
         "csfwctl.status_cmd._default_state_provider",
-        lambda profile: lambda: state,
+        lambda profile, credentials_file: lambda: state,
     )
     result = runner.invoke(app, ["status", "--all-envs"])
     assert result.exit_code == 0
@@ -126,7 +126,7 @@ def test_status_cli_json_output_is_valid_json(
     state = _live_state_with_three_envs()
     monkeypatch.setattr(
         "csfwctl.status_cmd._default_state_provider",
-        lambda profile: lambda: state,
+        lambda profile, credentials_file: lambda: state,
     )
     result = runner.invoke(app, ["status", "--format", "json"])
     assert result.exit_code == 0
@@ -165,7 +165,7 @@ def test_status_cli_surfaces_state_fetch_failure(
 ) -> None:
     """An exception while fetching live state should exit 1 with a clear message."""
 
-    def fail_provider(profile: Any) -> Any:
+    def fail_provider(profile: Any, credentials_file: Any) -> Any:
         def _raise() -> LiveState:
             raise RuntimeError("boom")
 

@@ -48,7 +48,9 @@ def test_import_policy_writes_to_default_subdir(
             kind="policy", slug="abc01-endpoints-windows", model=fake_model, path=target_path
         )
 
-    monkeypatch.setattr("csfwctl.import_cmd._build_client", lambda profile: "FAKE-CLIENT")
+    monkeypatch.setattr(
+        "csfwctl.import_cmd._build_client", lambda profile, credentials_file: "FAKE-CLIENT"
+    )
     monkeypatch.setattr("csfwctl.import_cmd.import_policy", fake_import)
 
     result = runner.invoke(app, ["import", "policy", "ABC01-Endpoints-Windows-Test"])
@@ -69,7 +71,9 @@ def test_import_policy_passes_no_strip_flag(
         seen["kwargs"] = kwargs
         return ImportResult(kind="policy", slug="abc", model=fake_model, path=None)
 
-    monkeypatch.setattr("csfwctl.import_cmd._build_client", lambda profile: "FAKE-CLIENT")
+    monkeypatch.setattr(
+        "csfwctl.import_cmd._build_client", lambda profile, credentials_file: "FAKE-CLIENT"
+    )
     monkeypatch.setattr("csfwctl.import_cmd.import_policy", fake_import)
 
     result = runner.invoke(app, ["import", "policy", "Whatever", "--no-strip-env-suffix"])
@@ -83,7 +87,9 @@ def test_import_policy_surfaces_importer_error(
     def fake_import(*_args: Any, **_kwargs: Any) -> ImportResult:
         raise ImporterError("policy 'foo' not found")
 
-    monkeypatch.setattr("csfwctl.import_cmd._build_client", lambda profile: "FAKE-CLIENT")
+    monkeypatch.setattr(
+        "csfwctl.import_cmd._build_client", lambda profile, credentials_file: "FAKE-CLIENT"
+    )
     monkeypatch.setattr("csfwctl.import_cmd.import_policy", fake_import)
 
     result = runner.invoke(app, ["import", "policy", "foo"])
@@ -105,7 +111,9 @@ def test_import_rule_group_writes_subdir(
             kind="rule-group", slug="windows-baseline", model=fake_model, path=written
         )
 
-    monkeypatch.setattr("csfwctl.import_cmd._build_client", lambda profile: "FAKE-CLIENT")
+    monkeypatch.setattr(
+        "csfwctl.import_cmd._build_client", lambda profile, credentials_file: "FAKE-CLIENT"
+    )
     monkeypatch.setattr("csfwctl.import_cmd.import_rule_group", fake_import)
 
     result = runner.invoke(app, ["import", "rule-group", "windows-baseline"])
@@ -119,7 +127,9 @@ def test_import_location_writes_subdir(monkeypatch: pytest.MonkeyPatch, runner: 
     def fake_import(client: Any, name_or_uuid: str, **kwargs: Any) -> ImportResult:
         return ImportResult(kind="location", slug="corp-vpn", model=fake_model, path=None)
 
-    monkeypatch.setattr("csfwctl.import_cmd._build_client", lambda profile: "FAKE-CLIENT")
+    monkeypatch.setattr(
+        "csfwctl.import_cmd._build_client", lambda profile, credentials_file: "FAKE-CLIENT"
+    )
     monkeypatch.setattr("csfwctl.import_cmd.import_location", fake_import)
 
     result = runner.invoke(app, ["import", "location", "corp-vpn"])
@@ -145,7 +155,9 @@ def test_import_all_tabulates_counts(
             ),
         ]
 
-    monkeypatch.setattr("csfwctl.import_cmd._build_client", lambda profile: "FAKE-CLIENT")
+    monkeypatch.setattr(
+        "csfwctl.import_cmd._build_client", lambda profile, credentials_file: "FAKE-CLIENT"
+    )
     monkeypatch.setattr("csfwctl.import_cmd.import_all", fake_import_all)
 
     result = runner.invoke(app, ["import", "all", "--output-dir", str(tmp_path)])
@@ -166,7 +178,9 @@ def test_import_all_creates_target_dir(
         captured["output_dir"] = output_dir
         return []
 
-    monkeypatch.setattr("csfwctl.import_cmd._build_client", lambda profile: "FAKE-CLIENT")
+    monkeypatch.setattr(
+        "csfwctl.import_cmd._build_client", lambda profile, credentials_file: "FAKE-CLIENT"
+    )
     monkeypatch.setattr("csfwctl.import_cmd.import_all", fake_import_all)
 
     result = runner.invoke(app, ["import", "all", "--output-dir", str(target)])
@@ -186,7 +200,9 @@ def test_record_fixtures_writes_to_target(
 
     monkeypatch.setattr(
         "csfwctl.record_fixtures_cmd.load_credentials",
-        lambda profile: __import__("csfwctl.config", fromlist=["Credentials"]).Credentials(
+        lambda profile, credentials_path=None: __import__(
+            "csfwctl.config", fromlist=["Credentials"]
+        ).Credentials(
             client_id="x", client_secret="y", base_url="https://api", profile="env", source="env"
         ),
     )
@@ -222,7 +238,9 @@ def test_record_fixtures_unknown_operation_errors_cleanly(
 ) -> None:
     monkeypatch.setattr(
         "csfwctl.record_fixtures_cmd.load_credentials",
-        lambda profile: __import__("csfwctl.config", fromlist=["Credentials"]).Credentials(
+        lambda profile, credentials_path=None: __import__(
+            "csfwctl.config", fromlist=["Credentials"]
+        ).Credentials(
             client_id="x", client_secret="y", base_url="https://api", profile="env", source="env"
         ),
     )

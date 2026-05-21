@@ -430,7 +430,7 @@ def test_drift_check_surfaces_live_fetch_errors(
 ) -> None:
     """A live-state fetch failure exits 1 with a stderr message."""
 
-    def explode(profile: str | None) -> Any:
+    def explode(profile: str | None, credentials_file: Any) -> Any:
         def _provider() -> LiveState:
             raise RuntimeError("API down")
 
@@ -454,7 +454,7 @@ def test_drift_check_cli_end_to_end_no_drift(
     """End-to-end Typer dispatch on a clean run."""
     monkeypatch.setattr(
         "csfwctl.drift_cmd._default_state_provider",
-        lambda profile: lambda: LiveState(),
+        lambda profile, credentials_file: lambda: LiveState(),
     )
     result = runner.invoke(
         app, ["drift-check", "--env", "test", "--repo", str(empty_repo), "--no-state"]
@@ -472,7 +472,7 @@ def test_drift_check_cli_end_to_end_with_drift(
     """End-to-end Typer dispatch when drift exists prints the detected line."""
     monkeypatch.setattr(
         "csfwctl.drift_cmd._default_state_provider",
-        lambda profile: lambda: LiveState(),
+        lambda profile, credentials_file: lambda: LiveState(),
     )
     result = runner.invoke(
         app,

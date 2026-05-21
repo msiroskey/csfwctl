@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,17 @@ from csfwctl.config import (
     CredentialsError,
     load_credentials,
 )
+
+
+@pytest.fixture
+def _restore_csfwctl_propagation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Re-enable propagation on the ``csfwctl`` logger so caplog can capture.
+
+    ``configure_logging`` (used by other test modules and by the CLI)
+    sets ``propagate = False`` on the package logger, which prevents
+    ``caplog``'s root-attached handler from receiving child records.
+    """
+    monkeypatch.setattr(logging.getLogger("csfwctl"), "propagate", True)
 
 
 def test_env_vars_take_precedence(tmp_path: Path) -> None:
@@ -126,7 +138,9 @@ def test_explicit_path_arg_overrides_env_credentials_path(tmp_path: Path) -> Non
 
 
 def test_logs_warn_when_credentials_path_ignored_due_to_env_vars(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    _restore_csfwctl_propagation: None,
 ) -> None:
     creds_file = tmp_path / "credentials.toml"
     creds_file.write_text(
@@ -145,7 +159,9 @@ def test_logs_warn_when_credentials_path_ignored_due_to_env_vars(
 
 
 def test_logs_source_when_loaded_from_file(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    _restore_csfwctl_propagation: None,
 ) -> None:
     creds_file = tmp_path / "credentials.toml"
     creds_file.write_text(

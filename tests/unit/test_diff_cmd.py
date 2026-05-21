@@ -100,7 +100,8 @@ def test_diff_surfaces_config_repo_errors(
 
     monkeypatch.setattr("csfwctl.diff_cmd.load_config_repo", fail_loader)
     monkeypatch.setattr(
-        "csfwctl.diff_cmd._default_state_provider", lambda profile: lambda: LiveState()
+        "csfwctl.diff_cmd._default_state_provider",
+        lambda profile, credentials_file: lambda: LiveState(),
     )
 
     result = runner.invoke(app, ["diff", "--env", "test", "--repo", str(bad)])
@@ -114,7 +115,7 @@ def test_diff_cli_wires_state_provider_through(
     """End-to-end Typer dispatch: ``diff --env`` runs to completion."""
     monkeypatch.setattr(
         "csfwctl.diff_cmd._default_state_provider",
-        lambda profile: lambda: LiveState(),
+        lambda profile, credentials_file: lambda: LiveState(),
     )
 
     result = runner.invoke(app, ["diff", "--env", "test", "--repo", str(realistic_repo_root)])
@@ -134,7 +135,7 @@ def test_diff_no_changes_shows_summary(
     empty_repo.mkdir()
     monkeypatch.setattr(
         "csfwctl.diff_cmd._default_state_provider",
-        lambda profile: lambda: LiveState(),
+        lambda profile, credentials_file: lambda: LiveState(),
     )
     result = runner.invoke(app, ["diff", "--env", "test", "--repo", str(empty_repo)])
     assert result.exit_code == 0, result.output + result.stderr
