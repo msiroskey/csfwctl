@@ -286,9 +286,7 @@ def _emit_drift_cleared(
     )
 
 
-def _default_state_provider(
-    profile: str | None, credentials_file: Path | None
-) -> StateProvider:
+def _default_state_provider(profile: str | None, credentials_file: Path | None) -> StateProvider:
     """Build the lambda that, on call, returns live state from the tenant."""
 
     def _provider() -> LiveState:
