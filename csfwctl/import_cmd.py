@@ -175,7 +175,8 @@ def _print_single(result: ImportResult) -> None:
 def _print_bulk(target: Path, results: list[ImportResult]) -> None:
     """Tabulate an ``import all`` run."""
     console = Console()
-    table = Table(title=f"csfwctl import all -> {target}", title_justify="left")
+    console.print(f"csfwctl import all -> {target}")
+    table = Table()
     table.add_column("Kind", style="bold")
     table.add_column("Count", justify="right")
     counts: dict[str, int] = {}
