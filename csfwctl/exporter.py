@@ -108,11 +108,13 @@ _DIRECTION_FROM_API: dict[str, Direction] = {
     "OUT": Direction.outbound,
     "INBOUND": Direction.inbound,
     "OUTBOUND": Direction.outbound,
+    "BOTH": Direction.both,
 }
 
 _DIRECTION_TO_API: dict[Direction, str] = {
     Direction.inbound: "IN",
     Direction.outbound: "OUT",
+    Direction.both: "BOTH",
 }
 
 _PROTOCOL_FROM_API: dict[str, Protocol] = {
@@ -273,16 +275,20 @@ def _flatten_addresses(value: Any) -> list[str]:
     length).  A non-zero netmask is appended as ``/N`` so the schema stores a
     proper CIDR string.  Zero means "any host in that address", which is
     typically written without a prefix.
+
+    The API wildcard ``"*"`` (meaning "any address") is dropped; in the schema
+    an empty ``addresses`` list already conveys "no address constraint".
     """
     if not value:
         return []
     out: list[str] = []
     for item in value:
         if isinstance(item, str):
-            out.append(item)
+            if item != "*":
+                out.append(item)
         elif isinstance(item, dict):
             addr = item.get("address")
-            if isinstance(addr, str):
+            if isinstance(addr, str) and addr != "*":
                 netmask = item.get("netmask")
                 if isinstance(netmask, int) and netmask > 0 and "/" not in addr:
                     out.append(f"{addr}/{netmask}")
@@ -292,7 +298,12 @@ def _flatten_addresses(value: Any) -> list[str]:
 
 
 def _flatten_ports(value: Any) -> list[int | str]:
-    """Accept ``[80]`` or ``["80-90"]`` or ``[{"start": 80, "end": 90}]``."""
+    """Accept ``[80]`` or ``["80-90"]`` or ``[{"start": 80, "end": 90}]``.
+
+    The CrowdStrike API uses ``end: 0`` as a sentinel meaning "same as start"
+    (i.e., a single port, not a range). Both fields being 0 signals "any port"
+    and is dropped so the schema treats the endpoint as unconstrained on ports.
+    """
     if not value:
         return []
     out: list[int | str] = []
@@ -305,6 +316,12 @@ def _flatten_ports(value: Any) -> list[int | str]:
             start = item.get("start")
             end = item.get("end", start)
             if isinstance(start, int) and isinstance(end, int):
+                # end=0 is a CS API sentinel for "same as start"
+                if end == 0:
+                    end = start
+                # start=0 and end=0 means "any port" — drop it
+                if start == 0 and end == 0:
+                    continue
                 out.append(start if start == end else f"{start}-{end}")
     return out
 
