@@ -120,12 +120,22 @@ _DIRECTION_TO_API: dict[Direction, str] = {
 _PROTOCOL_FROM_API: dict[str, Protocol] = {
     "0": Protocol.any,
     "1": Protocol.icmp,
+    "2": Protocol.igmp,
+    "4": Protocol.ipip,
     "6": Protocol.tcp,
     "17": Protocol.udp,
+    "41": Protocol.ipv6,
+    "47": Protocol.gre,
+    "58": Protocol.icmpv6,
     "ANY": Protocol.any,
     "TCP": Protocol.tcp,
     "UDP": Protocol.udp,
     "ICMP": Protocol.icmp,
+    "IGMP": Protocol.igmp,
+    "IPIP": Protocol.ipip,
+    "IPV6": Protocol.ipv6,
+    "GRE": Protocol.gre,
+    "ICMPV6": Protocol.icmpv6,
     "*": Protocol.any,
 }
 
@@ -134,6 +144,11 @@ _PROTOCOL_TO_API: dict[Protocol, str] = {
     Protocol.tcp: "6",
     Protocol.udp: "17",
     Protocol.icmp: "1",
+    Protocol.igmp: "2",
+    Protocol.ipip: "4",
+    Protocol.ipv6: "41",
+    Protocol.gre: "47",
+    Protocol.icmpv6: "58",
 }
 
 _PLATFORM_FROM_API: dict[str, Platform] = {
@@ -381,9 +396,18 @@ def rule_from_api(record: dict[str, Any]) -> Rule:
     direction = _DIRECTION_FROM_API.get(str(raw_direction).upper())
     if direction is None:
         raise ImporterError(f"unknown direction {raw_direction!r} on rule {name!r}")
-    protocol = _PROTOCOL_FROM_API.get(str(raw_protocol).upper())
+    protocol: Protocol | int | None = _PROTOCOL_FROM_API.get(str(raw_protocol).upper())
     if protocol is None:
-        raise ImporterError(f"unknown protocol {raw_protocol!r} on rule {name!r}")
+        # Fall back to raw IANA protocol number ("Advanced" mode).
+        try:
+            proto_num = int(raw_protocol)
+        except (TypeError, ValueError):
+            raise ImporterError(f"unknown protocol {raw_protocol!r} on rule {name!r}") from None
+        if not (0 <= proto_num <= 255):
+            raise ImporterError(
+                f"protocol number {proto_num} on rule {name!r} is out of range 0-255"
+            )
+        protocol = proto_num
 
     state = _state_from_fields(record.get("fields"))
     locations = _locations_from_api(record.get("locations"), record.get("network_locations"))
@@ -713,13 +737,16 @@ def location_to_api_shape(location: Location) -> dict[str, Any]:
 
 def _rule_to_api_shape(rule: Rule, parent_display_name: str, index: int) -> dict[str, Any]:
     """Render a :class:`Rule` into API shape (used by the round-trip harness)."""
+    proto_api = (
+        str(rule.protocol) if isinstance(rule.protocol, int) else _PROTOCOL_TO_API[rule.protocol]
+    )
     record: dict[str, Any] = {
         "id": _fake_uuid("rule", f"{parent_display_name}#{index}:{rule.name}"),
         "name": rule.name,
         "enabled": rule.enabled,
         "action": _ACTION_TO_API[rule.action],
         "direction": _DIRECTION_TO_API[rule.direction],
-        "protocol": _PROTOCOL_TO_API[rule.protocol],
+        "protocol": proto_api,
         "fields": [],
         "locations": list(rule.locations),
     }

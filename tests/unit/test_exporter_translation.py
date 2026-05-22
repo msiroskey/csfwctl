@@ -172,6 +172,44 @@ def test_rule_from_api_negated_endpoint() -> None:
     assert rule.remote.addresses == ["10.0.0.0/8"]
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2", Protocol.igmp),
+        ("4", Protocol.ipip),
+        ("41", Protocol.ipv6),
+        ("47", Protocol.gre),
+        ("58", Protocol.icmpv6),
+        ("ICMPV6", Protocol.icmpv6),
+        ("GRE", Protocol.gre),
+    ],
+)
+def test_rule_from_api_new_named_protocols(raw: str, expected: Protocol) -> None:
+    record = {"name": "r", "action": "ALLOW", "direction": "IN", "protocol": raw}
+    rule = rule_from_api(record)
+    assert rule.protocol is expected
+
+
+def test_rule_from_api_advanced_protocol_number() -> None:
+    record = {"name": "r", "action": "ALLOW", "direction": "IN", "protocol": "89"}
+    rule = rule_from_api(record)
+    assert rule.protocol == 89
+
+
+def test_rule_from_api_ip_range_address_passes_validation() -> None:
+    record = {
+        "name": "ICMPv6 Router Solicitation",
+        "action": "ALLOW",
+        "direction": "OUT",
+        "protocol": "58",
+        "remote": {"addresses": [{"address": "224.0.0.230-233"}]},
+    }
+    rule = rule_from_api(record)
+    assert rule.protocol is Protocol.icmpv6
+    assert rule.remote is not None
+    assert rule.remote.addresses == ["224.0.0.230-233"]
+
+
 def test_rule_from_api_direction_both() -> None:
     record = {
         "name": "Allow Airplay TCP",

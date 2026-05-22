@@ -350,7 +350,7 @@ def _check_platform_invariants(repo: ConfigRepo, errors: list[LoadError]) -> Non
                         path=policy_path,
                         field_path=f"rules.{rule.name}",
                         message=(
-                            f"protocol {rule.protocol.value} is not valid on "
+                            f"protocol {rule.protocol if isinstance(rule.protocol, int) else rule.protocol.value} is not valid on "
                             f"{policy.platform.value}"
                         ),
                     )
