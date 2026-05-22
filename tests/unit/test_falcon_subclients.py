@@ -83,6 +83,26 @@ def test_rule_groups_query_returns_ids(mocked_api: responses.RequestsMock) -> No
     assert ids == ["rg-1"]
 
 
+def test_rule_groups_query_sends_limit_5000_by_default(mocked_api: responses.RequestsMock) -> None:
+    """query() without an explicit limit must request 5 000 results to avoid the API default of 10."""
+    import urllib.parse
+
+    captured_urls: list[str] = []
+
+    def capture_request(request: Any) -> Any:  # type: ignore[type-arg]
+        captured_urls.append(request.url)
+        return (200, {}, '{"resources": ["rg-1"], "errors": []}')
+
+    mocked_api.add_callback(responses.GET, f"{BASE}/fwmgr/queries/rule-groups/v1", capture_request)
+    client = _client()
+    client.rule_groups.query()
+
+    assert captured_urls, "no request was made"
+    parsed = urllib.parse.urlparse(captured_urls[0])
+    params = urllib.parse.parse_qs(parsed.query)
+    assert params.get("limit") == ["5000"]
+
+
 def test_host_groups_find_by_name(mocked_api: responses.RequestsMock) -> None:
     mocked_api.add(
         responses.GET,

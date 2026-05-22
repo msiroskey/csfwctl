@@ -21,12 +21,14 @@ class RuleGroupsAPI:
         return self._client._firewall_management_service()  # noqa: SLF001
 
     def query(self, *, filter: str | None = None, limit: int | None = None) -> list[str]:
-        """Return rule-group IDs matching ``filter`` (FQL)."""
-        params: dict[str, Any] = {}
+        """Return rule-group IDs matching ``filter`` (FQL).
+
+        The API default limit is 10; callers that omit ``limit`` want all
+        results, so we pass the API maximum (5 000) to avoid silent truncation.
+        """
+        params: dict[str, Any] = {"limit": limit if limit is not None else 5000}
         if filter is not None:
             params["filter"] = filter
-        if limit is not None:
-            params["limit"] = limit
         result = self._client.call(
             "firewall_rule_groups.query",
             lambda: self._svc().query_rule_groups(parameters=params),

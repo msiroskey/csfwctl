@@ -440,6 +440,44 @@ Phase 10: Operational hardening — complete. All planned phases are done.
 
 ## Bug fixes applied post-v1
 
+- [x] **Bug 3 — zero rule-group imports from real tenant**: Three root
+      causes fixed together:
+      - `query_rule_groups` default limit is 10; `RuleGroupsAPI.query` now
+        passes `limit=5000` when the caller does not specify a limit, so
+        `list_all()` fetches all groups rather than the first 10.
+      - `_fetch_rules_for_groups` sent all rule IDs in a single HTTP call;
+        with large rule sets this could exceed URL-length limits. Now batches
+        in groups of 100 IDs per call.
+      - The real API returns rule records indexed by a *numeric* `id`, but
+        some tenants carry an additional `family_id` (32-char hex string)
+        that appears in the rule group's `rule_ids` field.
+        `_fetch_rules_for_groups` now indexes each fetched rule record under
+        both its `id` and its `family_id` so lookups resolve either format.
+      - `rule_from_api` was only handling the nested `local`/`remote` endpoint
+        shape used by the test-fixture generator. The real API returns
+        `local_address` / `local_port` / `remote_address` / `remote_port` as
+        separate top-level fields. Both shapes are now handled, with the flat
+        shape tried as a fallback when the nested key is absent.
+      - `_flatten_addresses` now appends the CIDR prefix length when the API
+        returns `{"address": "x.x.x.x", "netmask": N}` with `N > 0`.
+      440 tests pass (6 new covering the batch logic, family_id indexing,
+      flat endpoint fields, and netmask CIDR formatting).
+- [x] **Bug 2 — non-slug object names silently dropped on import**: Policy,
+      rule-group, and location names with spaces, underscores, or mixed-case
+      (e.g. `cs default`, `platform_default`) failed `SLUG_RE` validation and
+      were silently skipped. Fix:
+      - Added `to_slug()` normaliser (`spaces/underscores → hyphens, lowercase`).
+      - Added `display_name: CrowdStrikeName | None` field to `Policy`,
+        `RuleGroup`, and `Location` models. Stores the verbatim CrowdStrike
+        name when it doesn't match the derived slug.
+      - Changed `Policy.name` type from `DisplayName` (TitleCase) to `Slug`.
+        `display_name` carries the TitleCase original.
+      - Importer sets `display_name` automatically when the imported name
+        normalises to a different slug.
+      - Applier, differ, and precedence resolver use `display_name or name`
+        when constructing the CrowdStrike object name.
+      - Updated all four fixture YAML files, all affected tests, and
+        `docs/schema_reference.md`.
 - [x] **Bug 1 — `--repo` ignored on import**: `cli.py` import handlers
       were ignoring the global `--repo` option. Added `_repo_from_ctx()`
       helper; all four import handlers now fall back to `--repo` when no

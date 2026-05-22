@@ -267,7 +267,13 @@ def _endpoint_from_api(data: dict[str, Any] | None) -> Endpoint | None:
 
 
 def _flatten_addresses(value: Any) -> list[str]:
-    """Accept either ``["10.0.0.0/8"]`` or ``[{"address": ...}]``."""
+    """Accept ``["10.0.0.0/8"]``, ``[{"address": ...}]``, or ``[{"address": ..., "netmask": N}]``.
+
+    The real API returns address dicts with a numeric ``netmask`` (CIDR prefix
+    length).  A non-zero netmask is appended as ``/N`` so the schema stores a
+    proper CIDR string.  Zero means "any host in that address", which is
+    typically written without a prefix.
+    """
     if not value:
         return []
     out: list[str] = []
@@ -277,7 +283,11 @@ def _flatten_addresses(value: Any) -> list[str]:
         elif isinstance(item, dict):
             addr = item.get("address")
             if isinstance(addr, str):
-                out.append(addr)
+                netmask = item.get("netmask")
+                if isinstance(netmask, int) and netmask > 0 and "/" not in addr:
+                    out.append(f"{addr}/{netmask}")
+                else:
+                    out.append(addr)
     return out
 
 
@@ -306,6 +316,26 @@ def _coerce_port_string(text: str) -> int | str:
     return text
 
 
+def _endpoint_from_api_flat(record: dict[str, Any], side: str) -> Endpoint | None:
+    """Build an :class:`Endpoint` from the flat ``{side}_address`` / ``{side}_port`` fields.
+
+    The real CrowdStrike API returns rules with separate top-level
+    ``local_address``, ``local_port``, ``remote_address``, ``remote_port``
+    fields rather than the nested ``local``/``remote`` objects used in the
+    test-fixture shape.  This helper handles that wire format.
+    """
+    addresses = _flatten_addresses(record.get(f"{side}_address"))
+    ports = _flatten_ports(record.get(f"{side}_port"))
+    if not addresses and not ports:
+        return None
+    return Endpoint(
+        addresses=addresses,
+        addresses_negated=bool(record.get(f"{side}_address_negated", False)),
+        ports=ports,
+        ports_negated=bool(record.get(f"{side}_port_negated", False)),
+    )
+
+
 def rule_from_api(record: dict[str, Any]) -> Rule:
     """Convert a CrowdStrike rule detail record to a :class:`Rule`.
 
@@ -313,6 +343,12 @@ def rule_from_api(record: dict[str, Any]) -> Rule:
     direction, numeric protocol IDs, and a ``fields`` array for the
     optional connection-state qualifier. We normalise into the lowercase
     enums csfwctl exposes.
+
+    Endpoint information is accepted in two shapes: the nested
+    ``local``/``remote`` objects used by the test-fixture generator, and
+    the flat ``local_address``/``local_port``/``remote_address``/
+    ``remote_port`` fields returned by the real ``GET /fwmgr/entities/rules/v1``
+    API.
     """
     try:
         name = record["name"]
@@ -335,6 +371,9 @@ def rule_from_api(record: dict[str, Any]) -> Rule:
     state = _state_from_fields(record.get("fields"))
     locations = _locations_from_api(record.get("locations"), record.get("network_locations"))
 
+    local = _endpoint_from_api(record.get("local")) or _endpoint_from_api_flat(record, "local")
+    remote = _endpoint_from_api(record.get("remote")) or _endpoint_from_api_flat(record, "remote")
+
     return Rule(
         name=str(name),
         enabled=bool(record.get("enabled", True)),
@@ -343,8 +382,8 @@ def rule_from_api(record: dict[str, Any]) -> Rule:
         protocol=protocol,
         state=state,
         locations=locations,
-        local=_endpoint_from_api(record.get("local")),
-        remote=_endpoint_from_api(record.get("remote")),
+        local=local,
+        remote=remote,
     )
 
 
@@ -825,10 +864,20 @@ def _enrich_policy_records_with_containers(
         record.setdefault("settings", {})["rule_group_ids"] = rg_ids
 
 
+_RULE_FETCH_BATCH_SIZE = 100
+"""Max IDs per ``get_rules`` call; keeps query strings under URL-length limits."""
+
+
 def _fetch_rules_for_groups(
     client: FalconClient, rg_records: list[dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
-    """Batch-fetch every rule referenced by the given rule-group records."""
+    """Batch-fetch every rule referenced by the given rule-group records.
+
+    Sends IDs in batches of :data:`_RULE_FETCH_BATCH_SIZE` to stay within
+    URL length limits.  Each returned record is indexed by both its numeric
+    ``id`` and its ``family_id`` (a 32-character hex string used by some
+    API versions) so that ``rule_group_from_api`` can resolve either format.
+    """
     rule_ids: list[str] = []
     seen: set[str] = set()
     for rg in rg_records:
@@ -840,8 +889,17 @@ def _fetch_rules_for_groups(
             rule_ids.append(rid_str)
     if not rule_ids:
         return {}
-    fetched = client.rule_groups.get_rules(rule_ids)
-    return {str(r["id"]): r for r in fetched if "id" in r}
+    rules_by_id: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(rule_ids), _RULE_FETCH_BATCH_SIZE):
+        batch = rule_ids[i : i + _RULE_FETCH_BATCH_SIZE]
+        fetched = client.rule_groups.get_rules(batch)
+        for r in fetched:
+            if "id" in r:
+                rules_by_id[str(r["id"])] = r
+            family = r.get("family_id") or r.get("familyId")
+            if family:
+                rules_by_id[str(family)] = r
+    return rules_by_id
 
 
 def import_policy(
