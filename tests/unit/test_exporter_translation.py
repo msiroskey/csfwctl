@@ -172,6 +172,57 @@ def test_rule_from_api_negated_endpoint() -> None:
     assert rule.remote.addresses == ["10.0.0.0/8"]
 
 
+def test_rule_from_api_direction_both() -> None:
+    record = {
+        "name": "Allow Airplay TCP",
+        "action": "ALLOW",
+        "direction": "BOTH",
+        "protocol": "6",
+    }
+    rule = rule_from_api(record)
+    assert rule.direction is Direction.both
+
+
+def test_rule_from_api_wildcard_address_dropped() -> None:
+    record = {
+        "name": "Allow all outbound",
+        "action": "ALLOW",
+        "direction": "OUT",
+        "protocol": "6",
+        "remote": {"addresses": [{"address": "*"}], "ports": [{"start": 443, "end": 443}]},
+    }
+    rule = rule_from_api(record)
+    assert rule.remote is not None
+    assert rule.remote.addresses == []
+    assert rule.remote.ports == [443]
+
+
+def test_rule_from_api_port_end_zero_treated_as_single_port() -> None:
+    record = {
+        "name": "Allow SSH",
+        "action": "ALLOW",
+        "direction": "IN",
+        "protocol": "6",
+        "local": {"ports": [{"start": 22, "end": 0}]},
+    }
+    rule = rule_from_api(record)
+    assert rule.local is not None
+    assert rule.local.ports == [22]
+
+
+def test_rule_from_api_port_both_zero_dropped() -> None:
+    record = {
+        "name": "Allow all TCP",
+        "action": "ALLOW",
+        "direction": "OUT",
+        "protocol": "6",
+        "remote": {"addresses": [{"address": "10.0.0.1"}], "ports": [{"start": 0, "end": 0}]},
+    }
+    rule = rule_from_api(record)
+    assert rule.remote is not None
+    assert rule.remote.ports == []
+
+
 def test_rule_from_api_unknown_action_raises() -> None:
     with pytest.raises(ImporterError, match="unknown action"):
         rule_from_api({"name": "x", "action": "MAYBE", "direction": "IN", "protocol": "6"})

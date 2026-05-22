@@ -109,6 +109,7 @@ class Direction(StrEnum):
 
     inbound = "inbound"
     outbound = "outbound"
+    both = "both"
 
 
 class Protocol(StrEnum):

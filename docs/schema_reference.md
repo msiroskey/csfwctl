@@ -55,7 +55,7 @@ Precedence buckets: `emergency` `high` `medium` `default` `low`.
 | `name`      | string (1-120)                    | yes      | Free-form; shown in CrowdStrike.                   |
 | `enabled`   | bool                              | no       | Default `true`.                                    |
 | `action`    | `allow` \| `block` \| `monitor`   | yes      |                                                    |
-| `direction` | `inbound` \| `outbound`           | yes      |                                                    |
+| `direction` | `inbound` \| `outbound` \| `both` | yes      | `both` matches traffic in either direction.        |
 | `protocol`  | `any` \| `tcp` \| `udp` \| `icmp` | yes      |                                                    |
 | `state`     | `new` \| `established` \| `related` | no    | Only valid when `protocol` is `tcp` or `any`.       |
 | `locations` | list of slugs (or `any`)          | no       | Default `[any]`. Must be non-empty.                |
