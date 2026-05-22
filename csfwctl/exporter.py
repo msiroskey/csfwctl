@@ -36,6 +36,7 @@ from csfwctl.schema import (
     Location,
     Platform,
     Policy,
+    PolicySettings,
     PrecedenceBucket,
     Protocol,
     Rule,
@@ -43,6 +44,7 @@ from csfwctl.schema import (
     Status,
 )
 from csfwctl.schema._common import SLUG_RE
+from csfwctl.schema.policy_settings import DefaultTrafficAction, EnforcementMode
 
 ENV_SUFFIXES: tuple[str, ...] = ("-Production", "-Pilot", "-Test")
 """Environment suffixes appended to CrowdStrike display names. Longest first
@@ -618,6 +620,27 @@ def policy_from_api(
     settings = record.get("settings") or {}
     rule_group_ids = settings.get("rule_group_ids") or record.get("rule_group_ids") or []
 
+    # Parse optional enforcement and default-traffic settings.
+    policy_settings: PolicySettings | None = None
+    enforce_val = settings.get("enforce")
+    local_logging_val = settings.get("local_logging", False)
+    inbound_val = settings.get("inbound")
+    outbound_val = settings.get("outbound")
+    if any(v is not None for v in (enforce_val, inbound_val, outbound_val)):
+        enforcement_mode: EnforcementMode | None = None
+        if enforce_val is not None:
+            if local_logging_val:
+                enforcement_mode = EnforcementMode.local_logging
+            elif enforce_val:
+                enforcement_mode = EnforcementMode.enforce
+            else:
+                enforcement_mode = EnforcementMode.monitor
+        policy_settings = PolicySettings(
+            enforcement_mode=enforcement_mode,
+            default_inbound=(DefaultTrafficAction(inbound_val.lower()) if inbound_val else None),
+            default_outbound=(DefaultTrafficAction(outbound_val.lower()) if outbound_val else None),
+        )
+
     inline_rules: list[Rule] = []
     referenced_slugs: list[str] = []
     base_policy_slug = slug
@@ -654,6 +677,7 @@ def policy_from_api(
         host_groups=host_groups,
         rules=inline_rules,
         rule_groups=referenced_slugs,
+        settings=policy_settings,
     )
 
 
@@ -675,6 +699,18 @@ def policy_to_api_shape(policy: Policy, env: str) -> dict[str, Any]:
     if policy.rules:
         override_slug = f"{policy.name}-overrides-{env}"
         rule_group_refs.insert(0, override_slug)
+    api_settings: dict[str, Any] = {
+        "rule_group_ids": [_fake_uuid("rule-group", f"{slug}{suffix}") for slug in rule_group_refs],
+    }
+    if policy.settings is not None:
+        ps = policy.settings
+        if ps.enforcement_mode is not None:
+            api_settings["enforce"] = ps.enforcement_mode is EnforcementMode.enforce
+            api_settings["local_logging"] = ps.enforcement_mode is EnforcementMode.local_logging
+        if ps.default_inbound is not None:
+            api_settings["inbound"] = ps.default_inbound.upper()
+        if ps.default_outbound is not None:
+            api_settings["outbound"] = ps.default_outbound.upper()
     return {
         "id": _fake_uuid("policy", display_name),
         "name": display_name,
@@ -685,11 +721,7 @@ def policy_to_api_shape(policy: Policy, env: str) -> dict[str, Any]:
             {"id": _fake_uuid("host-group", group_name), "name": group_name}
             for group_name, _ in policy.host_groups.items()
         ],
-        "settings": {
-            "rule_group_ids": [
-                _fake_uuid("rule-group", f"{slug}{suffix}") for slug in rule_group_refs
-            ],
-        },
+        "settings": api_settings,
     }
 
 

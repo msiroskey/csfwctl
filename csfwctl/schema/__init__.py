@@ -21,6 +21,7 @@ from csfwctl.schema._common import (
 )
 from csfwctl.schema.location import Location
 from csfwctl.schema.policy import Policy
+from csfwctl.schema.policy_settings import DefaultTrafficAction, EnforcementMode, PolicySettings
 from csfwctl.schema.precedence import PrecedenceOverride, PrecedenceOverrides
 from csfwctl.schema.rule import ANY_LOCATION, Endpoint, Rule
 from csfwctl.schema.rule_group import RuleGroup
@@ -39,8 +40,10 @@ __all__ = [
     "ConnectionState",
     "CrowdStrikeName",
     "DISPLAY_NAME_RE",
+    "DefaultTrafficAction",
     "Direction",
     "DisplayName",
+    "EnforcementMode",
     "Endpoint",
     "HostGroupEnv",
     "LintSection",
@@ -48,6 +51,7 @@ __all__ = [
     "NotifierConfig",
     "Platform",
     "Policy",
+    "PolicySettings",
     "PrecedenceBucket",
     "PrecedenceOverride",
     "PrecedenceOverrides",

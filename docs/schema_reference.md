@@ -23,19 +23,87 @@ stem (slug). Extra characters are rejected at load time.
 
 ## Policy (`policies/<slug>.yaml`)
 
-| Field         | Type                          | Required | Notes                                     |
-|---------------|-------------------------------|----------|-------------------------------------------|
-| `name`        | `Slug`                        | yes      | `lowercase-kebab-case`. Must match filename stem. |
-| `display_name`| string (1-200)                | no       | Verbatim CrowdStrike name. Overrides `name` at apply time. Set by importer when needed. |
-| `platform`    | `windows` \| `mac`            | yes      | Linux deferred to a later sprint.         |
-| `priority`    | precedence bucket             | no       | Default `default`.                        |
-| `status`      | `enabled` \| `disabled` \| `deleted` | no | Default `enabled`.                        |
-| `description` | string (≤ 2000)               | no       |                                           |
-| `host_groups` | `{DisplayName: env}`          | no       | Each env (`test`/`pilot`/`production`) may appear at most once. |
-| `rules`       | list of inline `Rule`         | no       | Becomes anonymous override group at apply. |
-| `rule_groups` | list of slug references       | no       | Precedence order. No duplicates.          |
+| Field                 | Type                                    | Required | Notes                                                                                      |
+|-----------------------|-----------------------------------------|----------|--------------------------------------------------------------------------------------------|
+| `name`                | `Slug`                                  | yes      | `lowercase-kebab-case`. Must match filename stem.                                          |
+| `display_name`        | string (1-200)                          | no       | Verbatim CrowdStrike name. Overrides `name` at apply time. Set by importer when needed.   |
+| `platform`            | `windows` \| `mac`                      | yes      | Linux deferred to a later sprint.                                                          |
+| `priority`            | precedence bucket                       | no       | Default `default`.                                                                         |
+| `status`              | `enabled` \| `disabled` \| `deleted`    | no       | Default `enabled`.                                                                         |
+| `description`         | string (≤ 2000)                         | no       |                                                                                            |
+| `host_groups`         | `{DisplayName: env}`                    | no       | Each env (`test`/`pilot`/`production`) may appear at most once.                            |
+| `managed_host_groups` | `{env: [hostname, …]}`                  | no       | Auto-creates a dynamic CrowdStrike host group per env. See [Managed host groups](#managed-host-groups-managed_host_groups). |
+| `rules`               | list of inline `Rule`                   | no       | Becomes anonymous override group at apply.                                                 |
+| `rule_groups`         | list of slug references                 | no       | Precedence order. No duplicates.                                                           |
+| `settings`            | `PolicySettings`                        | no       | Enforcement mode and default traffic actions. See [Policy settings](#policy-settings-settings). |
+| `inherits`            | slug of parent policy                   | no       | Inherit all unset fields from the named policy. Depth-1 only. See [Policy inheritance](#policy-inheritance). |
+| `append_rule_groups`  | bool                                    | no       | Default `false`. When `true` and `inherits` is set, prepends parent `rule_groups` before child's. |
+| `append_rules`        | bool                                    | no       | Default `false`. When `true` and `inherits` is set, prepends parent inline `rules` before child's. |
 
 Precedence buckets: `emergency` `high` `medium` `default` `low`.
+
+## PolicySettings (`settings` block inside a policy)
+
+| Field              | Type                                           | Notes                                                                              |
+|--------------------|------------------------------------------------|------------------------------------------------------------------------------------|
+| `enforcement_mode` | `enforce` \| `monitor` \| `local_logging`      | Maps to CrowdStrike's `enforce`/`local_logging` booleans. Default: API default.    |
+| `default_inbound`  | `allow` \| `deny`                              | Default action for inbound traffic not matched by any rule.                        |
+| `default_outbound` | `allow` \| `deny`                              | Default action for outbound traffic not matched by any rule.                       |
+
+All three fields are optional. If `settings` is omitted the policy inherits the
+tenant's global defaults.
+
+`enforcement_mode` values:
+
+- `enforce` — policy is fully enforced; block rules block traffic.
+- `monitor` — monitor-only mode; all traffic is allowed but block events are
+  recorded as "would be blocked". Equivalent to setting CrowdStrike's
+  `enforce: false, local_logging: false`.
+- `local_logging` — block rules block traffic and events are written to the
+  local event log without being sent to the cloud.
+
+## Policy inheritance
+
+A policy may declare `inherits: <parent-slug>` to use another policy as a
+baseline. At materialise time (diff / apply) the resolver produces a flat
+`Policy` with no `inherits` field:
+
+- **Scalar fields** — the child's value wins for every field it explicitly
+  sets; unset fields fall back to the parent's value.
+- **`rule_groups`** — replaced by the child's list (default). Set
+  `append_rule_groups: true` to prepend the parent's list before the child's.
+- **`rules`** — replaced by the child's list (default). Set
+  `append_rules: true` to prepend the parent's rules before the child's.
+- **`host_groups` / `managed_host_groups`** — always replaced (no append).
+  If the resolved policy would have both `host_groups` and `managed_host_groups`
+  covering the same env, `managed_host_groups` wins and the inherited
+  `host_groups` entry for that env is dropped.
+
+Inheritance is **depth-1 only**: a parent policy must not itself have an
+`inherits` field. The `inheritance-depth` lint rule enforces this statically.
+
+## Managed host groups (`managed_host_groups`)
+
+```yaml
+managed_host_groups:
+  test:
+    - machine-a
+    - machine-b
+  production:
+    - machine-c
+```
+
+Each entry creates or updates a **dynamic** CrowdStrike host group with an FQL
+filter `hostname:'machine-a' or hostname:'machine-b'`. The group is
+automatically named `{display_name or name.title()}-Managed-{Env}` (e.g.
+`ABC01-Endpoints-Managed-Test`).
+
+Restrictions:
+
+- An env may not appear in both `host_groups` and `managed_host_groups` on the
+  same policy (validated at load time).
+- An empty hostname list is allowed in YAML but produces no host group and no
+  assignment (equivalent to omitting the env key).
 
 ## RuleGroup (`rule_groups/<slug>.yaml`)
 

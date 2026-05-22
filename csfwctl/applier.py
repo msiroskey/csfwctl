@@ -35,6 +35,7 @@ from csfwctl.differ import (
     KIND_RULE_GROUP,
     ChangeSet,
     HostGroupChange,
+    ManagedGroupChange,
     ObjectChange,
     build_desired_state,
     env_suffix,
@@ -283,6 +284,18 @@ def _build_policy_payload(
             )
         resolved.append(rg_id)
     settings["rule_group_ids"] = resolved
+    # Inject enforcement and default-traffic settings when specified.
+    if policy.settings is not None:
+        ps = policy.settings
+        if ps.enforcement_mode is not None:
+            from csfwctl.schema.policy_settings import EnforcementMode
+
+            settings["enforce"] = ps.enforcement_mode is EnforcementMode.enforce
+            settings["local_logging"] = ps.enforcement_mode is EnforcementMode.local_logging
+        if ps.default_inbound is not None:
+            settings["inbound"] = ps.default_inbound.upper()
+        if ps.default_outbound is not None:
+            settings["outbound"] = ps.default_outbound.upper()
     return shape
 
 
@@ -354,6 +367,134 @@ def _resolve_host_group_ids(
         report.warnings.append(
             f"host group {name!r} not found; assignment skipped (pass --strict-groups "
             "to fail or --create-groups to create it)"
+        )
+    return resolved
+
+
+def _apply_managed_host_groups(
+    client: FalconClient,
+    managed_group_changes: list[tuple[str, ManagedGroupChange]],
+    options: ApplyOptions,
+    report: ApplyReport,
+) -> dict[str, str]:
+    """Create or update dynamic host groups for ``managed_host_groups`` entries.
+
+    Returns a mapping of ``group_name → group_id`` for all managed groups
+    that were created, updated, or already existed.  The caller threads
+    these IDs into ``host_group_ids`` before building policy payloads.
+
+    ``managed_group_changes`` is a list of ``(policy_slug, ManagedGroupChange)``
+    pairs collected from all policy creates/updates in the change set.
+    """
+    resolved: dict[str, str] = {}
+    seen: set[str] = set()
+    for policy_slug, mgc in managed_group_changes:
+        if mgc.group_name in seen:
+            continue
+        seen.add(mgc.group_name)
+
+        if mgc.op == "no-change":
+            # Group already has the right FQL; just look up its ID.
+            try:
+                record = client.host_groups.find_by_name(mgc.group_name)
+            except Exception as exc:  # noqa: BLE001
+                report.warnings.append(
+                    f"managed host group {mgc.group_name!r} lookup failed: {exc}"
+                )
+                continue
+            if record and record.get("id"):
+                resolved[mgc.group_name] = str(record["id"])
+            continue
+
+        if mgc.op == "create":
+            if options.dry_run:
+                synth_id = f"dry-run-managed-hg-{policy_slug}"
+                resolved[mgc.group_name] = synth_id
+                report.actions.append(
+                    AppliedAction(
+                        kind="host-group",
+                        op="create",
+                        slug=policy_slug,
+                        display_name=mgc.group_name,
+                        detail=f"dry-run (dynamic, fql={mgc.desired_fql!r})",
+                    )
+                )
+                continue
+            try:
+                created = client.host_groups.create_dynamic(
+                    mgc.group_name,
+                    fql=mgc.desired_fql,
+                    description=f"Managed by csfwctl for policy {policy_slug}",
+                )
+            except Exception as exc:  # noqa: BLE001
+                report.warnings.append(
+                    f"failed to create managed host group {mgc.group_name!r}: {exc}"
+                )
+                continue
+            if created and created.get("id"):
+                resolved[mgc.group_name] = str(created["id"])
+                report.actions.append(
+                    AppliedAction(
+                        kind="host-group",
+                        op="create",
+                        slug=policy_slug,
+                        display_name=mgc.group_name,
+                        detail=str(created["id"]),
+                    )
+                )
+            continue
+
+        # op == "update": FQL changed.
+        try:
+            live_record = client.host_groups.find_by_name(mgc.group_name)
+        except Exception as exc:  # noqa: BLE001
+            report.warnings.append(f"managed host group {mgc.group_name!r} lookup failed: {exc}")
+            continue
+        if not live_record or not live_record.get("id"):
+            report.warnings.append(
+                f"managed host group {mgc.group_name!r} marked for update but "
+                "not found in CrowdStrike; it will be created on next apply"
+            )
+            continue
+        live_id = str(live_record["id"])
+        if options.dry_run:
+            resolved[mgc.group_name] = live_id
+            report.actions.append(
+                AppliedAction(
+                    kind="host-group",
+                    op="update",
+                    slug=policy_slug,
+                    display_name=mgc.group_name,
+                    detail=f"dry-run (fql={mgc.desired_fql!r})",
+                )
+            )
+            continue
+        # Check managed-status: warn if group exists but isn't csfwctl-managed.
+        live_desc = str(live_record.get("description", "") or "")
+        from csfwctl.differ import METADATA_SIGNATURE_TOKEN
+
+        if METADATA_SIGNATURE_TOKEN not in live_desc:
+            report.warnings.append(
+                f"managed host group {mgc.group_name!r} exists but was not "
+                "created by csfwctl; FQL will be updated but external membership "
+                "changes are not tracked"
+            )
+        try:
+            client.host_groups.update_fql(live_id, mgc.desired_fql)
+        except Exception as exc:  # noqa: BLE001
+            report.warnings.append(
+                f"failed to update FQL for managed host group {mgc.group_name!r}: {exc}"
+            )
+            continue
+        resolved[mgc.group_name] = live_id
+        report.actions.append(
+            AppliedAction(
+                kind="host-group",
+                op="update",
+                slug=policy_slug,
+                display_name=mgc.group_name,
+                detail=live_id,
+            )
         )
     return resolved
 
@@ -501,6 +642,13 @@ def apply_change_set(
     policy_creates = _ordered(change_set.creates, KIND_POLICY)
     policy_updates = _ordered(change_set.updates, KIND_POLICY)
 
+    # 3a. Create/update managed dynamic host groups before resolving IDs.
+    all_managed_changes: list[tuple[str, ManagedGroupChange]] = []
+    for change in (*policy_creates, *policy_updates):
+        for mgc in change.managed_group_changes:
+            all_managed_changes.append((change.slug, mgc))
+    managed_group_ids = _apply_managed_host_groups(client, all_managed_changes, options, report)
+
     needed_host_groups: list[str] = []
     for change in (*policy_creates, *policy_updates):
         p_model = desired_policies[change.slug]
@@ -510,6 +658,8 @@ def apply_change_set(
             if hg_change.op == "add":
                 needed_host_groups.append(hg_change.group_name)
     host_group_ids = _resolve_host_group_ids(client, needed_host_groups, options, report)
+    # Merge managed group IDs so policy payloads can reference them.
+    host_group_ids.update(managed_group_ids)
 
     rule_group_ids: dict[str, str] = {
         slug: live_id for slug, (live_id, _desc) in index.rule_groups.items()
