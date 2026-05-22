@@ -181,6 +181,76 @@ typically wired into a cron / CI schedule against Production. See
 [`docs/operations.md`](./docs/operations.md) for the rollback and
 drift-response runbooks.
 
+## Naming conventions
+
+csfwctl distinguishes three names for every object. Following the
+conventions below keeps slugs, display names, and host-group references
+aligned, and keeps the env-suffix machinery working.
+
+| Name           | Style                  | Where it appears                                                       | Example                                |
+|----------------|------------------------|------------------------------------------------------------------------|----------------------------------------|
+| Slug           | `lowercase-kebab-case` | YAML filename stem and in-document `name:`; cross-references.          | `abc01-endpoints-windows`              |
+| Display name   | `TitleCase-With-Hyphens` | Optional `display_name:` field; what CrowdStrike shows.               | `ABC01-Endpoints-Windows`              |
+| Live name      | display name + env suffix | Appended by csfwctl at apply time. Never typed into YAML.            | `ABC01-Endpoints-Windows-Production`   |
+
+### Platform suffix on slugs
+
+Policies and rule groups are platform-scoped (`windows` or `mac`).
+Always include the platform as the trailing token of the slug so the
+file is self-describing and so a mac-equivalent can sit next to it
+without colliding:
+
+- `abc01-endpoints-windows` / `abc01-endpoints-mac`
+- `windows-baseline` / `mac-baseline`
+- `windows-remote-access`
+
+Locations are tenant-global and do not take a platform suffix
+(e.g. `corp-vpn`).
+
+### Rollout-phase suffix
+
+The environment suffix is **appended by csfwctl at apply time** and
+must never appear in YAML:
+
+| Environment   | Suffix          |
+|---------------|-----------------|
+| Test          | `-Test`         |
+| Pilot         | `-Pilot`        |
+| Production    | `-Production`   |
+
+So a slug `abc01-endpoints-windows` with `display_name:
+ABC01-Endpoints-Windows` materialises in CrowdStrike as three objects:
+`ABC01-Endpoints-Windows-Test`, `ABC01-Endpoints-Windows-Pilot`, and
+`ABC01-Endpoints-Windows-Production`. The same Git SHA produces all
+three; the only difference is the suffix.
+
+### Host groups
+
+Pre-create host groups in the Falcon console using the same pattern —
+display name plus env suffix — and reference each one in the policy
+under the matching env key:
+
+```yaml
+host_groups:
+  ABC01-Endpoints-Windows-Test:       test
+  ABC01-Endpoints-Windows-Pilot:      pilot
+  ABC01-Endpoints-Windows-Production: production
+```
+
+Each env (`test` / `pilot` / `production`) may appear at most once.
+`csfwctl apply` will refuse a referenced host group that doesn't exist
+unless you pass `--create-groups` (creates it empty) or
+`--strict-groups` (hard fail).
+
+### When the display name has to break the pattern
+
+If a CrowdStrike object name predates csfwctl and can't be renamed
+(remember: names never change once set), keep the slug in the canonical
+style and set `display_name:` to the verbatim console name. The
+importer does this automatically when it encounters a non-conforming
+name. The slug still drives the filename and all cross-references; the
+display name is the only thing csfwctl pushes to the tenant.
+
 ## Sample config repo
 
 A minimal repo looks like this:
