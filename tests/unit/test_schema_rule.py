@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from csfwctl.schema import Action, Direction, Endpoint, Protocol, Rule
+from csfwctl.schema import Action, ConnectionState, Direction, Endpoint, Protocol, Rule
 
 
 def test_rule_minimum_fields() -> None:
@@ -78,6 +78,71 @@ def test_endpoint_negation_requires_values() -> None:
         Endpoint(addresses_negated=True)
     with pytest.raises(ValidationError):
         Endpoint(ports_negated=True)
+
+
+@pytest.mark.parametrize(
+    "addr",
+    [
+        "10.0.0.1",
+        "192.168.0.0/16",
+        "224.0.0.230-233",  # CS last-octet shorthand
+        "10.0.0.1-10.0.0.254",  # full range
+    ],
+)
+def test_endpoint_accepts_ip_range_addresses(addr: str) -> None:
+    ep = Endpoint(addresses=[addr])
+    assert ep.addresses == [addr]
+
+
+@pytest.mark.parametrize(
+    "addr",
+    [
+        "not-an-ip",
+        "10.0.0.254-10.0.0.1",  # end before start
+        "10.0.0.1-999",  # last octet out of range
+    ],
+)
+def test_endpoint_rejects_bad_addresses(addr: str) -> None:
+    with pytest.raises(ValidationError):
+        Endpoint(addresses=[addr])
+
+
+@pytest.mark.parametrize(
+    "proto",
+    [
+        Protocol.igmp,
+        Protocol.ipip,
+        Protocol.ipv6,
+        Protocol.gre,
+        Protocol.icmpv6,
+    ],
+)
+def test_rule_accepts_new_named_protocols(proto: Protocol) -> None:
+    rule = Rule(name="test", action=Action.allow, direction=Direction.inbound, protocol=proto)
+    assert rule.protocol is proto
+
+
+@pytest.mark.parametrize("proto_num", [0, 89, 255])
+def test_rule_accepts_raw_protocol_number(proto_num: int) -> None:
+    rule = Rule(name="test", action=Action.allow, direction=Direction.outbound, protocol=proto_num)
+    assert rule.protocol == proto_num
+
+
+def test_rule_rejects_protocol_number_out_of_range() -> None:
+    with pytest.raises(ValidationError):
+        Rule(name="test", action=Action.allow, direction=Direction.outbound, protocol=256)
+
+
+def test_rule_state_allowed_with_raw_protocol_number() -> None:
+    # Raw int protocols bypass the tcp-only state check; user controls this.
+    rule = Rule(
+        name="test",
+        action=Action.allow,
+        direction=Direction.inbound,
+        protocol=6,  # TCP by number
+        state=ConnectionState.established,
+    )
+    assert rule.state is ConnectionState.established
 
 
 def test_rule_referenced_locations_excludes_any() -> None:

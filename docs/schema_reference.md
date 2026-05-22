@@ -56,7 +56,7 @@ Precedence buckets: `emergency` `high` `medium` `default` `low`.
 | `enabled`   | bool                              | no       | Default `true`.                                    |
 | `action`    | `allow` \| `block` \| `monitor`   | yes      |                                                    |
 | `direction` | `inbound` \| `outbound` \| `both` | yes      | `both` matches traffic in either direction.        |
-| `protocol`  | `any` \| `tcp` \| `udp` \| `icmp` | yes      |                                                    |
+| `protocol`  | named value or integer (0-255)    | yes      | Named: `any` `tcp` `udp` `icmp` `igmp` `ipip` `ipv6` `gre` `icmpv6`. Integer for unlisted protocols ("Advanced" mode). IPv6-family protocols (`ipv6`, `icmpv6`) should be paired with IPv6 addresses. |
 | `state`     | `new` \| `established` \| `related` | no    | Only valid when `protocol` is `tcp` or `any`.       |
 | `locations` | list of slugs (or `any`)          | no       | Default `[any]`. Must be non-empty.                |
 | `local`     | `Endpoint`                        | no       |                                                    |
@@ -66,7 +66,7 @@ Precedence buckets: `emergency` `high` `medium` `default` `low`.
 
 | Field                | Type                | Notes                                       |
 |----------------------|---------------------|---------------------------------------------|
-| `addresses`          | list of IP or CIDR  | IPv4 or IPv6 accepted.                      |
+| `addresses`          | list of IP, CIDR, or range | IPv4 or IPv6. Range forms: `10.0.0.1-10.0.0.254` (full) or `10.0.0.1-254` (last-octet shorthand). |
 | `addresses_negated`  | bool                | Requires non-empty `addresses`.             |
 | `ports`              | list of `int` or `"N-M"` | 1-65535. Range strings inclusive.       |
 | `ports_negated`      | bool                | Requires non-empty `ports`.                 |

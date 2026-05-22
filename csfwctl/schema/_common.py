@@ -113,12 +113,24 @@ class Direction(StrEnum):
 
 
 class Protocol(StrEnum):
-    """Network-layer protocol a rule matches."""
+    """Network-layer protocol a rule matches.
+
+    Named values cover the protocols available in the CrowdStrike UI.
+    For protocols not listed here use ``Rule.protocol`` as a raw integer
+    (0-255) — this corresponds to the CrowdStrike "Advanced" protocol
+    entry. IPv6-family protocols (``ipv6``, ``icmpv6``) should be paired
+    with IPv6 addresses.
+    """
 
     any = "any"
     tcp = "tcp"
     udp = "udp"
     icmp = "icmp"
+    igmp = "igmp"
+    ipip = "ipip"
+    ipv6 = "ipv6"
+    gre = "gre"
+    icmpv6 = "icmpv6"
 
 
 class ConnectionState(StrEnum):
