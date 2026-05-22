@@ -19,6 +19,7 @@ import pytest
 
 from csfwctl.exporter import (
     ImporterError,
+    _fetch_rules_for_groups,
     dump_yaml,
     import_all,
     import_location,
@@ -26,6 +27,7 @@ from csfwctl.exporter import (
     import_rule_group,
     location_to_api_shape,
     policy_to_api_shape,
+    rule_from_api,
     rule_group_to_api_shape,
 )
 from csfwctl.loader import load_config_repo
@@ -508,3 +510,135 @@ def test_round_trip_realistic_repo_does_not_mutate_source(realistic_repo_path: P
         sorted(p.relative_to(realistic_repo_path) for p in realistic_repo_path.rglob("*"))
         == snapshot
     )
+
+
+# ---- real-API shape compatibility tests ------------------------------------
+
+
+def test_rule_from_api_handles_flat_endpoint_fields() -> None:
+    """The real API returns local_address/local_port rather than nested local/remote."""
+    record = {
+        "name": "Allow DNS outbound",
+        "action": "ALLOW",
+        "direction": "OUT",
+        "protocol": "17",
+        "enabled": True,
+        "fields": [],
+        "local_address": [{"address": "10.0.0.0", "netmask": 8}],
+        "local_port": [],
+        "remote_address": [{"address": "8.8.8.8", "netmask": 32}],
+        "remote_port": [{"start": 53, "end": 53}],
+    }
+    rule = rule_from_api(record)
+    assert rule.name == "Allow DNS outbound"
+    assert rule.local is not None
+    assert rule.local.addresses == ["10.0.0.0/8"]
+    assert rule.remote is not None
+    assert rule.remote.addresses == ["8.8.8.8/32"]
+    assert rule.remote.ports == [53]
+
+
+def test_rule_from_api_flat_takes_precedence_when_nested_absent() -> None:
+    """Flat fields are used when ``local``/``remote`` keys are not present."""
+    record = {
+        "name": "Block SMB",
+        "action": "DENY",
+        "direction": "IN",
+        "protocol": "6",
+        "remote_address": [{"address": "0.0.0.0", "netmask": 0}],
+        "remote_port": [{"start": 445, "end": 445}],
+    }
+    rule = rule_from_api(record)
+    assert rule.remote is not None
+    assert rule.remote.ports == [445]
+    # Zero netmask = no prefix appended
+    assert rule.remote.addresses == ["0.0.0.0"]
+
+
+def test_fetch_rules_for_groups_batches_large_id_lists() -> None:
+    """_fetch_rules_for_groups splits large rule-ID lists into 100-ID batches."""
+    from csfwctl.exporter import _RULE_FETCH_BATCH_SIZE
+
+    call_batches: list[list[str]] = []
+
+    @dataclass
+    class BatchTrackingSubclient:
+        records: dict[str, Any] = field(default_factory=dict)
+        rules: dict[str, Any] = field(default_factory=dict)
+
+        def get_rules(self, ids: list[str]) -> list[dict[str, Any]]:
+            call_batches.append(list(ids))
+            return [
+                {
+                    "id": i,
+                    "name": f"rule-{i}",
+                    "action": "ALLOW",
+                    "direction": "OUT",
+                    "protocol": "6",
+                }
+                for i in ids
+            ]
+
+    @dataclass
+    class MinimalClient:
+        rule_groups: Any
+
+    total_ids = _RULE_FETCH_BATCH_SIZE * 2 + 5  # 205 IDs → 3 batches
+    rg_records = [{"rule_ids": [str(i) for i in range(total_ids)]}]
+    client = MinimalClient(rule_groups=BatchTrackingSubclient())
+
+    result = _fetch_rules_for_groups(client, rg_records)  # type: ignore[arg-type]
+
+    assert len(call_batches) == 3
+    assert len(call_batches[0]) == _RULE_FETCH_BATCH_SIZE
+    assert len(call_batches[1]) == _RULE_FETCH_BATCH_SIZE
+    assert len(call_batches[2]) == 5
+    assert len(result) == total_ids
+
+
+def test_fetch_rules_for_groups_indexes_by_family_id() -> None:
+    """rules_by_id is keyed by family_id when present so hex-ID rule_ids resolve."""
+
+    @dataclass
+    class FamilyIdSubclient:
+        records: dict[str, Any] = field(default_factory=dict)
+        rules: dict[str, Any] = field(default_factory=dict)
+
+        def get_rules(self, ids: list[str]) -> list[dict[str, Any]]:
+            return [
+                {
+                    "id": "7629257022100668539",
+                    "family_id": "abc123def456abc123def456abc12345",
+                    "name": "r1",
+                    "action": "ALLOW",
+                    "direction": "IN",
+                    "protocol": "6",
+                }
+            ]
+
+    @dataclass
+    class MinimalClient:
+        rule_groups: Any
+
+    rg_records = [{"rule_ids": ["abc123def456abc123def456abc12345"]}]
+    client = MinimalClient(rule_groups=FamilyIdSubclient())
+
+    result = _fetch_rules_for_groups(client, rg_records)  # type: ignore[arg-type]
+
+    # Indexed by both numeric id and family_id
+    assert "7629257022100668539" in result
+    assert "abc123def456abc123def456abc12345" in result
+
+
+def test_flatten_addresses_appends_nonzero_netmask() -> None:
+    """CrowdStrike API address dicts with netmask > 0 produce CIDR notation."""
+    from csfwctl.exporter import _flatten_addresses
+
+    items = [
+        {"address": "192.168.1.0", "netmask": 24},
+        {"address": "10.0.0.0", "netmask": 8},
+        {"address": "0.0.0.0", "netmask": 0},
+        "172.16.0.0/12",
+    ]
+    result = _flatten_addresses(items)
+    assert result == ["192.168.1.0/24", "10.0.0.0/8", "0.0.0.0", "172.16.0.0/12"]
