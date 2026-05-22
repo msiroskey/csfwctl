@@ -331,8 +331,7 @@ def build_desired_state(
     always work with flat, materialised policies.
     """
     materialised: dict[str, Policy] = {
-        slug: resolve_inheritance(policy, repo)
-        for slug, policy in repo.policies.items()
+        slug: resolve_inheritance(policy, repo) for slug, policy in repo.policies.items()
     }
     overrides = synthesise_override_rule_groups_from(materialised, repo, env)
     desired_rule_groups: dict[str, RuleGroup] = {**repo.rule_groups, **overrides}
@@ -747,9 +746,9 @@ def _diff_policies(
             field_changes = _compare_models(model, live_model)
             hg_changes = _host_group_changes(model, live_model, env)
             managed = _classify_managed(live_record)
-            has_change = bool(field_changes or hg_changes or any(
-                mgc.op != "no-change" for mgc in mg_changes
-            ))
+            has_change = bool(
+                field_changes or hg_changes or any(mgc.op != "no-change" for mgc in mg_changes)
+            )
             change = ObjectChange(
                 kind=KIND_POLICY,
                 op=DiffOp.no_change if not has_change else DiffOp.update,
@@ -839,8 +838,7 @@ def compute_diff(repo: ConfigRepo, env: str, state: LiveState) -> ChangeSet:
     # Materialise inherited policies once; reuse for both desired-state
     # projection and managed-group diff.
     materialised: dict[str, Policy] = {
-        slug: resolve_inheritance(policy, repo)
-        for slug, policy in repo.policies.items()
+        slug: resolve_inheritance(policy, repo) for slug, policy in repo.policies.items()
     }
 
     desired_policies, desired_rule_groups, desired_locations = build_desired_state(repo, env)

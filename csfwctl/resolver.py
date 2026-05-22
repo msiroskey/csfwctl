@@ -97,9 +97,7 @@ def resolve_inheritance(policy: Policy, repo: ConfigRepo) -> Policy:
     # If managed_host_groups covers an env that the inherited host_groups
     # also covers, managed takes precedence — drop the host_groups entry.
     managed_envs: set[HostGroupEnv] = {
-        HostGroupEnv(e)
-        for e, hosts in base.get("managed_host_groups", {}).items()
-        if hosts
+        HostGroupEnv(e) for e, hosts in base.get("managed_host_groups", {}).items() if hosts
     }
     if managed_envs:
         base["host_groups"] = {

@@ -637,12 +637,8 @@ def policy_from_api(
                 enforcement_mode = EnforcementMode.monitor
         policy_settings = PolicySettings(
             enforcement_mode=enforcement_mode,
-            default_inbound=(
-                DefaultTrafficAction(inbound_val.lower()) if inbound_val else None
-            ),
-            default_outbound=(
-                DefaultTrafficAction(outbound_val.lower()) if outbound_val else None
-            ),
+            default_inbound=(DefaultTrafficAction(inbound_val.lower()) if inbound_val else None),
+            default_outbound=(DefaultTrafficAction(outbound_val.lower()) if outbound_val else None),
         )
 
     inline_rules: list[Rule] = []
@@ -704,17 +700,13 @@ def policy_to_api_shape(policy: Policy, env: str) -> dict[str, Any]:
         override_slug = f"{policy.name}-overrides-{env}"
         rule_group_refs.insert(0, override_slug)
     api_settings: dict[str, Any] = {
-        "rule_group_ids": [
-            _fake_uuid("rule-group", f"{slug}{suffix}") for slug in rule_group_refs
-        ],
+        "rule_group_ids": [_fake_uuid("rule-group", f"{slug}{suffix}") for slug in rule_group_refs],
     }
     if policy.settings is not None:
         ps = policy.settings
         if ps.enforcement_mode is not None:
             api_settings["enforce"] = ps.enforcement_mode is EnforcementMode.enforce
-            api_settings["local_logging"] = (
-                ps.enforcement_mode is EnforcementMode.local_logging
-            )
+            api_settings["local_logging"] = ps.enforcement_mode is EnforcementMode.local_logging
         if ps.default_inbound is not None:
             api_settings["inbound"] = ps.default_inbound.upper()
         if ps.default_outbound is not None:

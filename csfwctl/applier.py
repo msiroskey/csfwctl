@@ -291,9 +291,7 @@ def _build_policy_payload(
             from csfwctl.schema.policy_settings import EnforcementMode
 
             settings["enforce"] = ps.enforcement_mode is EnforcementMode.enforce
-            settings["local_logging"] = (
-                ps.enforcement_mode is EnforcementMode.local_logging
-            )
+            settings["local_logging"] = ps.enforcement_mode is EnforcementMode.local_logging
         if ps.default_inbound is not None:
             settings["inbound"] = ps.default_inbound.upper()
         if ps.default_outbound is not None:
@@ -450,9 +448,7 @@ def _apply_managed_host_groups(
         try:
             live_record = client.host_groups.find_by_name(mgc.group_name)
         except Exception as exc:  # noqa: BLE001
-            report.warnings.append(
-                f"managed host group {mgc.group_name!r} lookup failed: {exc}"
-            )
+            report.warnings.append(f"managed host group {mgc.group_name!r} lookup failed: {exc}")
             continue
         if not live_record or not live_record.get("id"):
             report.warnings.append(
@@ -651,9 +647,7 @@ def apply_change_set(
     for change in (*policy_creates, *policy_updates):
         for mgc in change.managed_group_changes:
             all_managed_changes.append((change.slug, mgc))
-    managed_group_ids = _apply_managed_host_groups(
-        client, all_managed_changes, options, report
-    )
+    managed_group_ids = _apply_managed_host_groups(client, all_managed_changes, options, report)
 
     needed_host_groups: list[str] = []
     for change in (*policy_creates, *policy_updates):

@@ -197,7 +197,16 @@ def _make_repo(policies: list[Policy], *, tmp_path: Path) -> ConfigRepo:
     repo.locations = {}
     repo.tombstones = type("T", (), {"policies": [], "rule_groups": [], "locations": []})()
     repo.precedence_overrides = type("P", (), {"overrides": []})()
-    repo.tool_config = type("TC", (), {"lint": type("L", (), {"disabled": [], "options": {}})(), "safety": None, "tool": None, "notifications": {}})()
+    repo.tool_config = type(
+        "TC",
+        (),
+        {
+            "lint": type("L", (), {"disabled": [], "options": {}})(),
+            "safety": None,
+            "tool": None,
+            "notifications": {},
+        },
+    )()
     return repo
 
 
@@ -231,7 +240,7 @@ def test_resolve_scalar_fields_replaced_by_child(tmp_path: Path) -> None:
     result = resolve_inheritance(child, repo)
     assert result.inherits is None
     assert result.status is Status.disabled  # child's value
-    assert result.priority.value == "high"   # inherited from parent
+    assert result.priority.value == "high"  # inherited from parent
     assert result.description == "Parent description"  # inherited from parent
 
 
@@ -580,9 +589,7 @@ def test_diff_shows_managed_group_no_change_when_fql_matches(tmp_path: Path) -> 
     expected_fql = managed_host_group_fql(["machine-foo"])
     # Build a live policy shape (without the managed group already assigned)
     live_state = LiveState(
-        host_groups=[
-            {"id": "hg-123", "name": expected_name, "assignment_rule": expected_fql}
-        ]
+        host_groups=[{"id": "hg-123", "name": expected_name, "assignment_rule": expected_fql}]
     )
     repo = _make_repo([p], tmp_path=tmp_path)
     cs = compute_diff(repo, "test", live_state)
@@ -603,9 +610,7 @@ def test_diff_shows_managed_group_update_when_fql_differs(tmp_path: Path) -> Non
     expected_name = managed_host_group_cs_name(p, "test")
     old_fql = managed_host_group_fql(["machine-foo"])
     live_state = LiveState(
-        host_groups=[
-            {"id": "hg-123", "name": expected_name, "assignment_rule": old_fql}
-        ]
+        host_groups=[{"id": "hg-123", "name": expected_name, "assignment_rule": old_fql}]
     )
     repo = _make_repo([p], tmp_path=tmp_path)
     cs = compute_diff(repo, "test", live_state)

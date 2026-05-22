@@ -186,9 +186,7 @@ class PolicyWithoutHostGroupsLint:
         for slug, policy in sorted(ctx.repo.policies.items()):
             if policy.status is Status.deleted:
                 continue
-            has_any_host_assignment = bool(policy.host_groups) or bool(
-                policy.managed_host_groups
-            )
+            has_any_host_assignment = bool(policy.host_groups) or bool(policy.managed_host_groups)
             if not has_any_host_assignment:
                 findings.append(
                     LintFinding(
