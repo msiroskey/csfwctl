@@ -274,6 +274,108 @@ The full schema reference lives in
 below show the most common shapes; complete fixtures live under
 [`tests/fixtures/config_repos/realistic/`](./tests/fixtures/config_repos/realistic/).
 
+### Policy inheritance
+
+A policy may inherit all fields from a parent policy and only override
+what differs. This is useful for host-group variants, monitor-mode
+shadow copies, or per-team policies that share a common rule baseline.
+
+```yaml
+# policies/abc01-endpoints-windows-servers.yaml
+name: abc01-endpoints-windows-servers
+display_name: ABC01-Endpoints-Windows-Servers
+platform: windows
+inherits: abc01-endpoints-windows   # inherits all fields from parent
+description: Server variant with dedicated host groups.
+
+# Only host_groups differ; rules, rule_groups, settings, etc.
+# are all inherited from abc01-endpoints-windows.
+host_groups:
+  ABC01-Endpoints-Windows-Servers-Test:       test
+  ABC01-Endpoints-Windows-Servers-Pilot:      pilot
+  ABC01-Endpoints-Windows-Servers-Production: production
+```
+
+By default `rule_groups` and `rules` are **replaced** by the child's
+value (or inherited wholesale if not set). Set `append_rule_groups: true`
+to prepend the parent's rule groups before the child's additions:
+
+```yaml
+name: abc01-endpoints-windows-labs
+platform: windows
+inherits: abc01-endpoints-windows
+append_rule_groups: true   # parent groups first, then lab extras
+rule_groups:
+  - lab-network-access
+```
+
+Inheritance is depth-1 only — a parent must not itself have `inherits`.
+The `inheritance-depth` lint rule enforces this at validate time.
+
+### Policy settings and monitor mode
+
+The `settings` block configures enforcement mode and default traffic
+actions. The most common use is a **monitor-only shadow copy** of a
+production policy used to preview what a new policy would block without
+actually blocking anything:
+
+```yaml
+# policies/abc01-endpoints-windows-monitor.yaml
+name: abc01-endpoints-windows-monitor
+display_name: ABC01-Endpoints-Windows-Monitor
+platform: windows
+inherits: abc01-endpoints-windows   # same rules as production policy
+
+settings:
+  enforcement_mode: monitor   # traffic is allowed; block events shown
+                              # as "would be blocked" in the console
+```
+
+The full `settings` block with all options:
+
+```yaml
+settings:
+  enforcement_mode: enforce       # enforce | monitor | local_logging
+  default_inbound:  deny          # allow | deny
+  default_outbound: allow         # allow | deny
+```
+
+If `settings` is omitted the tenant's global defaults apply. All three
+fields are independently optional.
+
+### Managed host groups
+
+Instead of pre-creating host groups in the Falcon console, declare the
+hostnames directly in the policy YAML. csfwctl creates and maintains a
+**dynamic** CrowdStrike host group per environment, named
+`{DisplayName}-Managed-{Env}` (e.g. `Research-Lab-Windows-Managed-Test`):
+
+```yaml
+# policies/research-lab-windows.yaml
+name: research-lab-windows
+platform: windows
+
+managed_host_groups:
+  test:
+    - lab-ws-001
+    - lab-ws-002
+  production:
+    - lab-ws-prod-001
+    - lab-ws-prod-002
+
+rule_groups:
+  - windows-baseline
+```
+
+The group uses an FQL filter (`hostname:'lab-ws-001' or
+hostname:'lab-ws-002'`). When the hostname list changes csfwctl updates
+the filter on the next apply; when a hostname is added or removed the
+group membership updates automatically via CrowdStrike's dynamic group
+evaluation.
+
+Restrictions: an env may not appear in both `host_groups` and
+`managed_host_groups` on the same policy.
+
 ### Override policy (inline `rules:`)
 
 An "override policy" is a regular policy that carries policy-specific
@@ -413,6 +515,228 @@ require_bootstrap_for_unmanaged = true
 url_env = "TEAMS_WEBHOOK_URL"
 events  = ["apply.failed", "drift.detected"]
 ```
+
+## CI/CD integration
+
+csfwctl is designed to run from CI in your **`csfwctl-config`** repo.
+The standard pipeline has three stages per merge:
+
+1. **validate** — offline; runs on every branch push and MR.
+2. **diff** — reads live state; runs on MRs to preview what would change.
+3. **apply** — writes to the tenant; runs on trunk after merge, with
+   manual gates before Pilot and Production.
+
+### Credentials
+
+Inject Falcon API credentials as CI secrets — never store them in
+the config repo:
+
+| Variable                  | Description                                |
+|---------------------------|--------------------------------------------|
+| `CSFWCTL_CLIENT_ID`       | Falcon API client ID                       |
+| `CSFWCTL_CLIENT_SECRET`   | Falcon API client secret                   |
+| `CSFWCTL_GIT_SHA`         | Commit SHA to stamp in the metadata trailer (set to `$CI_COMMIT_SHA` / `${{ github.sha }}`) |
+
+Use per-environment credentials (separate CI/CD environments / variable
+scopes) so a Test apply job cannot touch Production.
+
+### GitLab CI
+
+Add this to your `csfwctl-config` repo's `.gitlab-ci.yml`. The `diff`
+job posts a comment on the MR via the GitLab notifier; configure the
+notifier block in `csfwctl.toml` (see below).
+
+```yaml
+# .gitlab-ci.yml
+stages: [validate, diff, apply-test, apply-pilot, apply-production]
+
+default:
+  image: python:3.12-slim
+  before_script:
+    - pip install --quiet csfwctl
+
+validate:
+  stage: validate
+  script: csfwctl validate --repo .
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+diff-test:
+  stage: diff
+  script: csfwctl diff --env test --repo .
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  environment: test
+
+apply-test:
+  stage: apply-test
+  script: csfwctl apply --env test --repo .
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  environment: test
+
+apply-pilot:
+  stage: apply-pilot
+  script: csfwctl apply --env pilot --repo .
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+  environment: pilot
+
+apply-production:
+  stage: apply-production
+  script: csfwctl apply --env production --repo .
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+  environment: production
+```
+
+Set `CSFWCTL_CLIENT_ID`, `CSFWCTL_CLIENT_SECRET`, and `CSFWCTL_GIT_SHA`
+as protected CI/CD variables scoped to each environment.
+
+#### GitLab MR comment notifier
+
+Add this block to `csfwctl.toml` to have csfwctl post the diff output
+as a comment on the merge request. GitLab's built-in `CI_PROJECT_ID`
+and `CI_MERGE_REQUEST_IID` variables are used automatically; only the
+API token needs to be injected as a secret.
+
+```toml
+[notifications.gitlab]
+token_env      = "GITLAB_TOKEN"          # CI/CD variable; must match ^(?:GITLAB|CI)_..TOKEN..$
+project_id_env = "CI_PROJECT_ID"         # provided by GitLab CI automatically
+mr_iid_env     = "CI_MERGE_REQUEST_IID"  # provided by GitLab CI automatically
+api_url        = "https://gitlab.example.com"  # your GitLab instance
+events         = ["diff.changes_detected", "validate.failed", "apply.failed"]
+```
+
+Create a project-scoped GitLab API token with `api` scope and add it to
+the config repo as a masked, protected CI/CD variable named
+`GITLAB_TOKEN`.
+
+### GitHub Actions
+
+```yaml
+# .github/workflows/csfwctl.yml
+name: csfwctl
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install csfwctl
+      - run: csfwctl validate --repo .
+
+  diff-test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    environment: test
+    env:
+      CSFWCTL_CLIENT_ID:     ${{ secrets.CSFWCTL_CLIENT_ID_TEST }}
+      CSFWCTL_CLIENT_SECRET: ${{ secrets.CSFWCTL_CLIENT_SECRET_TEST }}
+      CSFWCTL_GIT_SHA:       ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install csfwctl
+      - run: csfwctl diff --env test --repo .
+
+  apply-test:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: test
+    env:
+      CSFWCTL_CLIENT_ID:     ${{ secrets.CSFWCTL_CLIENT_ID_TEST }}
+      CSFWCTL_CLIENT_SECRET: ${{ secrets.CSFWCTL_CLIENT_SECRET_TEST }}
+      CSFWCTL_GIT_SHA:       ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install csfwctl
+      - run: csfwctl apply --env test --repo .
+
+  apply-pilot:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: apply-test
+    runs-on: ubuntu-latest
+    environment: pilot   # configure with required reviewers in repo settings
+    env:
+      CSFWCTL_CLIENT_ID:     ${{ secrets.CSFWCTL_CLIENT_ID_PILOT }}
+      CSFWCTL_CLIENT_SECRET: ${{ secrets.CSFWCTL_CLIENT_SECRET_PILOT }}
+      CSFWCTL_GIT_SHA:       ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install csfwctl
+      - run: csfwctl apply --env pilot --repo .
+
+  apply-production:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: apply-pilot
+    runs-on: ubuntu-latest
+    environment: production   # configure with required reviewers in repo settings
+    env:
+      CSFWCTL_CLIENT_ID:     ${{ secrets.CSFWCTL_CLIENT_ID_PRODUCTION }}
+      CSFWCTL_CLIENT_SECRET: ${{ secrets.CSFWCTL_CLIENT_SECRET_PRODUCTION }}
+      CSFWCTL_GIT_SHA:       ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install csfwctl
+      - run: csfwctl apply --env production --repo .
+```
+
+Store credentials as [environment secrets](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-an-environment)
+scoped to each environment (`test`, `pilot`, `production`). Configure
+the `pilot` and `production` environments with required reviewers to
+enforce the manual promotion gate.
+
+### Drift monitoring
+
+Wire a scheduled job against Production to catch console edits between
+applies. The `--fail-on-drift` flag exits `2` so the scheduler can
+distinguish a drift alert from an infrastructure failure (`1`).
+
+**GitLab scheduled pipeline:**
+
+```yaml
+drift-check:
+  stage: validate
+  script: csfwctl drift-check --env production --repo . --fail-on-drift
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  environment: production
+```
+
+**GitHub Actions scheduled workflow:**
+
+```yaml
+on:
+  schedule:
+    - cron: '0 * * * *'   # hourly
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CSFWCTL_CLIENT_ID:     ${{ secrets.CSFWCTL_CLIENT_ID_PRODUCTION }}
+      CSFWCTL_CLIENT_SECRET: ${{ secrets.CSFWCTL_CLIENT_SECRET_PRODUCTION }}
+      CSFWCTL_GIT_SHA:       ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install csfwctl
+      - run: csfwctl drift-check --env production --repo . --fail-on-drift
+```
+
+Configure a `drift.detected` notifier event (Teams, GitLab MR comment,
+or syslog) in `csfwctl.toml` to receive alerts. See
+[`docs/notifications.md`](./docs/notifications.md) for channel
+configuration.
 
 ## Documentation
 
