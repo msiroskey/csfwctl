@@ -874,9 +874,22 @@ def _fetch_rules_for_groups(
     """Batch-fetch every rule referenced by the given rule-group records.
 
     Sends IDs in batches of :data:`_RULE_FETCH_BATCH_SIZE` to stay within
-    URL length limits.  Each returned record is indexed by both its numeric
-    ``id`` and its ``family_id`` (a 32-character hex string used by some
-    API versions) so that ``rule_group_from_api`` can resolve either format.
+    URL length limits.
+
+    The real API returns rule records keyed by a numeric ``id``, but the
+    ``rule_ids`` field on rule-group records may contain hex "family IDs"
+    (32-character strings like ``838b17a58aab40e59c9a952299fd0b00``).
+    The returned records do not echo the family ID under a known field name,
+    so we use two strategies to build the lookup:
+
+    1. **Value scan**: for each returned record we check every top-level
+       string field value against the set of requested IDs.  If the API
+       happens to include the family ID under any field name, this catches it.
+
+    2. **Positional fallback**: when the batch length matches the returned
+       count (the common REST convention), we zip request IDs with returned
+       records and use ``setdefault`` to fill any still-missing keys without
+       overwriting entries already found by strategy 1.
     """
     rule_ids: list[str] = []
     seen: set[str] = set()
@@ -892,13 +905,20 @@ def _fetch_rules_for_groups(
     rules_by_id: dict[str, dict[str, Any]] = {}
     for i in range(0, len(rule_ids), _RULE_FETCH_BATCH_SIZE):
         batch = rule_ids[i : i + _RULE_FETCH_BATCH_SIZE]
+        batch_set = set(batch)
         fetched = client.rule_groups.get_rules(batch)
         for r in fetched:
             if "id" in r:
                 rules_by_id[str(r["id"])] = r
-            family = r.get("family_id") or r.get("familyId")
-            if family:
-                rules_by_id[str(family)] = r
+            # Strategy 1: search all top-level string values for a match
+            # against a requested ID (handles family_id under any field name).
+            for v in r.values():
+                if isinstance(v, str) and v in batch_set:
+                    rules_by_id[v] = r
+        # Strategy 2: positional fallback when count matches.
+        if len(fetched) == len(batch):
+            for req_id, r in zip(batch, fetched, strict=False):
+                rules_by_id.setdefault(req_id, r)
     return rules_by_id
 
 

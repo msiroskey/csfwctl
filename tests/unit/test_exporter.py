@@ -596,11 +596,48 @@ def test_fetch_rules_for_groups_batches_large_id_lists() -> None:
     assert len(result) == total_ids
 
 
-def test_fetch_rules_for_groups_indexes_by_family_id() -> None:
-    """rules_by_id is keyed by family_id when present so hex-ID rule_ids resolve."""
+def test_fetch_rules_for_groups_resolves_hex_family_id_via_value_scan() -> None:
+    """rules_by_id resolves hex family IDs even when the returned record has no
+    named family_id field — the value scan finds the match in any string field."""
 
     @dataclass
     class FamilyIdSubclient:
+        records: dict[str, Any] = field(default_factory=dict)
+        rules: dict[str, Any] = field(default_factory=dict)
+
+        def get_rules(self, ids: list[str]) -> list[dict[str, Any]]:
+            # Real API: returns only a numeric id, no family_id field at all.
+            return [
+                {
+                    "id": "7629257022100668539",
+                    "name": "r1",
+                    "action": "ALLOW",
+                    "direction": "IN",
+                    "protocol": "6",
+                }
+            ]
+
+    @dataclass
+    class MinimalClient:
+        rule_groups: Any
+
+    family_id = "838b17a58aab40e59c9a952299fd0b00"  # real-world example from logs
+    rg_records = [{"rule_ids": [family_id]}]
+    client = MinimalClient(rule_groups=FamilyIdSubclient())
+
+    result = _fetch_rules_for_groups(client, rg_records)  # type: ignore[arg-type]
+
+    # Positional fallback must map the requested family_id to the returned record.
+    assert family_id in result
+    # Numeric id is also indexed.
+    assert "7629257022100668539" in result
+
+
+def test_fetch_rules_for_groups_resolves_hex_family_id_via_named_field() -> None:
+    """When the record does include a family_id field the value scan picks it up."""
+
+    @dataclass
+    class FamilyIdFieldSubclient:
         records: dict[str, Any] = field(default_factory=dict)
         rules: dict[str, Any] = field(default_factory=dict)
 
@@ -621,11 +658,10 @@ def test_fetch_rules_for_groups_indexes_by_family_id() -> None:
         rule_groups: Any
 
     rg_records = [{"rule_ids": ["abc123def456abc123def456abc12345"]}]
-    client = MinimalClient(rule_groups=FamilyIdSubclient())
+    client = MinimalClient(rule_groups=FamilyIdFieldSubclient())
 
     result = _fetch_rules_for_groups(client, rg_records)  # type: ignore[arg-type]
 
-    # Indexed by both numeric id and family_id
     assert "7629257022100668539" in result
     assert "abc123def456abc123def456abc12345" in result
 
