@@ -542,6 +542,9 @@ def test_builtin_registry_contents() -> None:
         "policy-without-host-groups",
         "deleted-without-tombstone",
         "broad-allow",
+        "orphan-inherits",
+        "inheritance-depth",
+        "cross-platform-inheritance",
     }
 
 

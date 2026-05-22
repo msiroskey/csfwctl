@@ -5,7 +5,50 @@ Project plan: ./csfwctl-project-plan.md
 
 ## Current phase
 
-Phase 10: Operational hardening — complete. All planned phases are done.
+Sprint 11: Policy inheritance, policy settings, and managed host groups — complete.
+
+## Sprint 11 tasks
+
+- [x] **`csfwctl/schema/policy_settings.py`** (new): `EnforcementMode`
+      enum (`enforce`/`monitor`/`local_logging`), `DefaultTrafficAction`
+      enum (`allow`/`deny`), `PolicySettings` Pydantic model with
+      optional `enforcement_mode`, `default_inbound`, `default_outbound`.
+- [x] **`csfwctl/schema/policy.py`**: added `inherits: Slug | None`,
+      `append_rule_groups: bool`, `append_rules: bool`,
+      `settings: PolicySettings | None`, `managed_host_groups:
+      dict[HostGroupEnv, list[str]]`; validators for self-inheritance
+      and managed/host_groups env overlap.
+- [x] **`csfwctl/schema/__init__.py`**: exports for `DefaultTrafficAction`,
+      `EnforcementMode`, `PolicySettings`.
+- [x] **`csfwctl/resolver.py`** (new): `resolve_inheritance` (depth-1,
+      scalar override + append flags + managed-env priority);
+      `managed_host_group_cs_name`; `managed_host_group_fql`.
+- [x] **`csfwctl/linter.py`**: three new lint rules — `orphan-inherits`
+      (parent slug not found), `inheritance-depth` (parent also inherits),
+      `cross-platform-inheritance` (platforms differ). Updated
+      `policy-without-host-groups` to accept `managed_host_groups`.
+- [x] **`csfwctl/exporter.py`**: `policy_from_api` reads `enforce`,
+      `local_logging`, `inbound`, `outbound` into `PolicySettings`;
+      `policy_to_api_shape` writes them back.
+- [x] **`csfwctl/falcon/host_groups.py`**: `create_dynamic` and
+      `update_fql` for dynamic host group lifecycle.
+- [x] **`csfwctl/differ.py`**: `ManagedGroupChange` dataclass; inheritance
+      resolution at `build_desired_state`; `_managed_group_changes` per
+      policy; `managed_group_changes` on `ObjectChange`; `host_groups`
+      added to `LiveState`.
+- [x] **`csfwctl/applier.py`**: `_apply_managed_host_groups` handles
+      create/update/no-change; `_build_policy_payload` injects settings
+      fields.
+- [x] **`docs/schema_reference.md`**: documents all new fields,
+      `PolicySettings`, inheritance semantics, managed host groups.
+- [x] Unit tests: 528 passing total (57 new in `test_sprint11.py`)
+      covering `PolicySettings` validation, `Policy` new-field validation,
+      resolver helpers + inheritance materialisation (scalar/append/managed-
+      env priority), all three new lint rules + updated `policy-without-
+      host-groups`, exporter settings round-trip, project_policy_for_env
+      with managed groups, differ managed-group-change detection, applier
+      create/update/dry-run for managed host groups, and
+      build_desired_state inheritance materialisation.
 
 ## Phase 10 tasks
 
@@ -501,8 +544,9 @@ Phase 10: Operational hardening — complete. All planned phases are done.
 
 ## Notes for next session
 
-- **All planned phases are complete.** v1 scope is done; see the
-  project plan's "Later sprints" section for post-v1 items.
+- **All planned phases and Sprint 11 are complete.** v1 scope is done
+  plus the Sprint 11 post-v1 features; see the project plan's "Later
+  sprints" section for remaining post-v1 items.
 - **Phase 10 hooks for later work:**
   - `DriftState.last_alerted` is the dedupe substrate. Any future
     "acknowledge alert" command that wants to suppress pages without

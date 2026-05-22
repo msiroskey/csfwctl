@@ -61,7 +61,7 @@ class HostGroupsAPI:
         return results[0] if results else None
 
     def create(self, name: str, *, description: str = "") -> dict[str, Any]:
-        """Create an empty host group. Used by ``apply --create-groups``."""
+        """Create an empty static host group. Used by ``apply --create-groups``."""
         result = self._client.call(
             "host_groups.create",
             lambda: self._svc().create_host_groups(
@@ -71,6 +71,51 @@ class HostGroupsAPI:
                             "group_type": "static",
                             "name": name,
                             "description": description,
+                        }
+                    ]
+                }
+            ),
+        )
+        body = result.get("body") or {}
+        resources = body.get("resources") or []
+        return dict(resources[0]) if resources else {}
+
+    def create_dynamic(self, name: str, *, fql: str, description: str = "") -> dict[str, Any]:
+        """Create a dynamic host group with an FQL membership filter.
+
+        The CrowdStrike API field is ``assignment_rule`` for the FQL filter.
+        Pending real-tenant confirmation of the exact payload shape; see
+        ``docs/architecture.md``.
+        """
+        result = self._client.call(
+            "host_groups.create_dynamic",
+            lambda: self._svc().create_host_groups(
+                body={
+                    "resources": [
+                        {
+                            "group_type": "dynamic",
+                            "name": name,
+                            "description": description,
+                            "assignment_rule": fql,
+                        }
+                    ]
+                }
+            ),
+        )
+        body = result.get("body") or {}
+        resources = body.get("resources") or []
+        return dict(resources[0]) if resources else {}
+
+    def update_fql(self, group_id: str, fql: str) -> dict[str, Any]:
+        """Update an existing dynamic group's FQL assignment rule."""
+        result = self._client.call(
+            "host_groups.update_fql",
+            lambda: self._svc().update_host_groups(
+                body={
+                    "resources": [
+                        {
+                            "id": group_id,
+                            "assignment_rule": fql,
                         }
                     ]
                 }

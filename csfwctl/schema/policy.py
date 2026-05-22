@@ -13,6 +13,7 @@ from csfwctl.schema._common import (
     Slug,
     Status,
 )
+from csfwctl.schema.policy_settings import PolicySettings
 from csfwctl.schema.rule import Rule
 
 
@@ -28,6 +29,17 @@ class Policy(BaseModel):
     ``<policy-name>-overrides-<env>`` and inserts at the top of the
     policy's rule-group list. ``rule_groups`` lists shared rule-group
     slugs in precedence order.
+
+    ``inherits`` names a parent policy slug. At apply/diff time the
+    resolver materialises the effective policy by merging parent fields
+    with any fields explicitly set on this policy. Collections default to
+    **replace** semantics; set ``append_rule_groups`` or ``append_rules``
+    to append instead (parent's items first, then child's).
+
+    ``managed_host_groups`` maps each environment to a list of hostnames.
+    The applier creates (or updates) a CrowdStrike dynamic host group for
+    each env whose FQL is ``hostname:'a' or hostname:'b' …`` and assigns
+    that group to the policy. Must not overlap with ``host_groups`` envs.
     """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -41,6 +53,11 @@ class Policy(BaseModel):
     host_groups: dict[DisplayName, HostGroupEnv] = Field(default_factory=dict)
     rules: list[Rule] = Field(default_factory=list)
     rule_groups: list[Slug] = Field(default_factory=list)
+    inherits: Slug | None = None
+    append_rule_groups: bool = False
+    append_rules: bool = False
+    settings: PolicySettings | None = None
+    managed_host_groups: dict[HostGroupEnv, list[str]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _rule_names_unique(self) -> Policy:
@@ -78,6 +95,25 @@ class Policy(BaseModel):
                     f"{envs_seen[env]!r} and {group_name!r}"
                 )
             envs_seen[env] = group_name
+        return self
+
+    @model_validator(mode="after")
+    def _no_self_inheritance(self) -> Policy:
+        if self.inherits is not None and self.inherits == self.name:
+            raise ValueError(f"policy {self.name!r} cannot inherit from itself")
+        return self
+
+    @model_validator(mode="after")
+    def _managed_host_groups_no_env_overlap(self) -> Policy:
+        host_group_envs = set(self.host_groups.values())
+        managed_envs = set(self.managed_host_groups.keys())
+        overlap = host_group_envs & managed_envs
+        if overlap:
+            envs_str = ", ".join(sorted(e.value for e in overlap))
+            raise ValueError(
+                f"env(s) {envs_str} appear in both host_groups and managed_host_groups; "
+                "use one or the other per environment"
+            )
         return self
 
     def referenced_locations(self) -> set[str]:

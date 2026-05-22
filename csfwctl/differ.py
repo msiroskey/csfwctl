@@ -42,6 +42,7 @@ from csfwctl.exporter import (
 )
 from csfwctl.falcon.client import FalconClient
 from csfwctl.loader import ConfigRepo
+from csfwctl.resolver import managed_host_group_cs_name, managed_host_group_fql, resolve_inheritance
 from csfwctl.schema import (
     HostGroupEnv,
     Location,
@@ -108,6 +109,33 @@ class HostGroupChange:
 
 
 @dataclass(frozen=True)
+class ManagedGroupChange:
+    """Create/update/no-change for a csfwctl-managed dynamic host group.
+
+    Emitted for each env where a policy defines ``managed_host_groups``.
+    The applier uses this to create or update the dynamic CrowdStrike
+    group before assigning it to the policy.
+    """
+
+    op: str  # "create" | "update" | "no-change"
+    group_name: str
+    env: HostGroupEnv
+    desired_fql: str
+    live_fql: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "op": self.op,
+            "group_name": self.group_name,
+            "env": self.env.value,
+            "desired_fql": self.desired_fql,
+        }
+        if self.live_fql is not None:
+            payload["live_fql"] = self.live_fql
+        return payload
+
+
+@dataclass(frozen=True)
 class ObjectChange:
     """One create/update/delete/no-change row in a :class:`ChangeSet`."""
 
@@ -118,6 +146,7 @@ class ObjectChange:
     managed: ManagedStatus
     field_changes: tuple[FieldChange, ...] = ()
     host_group_changes: tuple[HostGroupChange, ...] = ()
+    managed_group_changes: tuple[ManagedGroupChange, ...] = ()
     reason: str = ""
 
     def to_json(self) -> dict[str, Any]:
@@ -132,6 +161,8 @@ class ObjectChange:
             payload["field_changes"] = [fc.to_json() for fc in self.field_changes]
         if self.host_group_changes:
             payload["host_group_changes"] = [hg.to_json() for hg in self.host_group_changes]
+        if self.managed_group_changes:
+            payload["managed_group_changes"] = [mg.to_json() for mg in self.managed_group_changes]
         if self.reason:
             payload["reason"] = self.reason
         return payload
@@ -144,12 +175,16 @@ class LiveState:
     The differ does not care where the records came from — the production
     code calls :func:`fetch_live_state`; tests construct one directly
     with hand-authored shapes.
+
+    ``host_groups`` carries all host-group records; the differ uses them
+    to detect create/update/no-change for ``managed_host_groups`` entries.
     """
 
     policies: list[dict[str, Any]] = field(default_factory=list)
     rule_groups: list[dict[str, Any]] = field(default_factory=list)
     locations: list[dict[str, Any]] = field(default_factory=list)
     rules_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
+    host_groups: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -252,13 +287,22 @@ def project_policy_for_env(
 
     - ``host_groups`` is filtered to just the entry whose value matches
       ``env`` (zero or one entry — duplicates are rejected at load time).
+    - If the policy defines ``managed_host_groups`` for this env, the
+      auto-managed group's display name is added to ``host_groups`` so
+      the diff reflects the pending assignment.
     - When the policy carries inline ``rules`` and ``override_present``
       is true, those rules move out into the synthesised override group;
       the projected policy has ``rules=[]`` and the override slug
       prepended to ``rule_groups``.
+    - ``settings`` is forwarded unchanged.
     """
     hg_env = env_to_host_group_env(env)
     host_groups = {name: hg for name, hg in policy.host_groups.items() if hg is hg_env}
+    # Inject the managed host group name so the host-group assignment diff
+    # reflects the create-and-assign that the applier will perform.
+    if policy.managed_host_groups.get(hg_env):
+        managed_name = managed_host_group_cs_name(policy, env)
+        host_groups[managed_name] = hg_env
     rule_groups = list(policy.rule_groups)
     rules = list(policy.rules)
     if rules and override_present:
@@ -274,35 +318,64 @@ def project_policy_for_env(
         host_groups=host_groups,
         rules=rules,
         rule_groups=rule_groups,
+        settings=policy.settings,
     )
 
 
 def build_desired_state(
     repo: ConfigRepo, env: str
 ) -> tuple[dict[str, Policy], dict[str, RuleGroup], dict[str, Location]]:
-    """Build the per-env desired state as schema models keyed by slug."""
-    overrides = synthesise_override_rule_groups(repo, env)
+    """Build the per-env desired state as schema models keyed by slug.
+
+    Inheritance is resolved before projection so the differ and applier
+    always work with flat, materialised policies.
+    """
+    materialised: dict[str, Policy] = {
+        slug: resolve_inheritance(policy, repo)
+        for slug, policy in repo.policies.items()
+    }
+    overrides = synthesise_override_rule_groups_from(materialised, repo, env)
     desired_rule_groups: dict[str, RuleGroup] = {**repo.rule_groups, **overrides}
     desired_policies: dict[str, Policy] = {
         slug: project_policy_for_env(policy, slug, env, override_present=bool(policy.rules))
-        for slug, policy in repo.policies.items()
+        for slug, policy in materialised.items()
     }
     desired_locations: dict[str, Location] = dict(repo.locations)
     return desired_policies, desired_rule_groups, desired_locations
+
+
+def synthesise_override_rule_groups_from(
+    materialised: dict[str, Policy], repo: ConfigRepo, env: str
+) -> dict[str, RuleGroup]:
+    """Build override rule groups from already-materialised policies."""
+    out: dict[str, RuleGroup] = {}
+    for slug, policy in materialised.items():
+        if not policy.rules:
+            continue
+        override_slug = f"{slug}-overrides-{env}"
+        out[override_slug] = RuleGroup(
+            name=override_slug,
+            platform=policy.platform,
+            status=Status.enabled,
+            description=f"Inline overrides for policy {policy.name} ({env}).",
+            rules=list(policy.rules),
+        )
+    return out
 
 
 # ---- live-state translation -----------------------------------------------
 
 
 def fetch_live_state(client: FalconClient) -> LiveState:
-    """Pull every policy, rule group, location, and referenced rule.
+    """Pull every policy, rule group, location, rule, and host group.
 
-    Read-only. Used by the ``diff`` and (later) drift-check commands.
+    Read-only. Used by the ``diff`` and drift-check commands.
     """
     policies = client.policies.list_all()
     _enrich_policy_records_with_containers(client, policies)
     rule_groups = client.rule_groups.list_all()
     locations = client.locations.list_all()
+    host_groups = client.host_groups.list_all()
     rule_ids: list[str] = []
     seen: set[str] = set()
     for rg in rule_groups:
@@ -319,6 +392,7 @@ def fetch_live_state(client: FalconClient) -> LiveState:
         rule_groups=rule_groups,
         locations=locations,
         rules_by_id=rules_by_id,
+        host_groups=host_groups,
     )
 
 
@@ -429,12 +503,22 @@ def _classify_managed(live_record: dict[str, Any]) -> ManagedStatus:
     return ManagedStatus.managed if is_managed_description(description) else ManagedStatus.unmanaged
 
 
+# Fields on Policy that exist only in the config-repo representation and
+# have no counterpart on the live API record — exclude from diff comparison.
+_POLICY_DIFF_EXCLUDE: frozenset[str] = frozenset(
+    {"inherits", "append_rule_groups", "append_rules", "managed_host_groups"}
+)
+
+
 def _model_dump(model: Policy | RuleGroup | Location) -> dict[str, Any]:
     """Stable JSON-style dump that ignores non-essential metadata noise."""
     data = model.model_dump(mode="json", exclude_none=True)
     # Drop description from comparison: live carries the metadata trailer
     # and that is the applier's business, not the differ's.
     data.pop("description", None)
+    if isinstance(model, Policy):
+        for key in _POLICY_DIFF_EXCLUDE:
+            data.pop(key, None)
     return data
 
 
@@ -456,6 +540,56 @@ def _host_group_changes(desired: Policy, live: Policy, env: str) -> list[HostGro
     for name in sorted(live_names - desired_names):
         out.append(HostGroupChange(op="remove", group_name=name, env=hg_env))
     return out
+
+
+def _managed_group_changes(
+    policy: Policy,
+    env: str,
+    live_host_groups_by_name: dict[str, dict[str, Any]],
+) -> list[ManagedGroupChange]:
+    """Create/update/no-change operations for managed dynamic host groups.
+
+    ``policy`` should be the *raw* (pre-projection) materialised policy
+    so that ``managed_host_groups`` is still accessible.
+    ``live_host_groups_by_name`` maps CrowdStrike group display name to
+    its raw API record (keyed from :attr:`LiveState.host_groups`).
+    """
+    hg_env = env_to_host_group_env(env)
+    hostnames = policy.managed_host_groups.get(hg_env)
+    if not hostnames:
+        return []
+    group_name = managed_host_group_cs_name(policy, env)
+    desired_fql = managed_host_group_fql(hostnames)
+    live_record = live_host_groups_by_name.get(group_name)
+    if live_record is None:
+        return [
+            ManagedGroupChange(
+                op="create",
+                group_name=group_name,
+                env=hg_env,
+                desired_fql=desired_fql,
+            )
+        ]
+    live_fql = str(live_record.get("assignment_rule", "") or "")
+    if live_fql == desired_fql:
+        return [
+            ManagedGroupChange(
+                op="no-change",
+                group_name=group_name,
+                env=hg_env,
+                desired_fql=desired_fql,
+                live_fql=live_fql,
+            )
+        ]
+    return [
+        ManagedGroupChange(
+            op="update",
+            group_name=group_name,
+            env=hg_env,
+            desired_fql=desired_fql,
+            live_fql=live_fql,
+        )
+    ]
 
 
 # ---- per-kind diff drivers -----------------------------------------------
@@ -597,18 +731,25 @@ def _diff_policies(
     repo: ConfigRepo,
     env: str,
     cs: ChangeSet,
+    materialised: dict[str, Policy],
+    live_hg_by_name: dict[str, dict[str, Any]],
 ) -> None:
     """Append policy creates/updates/deletes/no-changes to ``cs``."""
     tombstoned = {entry.name for entry in repo.tombstones.policies}
     suffix = env_suffix(env)
     for slug, model in sorted(desired.items()):
         display_name = f"{model.display_name or model.name}{suffix}"
+        # Compute managed-group changes from the pre-projection materialised policy.
+        raw_policy = materialised.get(slug, model)
+        mg_changes = _managed_group_changes(raw_policy, env, live_hg_by_name)
         if slug in live:
             live_model, live_record = live[slug]
             field_changes = _compare_models(model, live_model)
             hg_changes = _host_group_changes(model, live_model, env)
             managed = _classify_managed(live_record)
-            has_change = bool(field_changes or hg_changes)
+            has_change = bool(field_changes or hg_changes or any(
+                mgc.op != "no-change" for mgc in mg_changes
+            ))
             change = ObjectChange(
                 kind=KIND_POLICY,
                 op=DiffOp.no_change if not has_change else DiffOp.update,
@@ -617,6 +758,7 @@ def _diff_policies(
                 managed=managed,
                 field_changes=tuple(field_changes),
                 host_group_changes=tuple(hg_changes),
+                managed_group_changes=tuple(mg_changes),
             )
             (cs.no_changes if not has_change else cs.updates).append(change)
         else:
@@ -627,6 +769,7 @@ def _diff_policies(
                     slug=slug,
                     display_name=display_name,
                     managed=ManagedStatus.new,
+                    managed_group_changes=tuple(mg_changes),
                 )
             )
     for slug in sorted(set(live) - set(desired)):
@@ -692,12 +835,33 @@ def compute_diff(repo: ConfigRepo, env: str, state: LiveState) -> ChangeSet:
         raise ValueError(f"unknown env {env!r}; must be one of test/pilot/production")
 
     cs = ChangeSet(env=env)
+
+    # Materialise inherited policies once; reuse for both desired-state
+    # projection and managed-group diff.
+    materialised: dict[str, Policy] = {
+        slug: resolve_inheritance(policy, repo)
+        for slug, policy in repo.policies.items()
+    }
+
     desired_policies, desired_rule_groups, desired_locations = build_desired_state(repo, env)
     live = _translate_live_state(state, env)
 
+    # Index live host groups by display name for managed-group lookup.
+    live_hg_by_name: dict[str, dict[str, Any]] = {
+        str(r.get("name", "")): r for r in state.host_groups if r.get("name")
+    }
+
     _diff_locations(desired_locations, live.locations, repo, cs)
     _diff_rule_groups(desired_rule_groups, live.rule_groups, repo, env, cs)
-    _diff_policies(desired_policies, live.policies, repo, env, cs)
+    _diff_policies(
+        desired_policies,
+        live.policies,
+        repo,
+        env,
+        cs,
+        materialised=materialised,
+        live_hg_by_name=live_hg_by_name,
+    )
 
     return cs
 
@@ -713,6 +877,7 @@ __all__ = [
     "KIND_RULE_GROUP",
     "LiveState",
     "METADATA_SIGNATURE_TOKEN",
+    "ManagedGroupChange",
     "ManagedStatus",
     "ObjectChange",
     "build_desired_state",
@@ -723,4 +888,5 @@ __all__ = [
     "is_managed_description",
     "project_policy_for_env",
     "synthesise_override_rule_groups",
+    "synthesise_override_rule_groups_from",
 ]

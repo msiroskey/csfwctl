@@ -186,7 +186,10 @@ class PolicyWithoutHostGroupsLint:
         for slug, policy in sorted(ctx.repo.policies.items()):
             if policy.status is Status.deleted:
                 continue
-            if not policy.host_groups:
+            has_any_host_assignment = bool(policy.host_groups) or bool(
+                policy.managed_host_groups
+            )
+            if not has_any_host_assignment:
                 findings.append(
                     LintFinding(
                         rule_id=self.rule_id,
@@ -194,8 +197,9 @@ class PolicyWithoutHostGroupsLint:
                         path=policies_dir / f"{slug}.yaml",
                         field_path="host_groups",
                         message=(
-                            f"policy {policy.name!r} has no host_groups; "
-                            "it will not apply to any hosts in any environment"
+                            f"policy {policy.name!r} has no host_groups or "
+                            "managed_host_groups; it will not apply to any hosts "
+                            "in any environment"
                         ),
                     )
                 )
@@ -417,6 +421,120 @@ def _endpoint_unconstrained(endpoint: Any) -> bool:
     return not endpoint.addresses and not endpoint.ports
 
 
+# ---- Sprint-11 rules ------------------------------------------------------
+
+
+class OrphanInheritsLint:
+    """Policy ``inherits`` references a slug that does not exist in the repo.
+
+    An orphan parent means the inheritance resolver silently returns the
+    raw child policy; the child would be applied without any parent fields
+    merged in, likely producing an incomplete policy.
+    """
+
+    rule_id = "orphan-inherits"
+    description = "policy inherits from a slug that does not exist"
+    default_severity = Severity.error
+
+    def check(self, ctx: LintContext) -> list[LintFinding]:
+        findings: list[LintFinding] = []
+        policies_dir = ctx.repo.root / POLICIES_DIR
+        for slug, policy in sorted(ctx.repo.policies.items()):
+            if policy.inherits is None:
+                continue
+            if policy.inherits not in ctx.repo.policies:
+                findings.append(
+                    LintFinding(
+                        rule_id=self.rule_id,
+                        severity=self.default_severity,
+                        path=policies_dir / f"{slug}.yaml",
+                        field_path="inherits",
+                        message=(
+                            f"policy {slug!r} inherits from {policy.inherits!r} "
+                            "which is not defined in this repository"
+                        ),
+                    )
+                )
+        return findings
+
+
+class InheritanceDepthLint:
+    """Policy inheritance chain exceeds depth-1.
+
+    csfwctl supports single-level inheritance only. If policy A inherits
+    from policy B, then B must not itself have an ``inherits`` field.
+    Chains deeper than one level are rejected at apply time; this rule
+    surfaces the violation at validate time.
+    """
+
+    rule_id = "inheritance-depth"
+    description = "policy inherits from another policy that itself uses inherits"
+    default_severity = Severity.error
+
+    def check(self, ctx: LintContext) -> list[LintFinding]:
+        findings: list[LintFinding] = []
+        policies_dir = ctx.repo.root / POLICIES_DIR
+        for slug, policy in sorted(ctx.repo.policies.items()):
+            if policy.inherits is None:
+                continue
+            parent = ctx.repo.policies.get(policy.inherits)
+            if parent is None:
+                continue  # orphan-inherits will fire
+            if parent.inherits is not None:
+                findings.append(
+                    LintFinding(
+                        rule_id=self.rule_id,
+                        severity=self.default_severity,
+                        path=policies_dir / f"{slug}.yaml",
+                        field_path="inherits",
+                        message=(
+                            f"policy {slug!r} inherits from {policy.inherits!r}, "
+                            f"which itself inherits from {parent.inherits!r}; "
+                            "inheritance depth is limited to 1"
+                        ),
+                    )
+                )
+        return findings
+
+
+class CrossPlatformInheritanceLint:
+    """Child policy has a different ``platform`` than its parent.
+
+    Rule groups are platform-scoped; a Windows child cannot meaningfully
+    inherit Mac rule groups and vice-versa. This is almost certainly a
+    copy-paste error.
+    """
+
+    rule_id = "cross-platform-inheritance"
+    description = "child policy platform does not match parent policy platform"
+    default_severity = Severity.error
+
+    def check(self, ctx: LintContext) -> list[LintFinding]:
+        findings: list[LintFinding] = []
+        policies_dir = ctx.repo.root / POLICIES_DIR
+        for slug, policy in sorted(ctx.repo.policies.items()):
+            if policy.inherits is None:
+                continue
+            parent = ctx.repo.policies.get(policy.inherits)
+            if parent is None:
+                continue  # orphan-inherits will fire
+            if policy.platform is not parent.platform:
+                findings.append(
+                    LintFinding(
+                        rule_id=self.rule_id,
+                        severity=self.default_severity,
+                        path=policies_dir / f"{slug}.yaml",
+                        field_path="platform",
+                        message=(
+                            f"policy {slug!r} is platform {policy.platform.value!r} "
+                            f"but parent {policy.inherits!r} is {parent.platform.value!r}; "
+                            "cross-platform inheritance is not supported"
+                        ),
+                    )
+                )
+        return findings
+
+
 # ---- registry -------------------------------------------------------------
 
 
@@ -440,6 +558,9 @@ def _register_builtins() -> None:
     register_lint(PolicyWithoutHostGroupsLint())
     register_lint(DeletedWithoutTombstoneLint())
     register_lint(BroadAllowLint())
+    register_lint(OrphanInheritsLint())
+    register_lint(InheritanceDepthLint())
+    register_lint(CrossPlatformInheritanceLint())
 
 
 _register_builtins()
@@ -487,11 +608,14 @@ def has_errors(findings: list[LintFinding]) -> bool:
 
 __all__ = [
     "BroadAllowLint",
+    "CrossPlatformInheritanceLint",
     "DeletedWithoutTombstoneLint",
+    "InheritanceDepthLint",
     "LINT_REGISTRY",
     "Lint",
     "LintContext",
     "LintFinding",
+    "OrphanInheritsLint",
     "OrphanRuleGroupLint",
     "PolicyWithoutHostGroupsLint",
     "PrecedenceCycleLint",
