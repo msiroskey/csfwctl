@@ -31,7 +31,7 @@ stem (slug). Extra characters are rejected at load time.
 | `priority`            | precedence bucket                       | no       | Default `default`.                                                                         |
 | `status`              | `enabled` \| `disabled` \| `deleted`    | no       | Default `enabled`.                                                                         |
 | `description`         | string (≤ 2000)                         | no       |                                                                                            |
-| `host_groups`         | `{DisplayName: env}`                    | no       | Each env (`test`/`pilot`/`production`) may appear at most once.                            |
+| `host_groups`         | `{CrowdStrike name: env}`               | no       | Keys are verbatim CrowdStrike host-group names (may contain spaces/underscores). Each env (`test`/`pilot`/`production`) may appear at most once. |
 | `managed_host_groups` | `{env: [hostname, …]}`                  | no       | Auto-creates a dynamic CrowdStrike host group per env. See [Managed host groups](#managed-host-groups-managed_host_groups). |
 | `rules`               | list of inline `Rule`                   | no       | Becomes anonymous override group at apply.                                                 |
 | `rule_groups`         | list of slug references                 | no       | Precedence order. No duplicates.                                                           |
