@@ -609,13 +609,51 @@ def policy_from_api(
     status = Status.enabled if record.get("enabled", True) else Status.disabled
     description = clean_description(record.get("description"))
 
+    # The policy's own env (from its name suffix) is the fallback env for
+    # any assigned host group whose name does not itself carry a suffix.
+    # This is the common case when bootstrapping a tenant whose host groups
+    # predate csfwctl's naming convention; without this fallback such groups
+    # were dropped silently, leaving the policy looking like it had none.
+    _, policy_env_label = strip_env_suffix(raw_name)
+    policy_env: HostGroupEnv | None = None
+    if policy_env_label is not None:
+        try:
+            policy_env = HostGroupEnv(policy_env_label)
+        except ValueError:
+            policy_env = None
+
     host_groups: dict[str, HostGroupEnv] = {}
+    used_envs: set[HostGroupEnv] = set()
     for entry in record.get("groups") or []:
         hg_name = entry["name"] if isinstance(entry, dict) else str(entry)
         env = host_group_env(hg_name)
         if env is None:
+            # No suffix on the group itself: fall back to the policy's env,
+            # then to production. A legacy un-promoted policy is assumed to
+            # be live in production, so defaulting there means a later
+            # ``apply --env production`` keeps the assignment instead of
+            # detaching the group.
+            env = policy_env or HostGroupEnv.production
+        if env in used_envs:
+            # csfwctl models at most one host group per env per policy. A
+            # live policy that assigns several groups to the same env cannot
+            # be represented; keep the first and warn about the rest rather
+            # than dropping them silently or raising a validation error that
+            # would abort a bulk import.
+            from csfwctl.observability import get_logger
+
+            get_logger("exporter").warning(
+                "import dropped host group: env already assigned",
+                extra={
+                    "event": "import.policy.host_group.skipped",
+                    "policy_name": raw_name,
+                    "host_group_name": hg_name,
+                    "env": env.value,
+                },
+            )
             continue
         host_groups[hg_name] = env
+        used_envs.add(env)
 
     settings = record.get("settings") or {}
     rule_group_ids = settings.get("rule_group_ids") or record.get("rule_group_ids") or []

@@ -6,7 +6,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from csfwctl.schema._common import (
     CrowdStrikeName,
-    DisplayName,
     HostGroupEnv,
     Platform,
     PrecedenceBucket,
@@ -50,7 +49,7 @@ class Policy(BaseModel):
     priority: PrecedenceBucket = PrecedenceBucket.default
     status: Status = Status.enabled
     description: str = Field(default="", max_length=2000)
-    host_groups: dict[DisplayName, HostGroupEnv] = Field(default_factory=dict)
+    host_groups: dict[CrowdStrikeName, HostGroupEnv] = Field(default_factory=dict)
     rules: list[Rule] = Field(default_factory=list)
     rule_groups: list[Slug] = Field(default_factory=list)
     inherits: Slug | None = None

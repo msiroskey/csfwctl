@@ -50,6 +50,20 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       create/update/dry-run for managed host groups, and
       build_desired_state inheritance materialisation.
 
+## Bug fixes
+
+- [x] **Import dropped host groups without an env suffix.**
+      `policy_from_api` inferred a host group's env solely from its name
+      suffix and silently skipped any group lacking one, so bootstrapping
+      a tenant whose host groups predate csfwctl's naming convention
+      produced policies that looked like they had no host groups (false
+      `policy-without-host-groups` warning on `validate`). Two fixes:
+      (1) suffix-less groups now fall back to the policy's own env, then
+      to `production`; (2) `Policy.host_groups` keys are now
+      `CrowdStrikeName` (was `DisplayName`) so verbatim CrowdStrike names
+      containing underscores/spaces are representable. Tests in
+      `test_exporter_translation.py`; `docs/schema_reference.md` updated.
+
 ## Phase 10 tasks
 
 - [x] Alert deduplication for `drift.detected`: `last_alerted: str | None`

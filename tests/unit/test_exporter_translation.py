@@ -373,6 +373,53 @@ def test_policy_from_api_resolves_host_groups_and_rule_groups() -> None:
     assert policy.rules == []
 
 
+def test_policy_from_api_host_group_without_suffix_uses_policy_env() -> None:
+    """A host group lacking an env suffix inherits the policy's own env.
+
+    Bootstrapping a tenant whose host groups predate csfwctl's naming
+    convention must not silently drop the assignment (the bug this guards
+    against): such a policy would then look like it has no host groups.
+    """
+    record = _windows_policy(
+        groups=[{"id": "hg-1", "name": "ASC-Endpoints-FW-FULL_DISABLE"}],
+    )
+    policy = policy_from_api(
+        record,
+        rule_groups_by_id={"rg-baseline": {"id": "rg-baseline", "name": "windows-baseline-Test"}},
+    )
+    # Policy name is "...-Test", so the suffix-less group binds to test.
+    assert policy.host_groups == {"ASC-Endpoints-FW-FULL_DISABLE": HostGroupEnv.test}
+
+
+def test_policy_from_api_suffixless_group_on_suffixless_policy_defaults_production() -> None:
+    """With no env info anywhere, a host group defaults to production."""
+    record = _windows_policy(
+        name="ASC-Windows-Endpoints-FULL_DISABLE",
+        groups=[{"id": "hg-1", "name": "ASC-Endpoints-FW-FULL_DISABLE"}],
+    )
+    policy = policy_from_api(
+        record,
+        rule_groups_by_id={"rg-baseline": {"id": "rg-baseline", "name": "windows-baseline"}},
+    )
+    assert policy.host_groups == {"ASC-Endpoints-FW-FULL_DISABLE": HostGroupEnv.production}
+
+
+def test_policy_from_api_keeps_first_group_when_env_collides() -> None:
+    """Two suffix-less groups can't share an env; keep the first, drop the rest."""
+    record = _windows_policy(
+        name="ASC-Windows-Endpoints-FULL_DISABLE",
+        groups=[
+            {"id": "hg-1", "name": "ASC-Endpoints-FW-FULL_DISABLE"},
+            {"id": "hg-2", "name": "ASC-Servers-FW-FULL_DISABLE"},
+        ],
+    )
+    policy = policy_from_api(
+        record,
+        rule_groups_by_id={"rg-baseline": {"id": "rg-baseline", "name": "windows-baseline"}},
+    )
+    assert policy.host_groups == {"ASC-Endpoints-FW-FULL_DISABLE": HostGroupEnv.production}
+
+
 def test_policy_from_api_folds_override_group_into_inline_rules() -> None:
     override_rg = {
         "id": "rg-overrides",
