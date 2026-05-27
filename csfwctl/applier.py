@@ -172,7 +172,7 @@ def _build_live_index(state: Any, env: str) -> _LiveIndex:
     Mirrors the slug derivation used by the differ so creates / updates /
     deletes from a change set line up exactly with what we find here.
     """
-    from csfwctl.exporter import strip_env_suffix
+    from csfwctl.exporter import strip_env_suffix, to_slug
 
     idx = _LiveIndex()
     for record in state.policies:
@@ -181,14 +181,14 @@ def _build_live_index(state: Any, env: str) -> _LiveIndex:
         base, suffix_env = strip_env_suffix(str(record.get("name", "")))
         if suffix_env != env:
             continue
-        idx.policies[base.lower()] = (str(record["id"]), record.get("description"))
+        idx.policies[to_slug(base)] = (str(record["id"]), record.get("description"))
     for record in state.rule_groups:
         if not isinstance(record, dict) or "id" not in record:
             continue
         base, suffix_env = strip_env_suffix(str(record.get("name", "")))
         if suffix_env != env:
             continue
-        idx.rule_groups[base.lower()] = (str(record["id"]), record.get("description"))
+        idx.rule_groups[to_slug(base)] = (str(record["id"]), record.get("description"))
     for record in state.locations:
         if not isinstance(record, dict) or "id" not in record:
             continue
@@ -196,7 +196,7 @@ def _build_live_index(state: Any, env: str) -> _LiveIndex:
         name = str(record.get("name", ""))
         if not name:
             continue
-        idx.locations[name.lower()] = (str(record["id"]), record.get("description"))
+        idx.locations[to_slug(name)] = (str(record["id"]), record.get("description"))
     return idx
 
 
