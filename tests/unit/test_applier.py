@@ -674,6 +674,50 @@ def test_bootstrap_warns_for_yaml_without_live_counterpart() -> None:
     assert not client.rule_groups.updated
 
 
+def test_bootstrap_matches_live_rule_group_with_spaces_in_name() -> None:
+    """Live objects whose names use spaces instead of hyphens still resolve.
+
+    Real tenants often have pre-existing rule groups created outside of
+    csfwctl where CrowdStrike stored the display name with spaces (e.g.
+    ``ODTI Windows CIO Support Tool Access-Test``).  _build_live_index
+    must normalise via to_slug() so the spaced live name matches the
+    hyphenated YAML slug.
+    """
+    rg = _windows_rg()
+    repo = _repo_with(rule_groups=[rg])
+    # Simulate a live rule group whose name has spaces instead of hyphens.
+    # rule_group_to_api_shape would produce "Windows-Baseline-Test"; we
+    # override the name to use spaces as CrowdStrike would for a pre-existing
+    # object.
+    state = LiveState()
+    spaced_name = "Windows Baseline-Test"
+    state.rule_groups.append(
+        {
+            "id": "rg-live-id-001",
+            "name": spaced_name,
+            "description": "",
+            "rules": [],
+            "rule_ids": [],
+            "platform": "Windows",
+        }
+    )
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    report = apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(initial_bootstrap=True),
+        safety_options=_safety(initial_bootstrap=True),
+    )
+    # Bootstrap should have written metadata to the live rule group,
+    # not warned that it has no YAML counterpart.
+    assert client.rule_groups.updated, "expected a metadata-only update for the spaced-name RG"
+    assert not any("no live counterpart" in w for w in report.warnings)
+    assert report.count("metadata") == 1
+
+
 # ---- report serialization ------------------------------------------------
 
 
