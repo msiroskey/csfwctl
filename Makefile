@@ -26,6 +26,11 @@ VENV_BIN := $(VENV)/bin
 PIP := $(VENV_BIN)/pip
 PY := $(VENV_BIN)/python
 
+# Production install layout (see csfwctl-project-plan.md section 6).
+# Override at the command line: make install INSTALL_DIR=/opt/mydir
+INSTALL_DIR ?= /opt/csfwctl
+INSTALL_BIN ?= /usr/local/bin/csfwctl
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -37,8 +42,8 @@ help:
 	@echo "  make wheel      Build a distributable wheel into dist/."
 	@echo "  make clean      Remove build artifacts and caches."
 	@echo "  make clean-venv Remove the .venv (rebuilt on next 'make dev')."
-	@echo "  make install    (stub) Production install to /opt/csfwctl."
-	@echo "  make uninstall  (stub) Remove production install."
+	@echo "  make install    Install to INSTALL_DIR (default /opt/csfwctl) + wrapper in /usr/local/bin."
+	@echo "  make uninstall  Remove INSTALL_DIR and the /usr/local/bin/csfwctl wrapper."
 	@echo ""
 	@echo "Override the Python interpreter:"
 	@echo "  make dev PYTHON=python3.14"
@@ -122,12 +127,21 @@ clean-venv:
 
 .PHONY: install
 install:
-	@echo "make install is a stub in Phase 0."
-	@echo "Production install layout will be implemented in a later phase."
-	@echo "See csfwctl-project-plan.md section 6."
-	@exit 1
+	@wheel=$$(ls dist/*.whl 2>/dev/null | head -1); \
+	if [ -z "$$wheel" ]; then \
+		echo "error: no wheel found in dist/ — run 'make wheel' first" >&2; \
+		exit 1; \
+	fi; \
+	echo "Installing $$wheel → $(INSTALL_DIR)"
+	$(PYTHON) -m venv $(INSTALL_DIR)
+	$(INSTALL_DIR)/bin/pip install --upgrade pip --quiet
+	$(INSTALL_DIR)/bin/pip install dist/*.whl --quiet
+	printf '#!/bin/sh\nexec "$(INSTALL_DIR)/bin/csfwctl" "$$@"\n' > $(INSTALL_BIN)
+	chmod +x $(INSTALL_BIN)
+	@echo "csfwctl installed — $(INSTALL_BIN)"
 
 .PHONY: uninstall
 uninstall:
-	@echo "make uninstall is a stub in Phase 0."
-	@exit 1
+	rm -rf $(INSTALL_DIR)
+	rm -f $(INSTALL_BIN)
+	@echo "csfwctl uninstalled"

@@ -1,14 +1,13 @@
 # csfwctl — GitLab CI/CD pipeline
 #
 # Stages:
-#   lint   — security guards, ruff, mypy (all branches / MRs)
-#   test   — pytest × Python 3.11 + 3.12 (all branches / MRs)
-#   build  — wheel artifact (all branches / MRs, kept 7 days)
-#   deploy — publish wheel to GitLab Package Registry (production branch only)
+#   lint   — security guards, ruff, mypy (all branches / MRs, Docker)
+#   test   — pytest × Python 3.11 + 3.12 (all branches / MRs, Docker)
+#   build  — wheel artifact (all branches / MRs, Docker, kept 7 days)
+#   deploy — make install on the production host (production branch only, shell executor)
 #
-# The deploy job uses CI_JOB_TOKEN; no extra credentials are required.
-# Consumers install the package with:
-#   pip install csfwctl --index-url https://gitlab.example.com/api/v4/projects/<id>/packages/pypi/simple
+# The deploy job requires a GitLab Runner registered on the target host
+# with executor=shell and tag "production".
 
 stages:
   - lint
@@ -120,21 +119,19 @@ build-wheel:
 
 # ─── Deploy ───────────────────────────────────────────────────────────────────
 
-publish:
-  extends: .python-base
+# Runs on the physical host via a shell-executor runner tagged "production".
+# The wheel artifact from build-wheel is downloaded into dist/ automatically.
+# make install creates /opt/csfwctl (venv) and /usr/local/bin/csfwctl (wrapper).
+deploy:
   stage: deploy
   rules:
     - if: $CI_COMMIT_BRANCH == "production"
+  tags:
+    - production
   needs:
     - job: build-wheel
       artifacts: true
-  before_script:
-    - pip install --upgrade pip twine --quiet
   script:
-    - python -m twine upload
-        --repository-url "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi"
-        --username gitlab-ci-token
-        --password "${CI_JOB_TOKEN}"
-        dist/*.whl
+    - make install
   environment:
     name: production
