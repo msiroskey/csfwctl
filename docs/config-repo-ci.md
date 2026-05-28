@@ -70,6 +70,22 @@ In the `csfwctl` GitLab project:
 
 ### 3 — Add the private key to `csfwctl-config`
 
+GitLab's masked variable feature rejects values that contain whitespace.
+SSH private keys contain newlines, so the key must be base64-encoded before
+storing. The CI pipeline decodes it at runtime.
+
+**Encode the private key** (run on the admin workstation):
+
+```bash
+# Linux
+base64 -w 0 csfwctl_deploy_key
+
+# macOS
+base64 -i csfwctl_deploy_key
+```
+
+Copy the single-line output — that is the value to store.
+
 In the `csfwctl-config` GitLab project:
 
 1. Go to **Settings → CI/CD → Variables**.
@@ -79,7 +95,7 @@ In the `csfwctl-config` GitLab project:
    | Field | Value |
    |---|---|
    | Key | `CSFWCTL_DEPLOY_KEY` |
-   | Value | Full contents of `csfwctl_deploy_key` (including `-----BEGIN...` and `-----END...` lines) |
+   | Value | The base64-encoded string from the step above |
    | Type | Variable |
    | Protect variable | Checked (only available on protected branches) |
    | Mask variable | Checked (hidden in job logs) |
@@ -162,7 +178,7 @@ variables:
   before_script:
     - apt-get update -qq && apt-get install -y openssh-client --no-install-recommends -qq
     - eval $(ssh-agent -s)
-    - echo "$CSFWCTL_DEPLOY_KEY" | tr -d '\r' | ssh-add -
+    - echo "$CSFWCTL_DEPLOY_KEY" | base64 -d | ssh-add -
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
     - ssh-keyscan -H gitlab.example.com >> ~/.ssh/known_hosts
     - chmod 644 ~/.ssh/known_hosts
