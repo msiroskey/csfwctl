@@ -1,0 +1,140 @@
+# csfwctl — GitLab CI/CD pipeline
+#
+# Stages:
+#   lint   — security guards, ruff, mypy (all branches / MRs)
+#   test   — pytest × Python 3.11 + 3.12 (all branches / MRs)
+#   build  — wheel artifact (all branches / MRs, kept 7 days)
+#   deploy — publish wheel to GitLab Package Registry (production branch only)
+#
+# The deploy job uses CI_JOB_TOKEN; no extra credentials are required.
+# Consumers install the package with:
+#   pip install csfwctl --index-url https://gitlab.example.com/api/v4/projects/<id>/packages/pypi/simple
+
+stages:
+  - lint
+  - test
+  - build
+  - deploy
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+# ─── Shared templates ─────────────────────────────────────────────────────────
+
+.python-base:
+  image: python:3.11-slim
+  cache:
+    key:
+      files:
+        - pyproject.toml
+    paths:
+      - .cache/pip/
+
+.install-dev:
+  extends: .python-base
+  before_script:
+    - pip install --upgrade pip --quiet
+    - pip install -e ".[dev]" --quiet
+
+# ─── Lint ─────────────────────────────────────────────────────────────────────
+
+# Hard rules from CLAUDE.md, implemented as grep guards (no Python deps needed).
+security-lint:
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - |
+      bad_falconpy=$(grep -rnE '^(from|import) falconpy' csfwctl \
+        | grep -v '^csfwctl/falcon/' || true)
+      if [ -n "$bad_falconpy" ]; then
+        echo "error: direct falconpy import outside csfwctl/falcon/:"
+        echo "$bad_falconpy"
+        exit 1
+      fi
+    - |
+      bad_exec=$(grep -rnE '\beval\(|\bexec\(|pickle\.loads?\(|yaml\.unsafe_load\(|shell=True' \
+        csfwctl || true)
+      if [ -n "$bad_exec" ]; then
+        echo "error: forbidden dynamic-exec / unsafe-deserialise primitive:"
+        echo "$bad_exec"
+        exit 1
+      fi
+
+ruff:
+  extends: .install-dev
+  stage: lint
+  script:
+    - ruff check csfwctl tests
+    - ruff format --check csfwctl tests
+
+mypy:
+  extends: .install-dev
+  stage: lint
+  script:
+    - mypy
+
+# ─── Test ─────────────────────────────────────────────────────────────────────
+
+.test-template:
+  extends: .install-dev
+  stage: test
+  script:
+    - pytest --cov=csfwctl --cov-report=term-missing --cov-report=xml:coverage.xml
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+
+test-py311:
+  extends: .test-template
+  image: python:3.11-slim
+
+test-py312:
+  extends: .test-template
+  image: python:3.12-slim
+  cache:
+    key:
+      files:
+        - pyproject.toml
+      prefix: py312
+    paths:
+      - .cache/pip/
+
+# ─── Build ────────────────────────────────────────────────────────────────────
+
+build-wheel:
+  extends: .python-base
+  stage: build
+  before_script:
+    - pip install --upgrade pip build --quiet
+  script:
+    - python -m build --wheel
+  artifacts:
+    name: "csfwctl-wheel-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - dist/*.whl
+    expire_in: 7 days
+
+# ─── Deploy ───────────────────────────────────────────────────────────────────
+
+publish:
+  extends: .python-base
+  stage: deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == "production"
+  needs:
+    - job: build-wheel
+      artifacts: true
+  before_script:
+    - pip install --upgrade pip twine --quiet
+  script:
+    - python -m twine upload
+        --repository-url "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi"
+        --username gitlab-ci-token
+        --password "${CI_JOB_TOKEN}"
+        dist/*.whl
+  environment:
+    name: production
