@@ -1,0 +1,137 @@
+# csfwctl — GitLab CI/CD pipeline
+#
+# Stages:
+#   lint   — security guards, ruff, mypy (all branches / MRs, Docker)
+#   test   — pytest × Python 3.11 + 3.12 (all branches / MRs, Docker)
+#   build  — wheel artifact (all branches / MRs, Docker, kept 7 days)
+#   deploy — make install on the production host (production branch only, shell executor)
+#
+# The deploy job requires a GitLab Runner registered on the target host
+# with executor=shell and tag "production".
+
+stages:
+  - lint
+  - test
+  - build
+  - deploy
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+# ─── Shared templates ─────────────────────────────────────────────────────────
+
+.python-base:
+  image: python:3.11-slim
+  cache:
+    key:
+      files:
+        - pyproject.toml
+    paths:
+      - .cache/pip/
+
+.install-dev:
+  extends: .python-base
+  before_script:
+    - pip install --upgrade pip --quiet
+    - pip install -e ".[dev]" --quiet
+
+# ─── Lint ─────────────────────────────────────────────────────────────────────
+
+# Hard rules from CLAUDE.md, implemented as grep guards (no Python deps needed).
+security-lint:
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - |
+      bad_falconpy=$(grep -rnE '^(from|import) falconpy' csfwctl \
+        | grep -v '^csfwctl/falcon/' || true)
+      if [ -n "$bad_falconpy" ]; then
+        echo "error: direct falconpy import outside csfwctl/falcon/:"
+        echo "$bad_falconpy"
+        exit 1
+      fi
+    - |
+      bad_exec=$(grep -rnE '\beval\(|\bexec\(|pickle\.loads?\(|yaml\.unsafe_load\(|shell=True' \
+        csfwctl || true)
+      if [ -n "$bad_exec" ]; then
+        echo "error: forbidden dynamic-exec / unsafe-deserialise primitive:"
+        echo "$bad_exec"
+        exit 1
+      fi
+
+ruff:
+  extends: .install-dev
+  stage: lint
+  script:
+    - ruff check csfwctl tests
+    - ruff format --check csfwctl tests
+
+mypy:
+  extends: .install-dev
+  stage: lint
+  script:
+    - mypy
+
+# ─── Test ─────────────────────────────────────────────────────────────────────
+
+.test-template:
+  extends: .install-dev
+  stage: test
+  script:
+    - pytest --cov=csfwctl --cov-report=term-missing --cov-report=xml:coverage.xml
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+
+test-py311:
+  extends: .test-template
+  image: python:3.11-slim
+
+test-py312:
+  extends: .test-template
+  image: python:3.12-slim
+  cache:
+    key:
+      files:
+        - pyproject.toml
+      prefix: py312
+    paths:
+      - .cache/pip/
+
+# ─── Build ────────────────────────────────────────────────────────────────────
+
+build-wheel:
+  extends: .python-base
+  stage: build
+  before_script:
+    - pip install --upgrade pip build --quiet
+  script:
+    - python -m build --wheel
+  artifacts:
+    name: "csfwctl-wheel-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - dist/*.whl
+    expire_in: 7 days
+
+# ─── Deploy ───────────────────────────────────────────────────────────────────
+
+# Runs on the physical host via a shell-executor runner tagged "production".
+# The wheel artifact from build-wheel is downloaded into dist/ automatically.
+# make install creates /opt/csfwctl (venv) and /usr/local/bin/csfwctl (wrapper).
+deploy:
+  stage: deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == "production"
+  tags:
+    - production
+  needs:
+    - job: build-wheel
+      artifacts: true
+  script:
+    - make install
+  environment:
+    name: production
