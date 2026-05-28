@@ -6,10 +6,10 @@
 #   build — wheel artifact (all branches / MRs, kept 7 days)
 #
 # There is no deploy stage. csfwctl-config CI installs this package
-# directly at the start of its own pipeline:
-#   pip install git+https://gitlab.example.com/group/csfwctl.git@main
-# This avoids Docker socket binding on the shared runner and keeps
-# deployment concerns out of this repository.
+# directly at the start of its own pipeline using an SSH deploy key:
+#   pip install "git+ssh://git@gitlab.example.com/group/csfwctl.git@main"
+# See docs/config-repo-ci.md for the full setup guide including SSH key
+# provisioning, CI/CD variables, and an example csfwctl-config pipeline.
 #
 # For manual host installs: make install (see Makefile and docs/operations.md).
 #
