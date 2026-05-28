@@ -1,13 +1,19 @@
 # csfwctl — GitLab CI/CD pipeline
 #
 # Stages:
-#   lint   — security guards, ruff, mypy (all branches / MRs, Docker)
-#   test   — pytest × Python 3.11 + 3.12 (all branches / MRs, Docker)
-#   build  — wheel artifact (all branches / MRs, Docker, kept 7 days)
-#   deploy — make install on the production host (production branch only, shell executor)
+#   lint   — security guards, ruff, mypy (all branches / MRs, Docker runner tagged "docker")
+#   test   — pytest × Python 3.11 + 3.12 (all branches / MRs, Docker runner tagged "docker")
+#   build  — wheel artifact (all branches / MRs, Docker runner tagged "docker", kept 7 days)
+#   deploy — make install on the production host (production branch only, shell runner tagged "production")
 #
-# The deploy job requires a GitLab Runner registered on the target host
-# with executor=shell and tag "production".
+# Runner requirements:
+#   docker     — GitLab Runner with executor=docker, tagged "docker"
+#   production — GitLab Runner with executor=shell on the target host, tagged "production"
+#
+# Proxy variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY) are forwarded into every
+# Docker container via .python-base. Set the actual values as CI/CD variables
+# in GitLab (project → Settings → CI/CD → Variables) so they stay out of the
+# repository and can differ between environments.
 
 stages:
   - lint
@@ -22,6 +28,15 @@ variables:
 
 .python-base:
   image: python:3.11-slim
+  tags:
+    - docker
+  variables:
+    HTTP_PROXY: "$HTTP_PROXY"
+    HTTPS_PROXY: "$HTTPS_PROXY"
+    NO_PROXY: "$NO_PROXY"
+    http_proxy: "$HTTP_PROXY"
+    https_proxy: "$HTTPS_PROXY"
+    no_proxy: "$NO_PROXY"
   cache:
     key:
       files:
@@ -39,8 +54,8 @@ variables:
 
 # Hard rules from CLAUDE.md, implemented as grep guards (no Python deps needed).
 security-lint:
+  extends: .python-base
   stage: lint
-  image: python:3.11-slim
   script:
     - |
       bad_falconpy=$(grep -rnE '^(from|import) falconpy' csfwctl \
