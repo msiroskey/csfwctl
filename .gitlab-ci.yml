@@ -4,23 +4,23 @@
 #   lint   — security guards, ruff, mypy (all branches / MRs, Docker runner tagged "docker")
 #   test   — pytest × Python 3.11 + 3.12 (all branches / MRs, Docker runner tagged "docker")
 #   build  — wheel artifact (all branches / MRs, Docker runner tagged "docker", kept 7 days)
-#   deploy — two parallel jobs, production branch only:
-#              build-image  builds and tags csfwctl:latest + csfwctl:<sha> on the
-#                           Docker runner's host daemon for use by csfwctl-config CI
-#              deploy       make install on the production host (shell runner)
+#   deploy — builds and tags csfwctl:latest + csfwctl:<sha> on the Docker runner's host
+#            daemon for use by csfwctl-config CI (production branch only)
 #
 # Runner requirements:
-#   docker     — GitLab Runner with executor=docker, tagged "docker".
-#                For build-image to work the runner must mount the Docker socket:
-#                  [runners.docker]
-#                    volumes = ["/var/run/docker.sock:/var/run/docker.sock", "/cache"]
-#   production — GitLab Runner with executor=shell on the target host, tagged "production"
+#   docker — GitLab Runner with executor=docker, tagged "docker".
+#            For build-image to work the runner must mount the Docker socket:
+#              [runners.docker]
+#                volumes = ["/var/run/docker.sock:/var/run/docker.sock", "/cache"]
 #
 # Proxy variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY) are forwarded into every
 # Docker container via .python-base, and passed as build-args into the Docker
 # image build so pip can reach package indexes at image-build time.
 # Set the actual values as CI/CD variables in GitLab
 # (project → Settings → CI/CD → Variables) so they stay out of the repository.
+#
+# Physical host installs are handled manually via `make install` — see the
+# Makefile and docs/operations.md for the runbook.
 
 stages:
   - lint
@@ -166,22 +166,5 @@ build-image:
         --tag "csfwctl:latest"
         --tag "csfwctl:${CI_COMMIT_SHORT_SHA}"
         .
-  environment:
-    name: production
-
-# Runs on the physical host via a shell-executor runner tagged "production".
-# The wheel artifact from build-wheel is downloaded into dist/ automatically.
-# make install creates /opt/csfwctl (venv) and /usr/local/bin/csfwctl (wrapper).
-deploy:
-  stage: deploy
-  rules:
-    - if: $CI_COMMIT_BRANCH == "production"
-  tags:
-    - production
-  needs:
-    - job: build-wheel
-      artifacts: true
-  script:
-    - make install
   environment:
     name: production
