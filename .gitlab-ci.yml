@@ -1,32 +1,30 @@
 # csfwctl — GitLab CI/CD pipeline
 #
 # Stages:
-#   lint   — security guards, ruff, mypy (all branches / MRs, Docker runner tagged "docker")
-#   test   — pytest × Python 3.11 + 3.12 (all branches / MRs, Docker runner tagged "docker")
-#   build  — wheel artifact (all branches / MRs, Docker runner tagged "docker", kept 7 days)
-#   deploy — builds and tags csfwctl:latest + csfwctl:<sha> on the Docker runner's host
-#            daemon for use by csfwctl-config CI (production branch only)
+#   lint  — security guards, ruff, mypy (all branches / MRs)
+#   test  — pytest × Python 3.11 + 3.12 (all branches / MRs)
+#   build — wheel artifact (all branches / MRs, kept 7 days)
+#
+# There is no deploy stage. csfwctl-config CI installs this package
+# directly at the start of its own pipeline using an SSH deploy key:
+#   pip install "git+ssh://git@gitlab.example.com/group/csfwctl.git@main"
+# See docs/config-repo-ci.md for the full setup guide including SSH key
+# provisioning, CI/CD variables, and an example csfwctl-config pipeline.
+#
+# For manual host installs: make install (see Makefile and docs/operations.md).
 #
 # Runner requirements:
-#   docker — GitLab Runner with executor=docker, tagged "docker".
-#            For build-image to work the runner must mount the Docker socket:
-#              [runners.docker]
-#                volumes = ["/var/run/docker.sock:/var/run/docker.sock", "/cache"]
+#   docker — GitLab Runner with executor=docker, tagged "docker"
 #
 # Proxy variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY) are forwarded into every
-# Docker container via .python-base, and passed as build-args into the Docker
-# image build so pip can reach package indexes at image-build time.
-# Set the actual values as CI/CD variables in GitLab
-# (project → Settings → CI/CD → Variables) so they stay out of the repository.
-#
-# Physical host installs are handled manually via `make install` — see the
-# Makefile and docs/operations.md for the runbook.
+# Docker container via .python-base. Set the actual values as CI/CD variables
+# in GitLab (project → Settings → CI/CD → Variables) so they stay out of the
+# repository.
 
 stages:
   - lint
   - test
   - build
-  - deploy
 
 variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
@@ -138,33 +136,3 @@ build-wheel:
     paths:
       - dist/*.whl
     expire_in: 7 days
-
-# ─── Deploy ───────────────────────────────────────────────────────────────────
-
-# Builds a thin Docker image from the wheel artifact and tags it on the Docker
-# runner's host daemon so csfwctl-config CI jobs can reference it as:
-#   image: csfwctl:latest
-# No registry is needed — both this pipeline and csfwctl-config share the same
-# Docker daemon. Requires socket binding in the runner's config.toml (see header).
-build-image:
-  stage: deploy
-  rules:
-    - if: $CI_COMMIT_BRANCH == "production"
-  tags:
-    - docker
-  image: docker:latest
-  variables:
-    DOCKER_HOST: "unix:///var/run/docker.sock"
-  needs:
-    - job: build-wheel
-      artifacts: true
-  script:
-    - docker build
-        --build-arg HTTP_PROXY="${HTTP_PROXY}"
-        --build-arg HTTPS_PROXY="${HTTPS_PROXY}"
-        --build-arg NO_PROXY="${NO_PROXY}"
-        --tag "csfwctl:latest"
-        --tag "csfwctl:${CI_COMMIT_SHORT_SHA}"
-        .
-  environment:
-    name: production
