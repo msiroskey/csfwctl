@@ -24,8 +24,12 @@ authenticated access, the CI/CD variables, and an annotated example
 it at the start of every job via pip over SSH:
 
 ```bash
-pip install "git+ssh://git@gitlab.example.com/group/csfwctl.git@main"
+pip install "git+ssh://git@code.osu.edu/asc-operations/crowdstrike-firewall-config-as-code.git@main"
 ```
+
+Note the slash after the hostname — `git+ssh://` is a URL scheme and uses `/`
+to separate the hostname from the path. The SCP-style colon syntax
+(`git@host:org/repo`) only works with plain `git clone`, not with pip.
 
 Swap `@main` for a tag (e.g. `@v1.2.0`) when you want jobs to pin to a
 specific release rather than always tracking the latest commit on `main`.
@@ -223,7 +227,10 @@ variables:
     - echo "$GITLAB_SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
     - chmod 644 ~/.ssh/known_hosts
     - pip install --upgrade pip --quiet
-    - pip install "git+ssh://git@code.osu.edu/group/csfwctl.git@${CSFWCTL_VERSION}" --quiet
+    # Use ssh:// URL format (slash after hostname, not colon).
+    # Colon syntax (git@host:org/repo) is SCP-style and only works with
+    # plain git clone — pip's URL parser treats the colon as a port separator.
+    - pip install "git+ssh://git@code.osu.edu/asc-operations/crowdstrike-firewall-config-as-code.git@${CSFWCTL_VERSION}" --quiet
 
 # ─── Validate (runs on MRs and main) ─────────────────────────────────────────
 
