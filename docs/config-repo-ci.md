@@ -97,12 +97,42 @@ In the `csfwctl-config` GitLab project:
    | Key | `CSFWCTL_DEPLOY_KEY` |
    | Value | The base64-encoded string from the step above |
    | Type | Variable |
-   | Protect variable | Checked (only available on protected branches) |
+   | Protect variable | **Unchecked** — protected variables are silently absent on unprotected branches, causing an empty key file and a cryptic libcrypto error |
    | Mask variable | Checked (hidden in job logs) |
 
 4. Click **Add variable**.
 
-### 4 — Delete the local key files
+### 4 — Capture the GitLab server's SSH host key
+
+`ssh-keyscan` requires a direct TCP connection on port 22, which is
+typically blocked by a corporate firewall when running from a Docker
+container. Instead, capture the host key once from a machine that can
+reach the server and store it as a CI variable so the pipeline never
+needs to scan at runtime.
+
+Run this from an admin workstation:
+
+```bash
+ssh-keyscan -H code.osu.edu
+```
+
+Copy the full output (one or more lines beginning with the hashed
+hostname). In the `csfwctl-config` GitLab project:
+
+1. Go to **Settings → CI/CD → Variables → Add variable**.
+2. Fill in:
+
+   | Field | Value |
+   |---|---|
+   | Key | `GITLAB_SSH_KNOWN_HOSTS` |
+   | Value | Full output of `ssh-keyscan -H code.osu.edu` |
+   | Type | Variable |
+   | Protect variable | Unchecked |
+   | Mask variable | Unchecked (hashed hostnames are not secret) |
+
+3. Click **Add variable**.
+
+### 5 — Delete the local key files
 
 ```bash
 rm csfwctl_deploy_key csfwctl_deploy_key.pub
@@ -121,7 +151,8 @@ environment (`test`, `pilot`, `production`).
 
 | Variable | Scope | Masked | Description |
 |---|---|---|---|
-| `CSFWCTL_DEPLOY_KEY` | All | Yes | SSH private key for `pip install` from `csfwctl` |
+| `CSFWCTL_DEPLOY_KEY` | All | Yes | Base64-encoded SSH private key for `pip install` from `csfwctl`. **Do not mark as Protected** — protected variables are silently absent on unprotected branches. |
+| `GITLAB_SSH_KNOWN_HOSTS` | All | No | Output of `ssh-keyscan -H code.osu.edu` captured from an admin workstation. Avoids a runtime TCP/22 connection from the Docker container, which is typically firewall-blocked. |
 | `CSFWCTL_VERSION` | All | No | Branch, tag, or SHA to install (e.g. `main`, `v1.2.0`) |
 | `CSFWCTL_CLIENT_ID` | Per env | Yes | CrowdStrike Falcon API client ID |
 | `CSFWCTL_CLIENT_SECRET` | Per env | Yes | CrowdStrike Falcon API client secret |
@@ -176,16 +207,22 @@ variables:
       - .cache/pip/
   before_script:
     - apt-get update -qq && apt-get install -y openssh-client --no-install-recommends -qq
+    - |
+      if [ -z "$CSFWCTL_DEPLOY_KEY" ]; then
+        echo "ERROR: CSFWCTL_DEPLOY_KEY is empty. Check Settings → CI/CD → Variables."
+        echo "If marked Protected, uncheck it — protected variables are absent on unprotected branches."
+        exit 1
+      fi
     - eval $(ssh-agent -s)
     - echo "$CSFWCTL_DEPLOY_KEY" | base64 -d > /tmp/csfwctl_deploy_key
     - chmod 600 /tmp/csfwctl_deploy_key
     - ssh-add /tmp/csfwctl_deploy_key
     - rm -f /tmp/csfwctl_deploy_key
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    - ssh-keyscan -H gitlab.example.com >> ~/.ssh/known_hosts
+    - echo "$GITLAB_SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
     - chmod 644 ~/.ssh/known_hosts
     - pip install --upgrade pip --quiet
-    - pip install "git+ssh://git@gitlab.example.com/group/csfwctl.git@${CSFWCTL_VERSION}" --quiet
+    - pip install "git+ssh://git@code.osu.edu/group/csfwctl.git@${CSFWCTL_VERSION}" --quiet
 
 # ─── Validate (runs on MRs and main) ─────────────────────────────────────────
 
