@@ -177,7 +177,10 @@ variables:
   before_script:
     - apt-get update -qq && apt-get install -y openssh-client --no-install-recommends -qq
     - eval $(ssh-agent -s)
-    - echo "$CSFWCTL_DEPLOY_KEY" | base64 -d | ssh-add -
+    - echo "$CSFWCTL_DEPLOY_KEY" | base64 -d > /tmp/csfwctl_deploy_key
+    - chmod 600 /tmp/csfwctl_deploy_key
+    - ssh-add /tmp/csfwctl_deploy_key
+    - rm -f /tmp/csfwctl_deploy_key
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
     - ssh-keyscan -H gitlab.example.com >> ~/.ssh/known_hosts
     - chmod 644 ~/.ssh/known_hosts
