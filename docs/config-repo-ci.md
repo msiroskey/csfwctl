@@ -153,9 +153,13 @@ variables:
   CSFWCTL_VERSION: "main"      # pin to a tag for stability: "v1.2.0"
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
 
-# ─── Shared templates ────────────────────────────────────────────────────────
+# ─── Shared template ─────────────────────────────────────────────────────────
 
-.python-base:
+# All jobs extend this template. It sets the Docker image and runner tag
+# explicitly so that image/tags are never lost through an extends chain,
+# installs openssh-client (absent from slim images), configures the SSH
+# agent with the base64-encoded deploy key, and pip-installs csfwctl.
+.csfwctl-job:
   image: python:3.11-slim
   tags:
     - docker
@@ -170,11 +174,6 @@ variables:
     key: csfwctl-$CSFWCTL_VERSION
     paths:
       - .cache/pip/
-
-# Installs openssh-client (required in slim images) then configures the
-# SSH agent with the deploy key so pip can clone csfwctl over SSH.
-.install-csfwctl:
-  extends: .python-base
   before_script:
     - apt-get update -qq && apt-get install -y openssh-client --no-install-recommends -qq
     - eval $(ssh-agent -s)
@@ -188,7 +187,7 @@ variables:
 # ─── Validate (runs on MRs and main) ─────────────────────────────────────────
 
 validate:
-  extends: .install-csfwctl
+  extends: .csfwctl-job
   stage: validate
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -199,7 +198,7 @@ validate:
 
 # Posts a diff of planned Test changes as a comment on the MR.
 diff-test:
-  extends: .install-csfwctl
+  extends: .csfwctl-job
   stage: validate
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -209,7 +208,7 @@ diff-test:
 # ─── Apply — Test (automatic on merge) ───────────────────────────────────────
 
 apply-test:
-  extends: .install-csfwctl
+  extends: .csfwctl-job
   stage: apply-test
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
@@ -221,7 +220,7 @@ apply-test:
 # ─── Apply — Pilot (manual gate, 1 approver) ─────────────────────────────────
 
 apply-pilot:
-  extends: .install-csfwctl
+  extends: .csfwctl-job
   stage: apply-pilot
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
@@ -234,7 +233,7 @@ apply-pilot:
 # ─── Apply — Production (manual gate, 2 approvers) ───────────────────────────
 
 apply-production:
-  extends: .install-csfwctl
+  extends: .csfwctl-job
   stage: apply-production
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
@@ -247,7 +246,7 @@ apply-production:
 # ─── Drift check (scheduled) ─────────────────────────────────────────────────
 
 drift-check:
-  extends: .install-csfwctl
+  extends: .csfwctl-job
   stage: validate
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
