@@ -121,7 +121,7 @@ environment (`test`, `pilot`, `production`).
 
 | Variable | Scope | Masked | Description |
 |---|---|---|---|
-| `CSFWCTL_DEPLOY_KEY` | All | Yes | SSH private key for `pip install` from `csfwctl` |
+| `CSFWCTL_DEPLOY_KEY` | All | Yes | SSH private key for `pip install` from `csfwctl`. **Do not mark as Protected** unless all branches that run CI are also protected — protected variables are not injected into jobs on unprotected branches, which causes a silent empty-string failure. |
 | `CSFWCTL_VERSION` | All | No | Branch, tag, or SHA to install (e.g. `main`, `v1.2.0`) |
 | `CSFWCTL_CLIENT_ID` | Per env | Yes | CrowdStrike Falcon API client ID |
 | `CSFWCTL_CLIENT_SECRET` | Per env | Yes | CrowdStrike Falcon API client secret |
@@ -176,6 +176,15 @@ variables:
       - .cache/pip/
   before_script:
     - apt-get update -qq && apt-get install -y openssh-client --no-install-recommends -qq
+    - |
+      if [ -z "$CSFWCTL_DEPLOY_KEY" ]; then
+        echo "ERROR: CSFWCTL_DEPLOY_KEY is empty or not set."
+        echo "Check Settings → CI/CD → Variables → CSFWCTL_DEPLOY_KEY."
+        echo "If the variable is marked Protected, it is only injected into"
+        echo "jobs running on protected branches. Either uncheck Protected or"
+        echo "ensure this branch is protected."
+        exit 1
+      fi
     - eval $(ssh-agent -s)
     - echo "$CSFWCTL_DEPLOY_KEY" | base64 -d > /tmp/csfwctl_deploy_key
     - chmod 600 /tmp/csfwctl_deploy_key
