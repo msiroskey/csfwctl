@@ -177,6 +177,55 @@ def test_policies_get_policy_containers_empty_ids(mocked_api: responses.Requests
     assert result == []
 
 
+def test_rule_groups_update_returns_id_from_string_resource(
+    mocked_api: responses.RequestsMock,
+) -> None:
+    """The update endpoint returns ``resources`` as bare ID strings.
+
+    Regression for a ``dict(resources[0])`` ValueError when the API
+    returns ``{"resources": ["<id>"]}`` rather than full objects.
+    """
+    mocked_api.add(
+        responses.PATCH,
+        f"{BASE}/fwmgr/entities/rule-groups/v1",
+        json={"resources": ["rg-123"], "errors": []},
+        status=200,
+    )
+    client = _client()
+    result = client.rule_groups.update({"id": "rg-123", "diff_operations": []})
+    assert result == {"id": "rg-123"}
+
+
+def test_rule_groups_create_returns_id_from_string_resource(
+    mocked_api: responses.RequestsMock,
+) -> None:
+    """Create likewise returns a bare ID string in ``resources``."""
+    mocked_api.add(
+        responses.POST,
+        f"{BASE}/fwmgr/entities/rule-groups/v1",
+        json={"resources": ["rg-new"], "errors": []},
+        status=201,
+    )
+    client = _client()
+    result = client.rule_groups.create({"name": "win", "platform": "Windows"})
+    assert result == {"id": "rg-new"}
+
+
+def test_rule_groups_update_passes_through_dict_resource(
+    mocked_api: responses.RequestsMock,
+) -> None:
+    """A dict resource (some endpoints/mocks return one) is passed through."""
+    mocked_api.add(
+        responses.PATCH,
+        f"{BASE}/fwmgr/entities/rule-groups/v1",
+        json={"resources": [{"id": "rg-9", "name": "win"}], "errors": []},
+        status=200,
+    )
+    client = _client()
+    result = client.rule_groups.update({"id": "rg-9"})
+    assert result == {"id": "rg-9", "name": "win"}
+
+
 def test_retry_path_with_http(mocked_api: responses.RequestsMock) -> None:
     mocked_api.add(
         responses.GET,
