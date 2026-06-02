@@ -52,6 +52,20 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
 
 ## Bug fixes
 
+- [x] **Bootstrap rule-group update rejected with HTTP 400.** The
+      `firewall_rule_groups.update` endpoint is diff-based: it has no
+      top-level `description` field and requires `diff_type`
+      (`application/json-patch+json`), `tracking`, and `rule_ids`.
+      Bootstrap was sending `{id, description}`, which the API rejected.
+      Fix: `applier._rule_group_metadata_payload` now builds a
+      `replace /description` JSON Patch, copying `rule_ids`/`tracking`
+      from the live record so rule content is preserved. Documented in
+      `docs/architecture.md`.
+      - [ ] **Follow-up:** the *normal* (non-bootstrap) rule-group update
+        path (`_build_rule_group_payload`) still emits the full-content
+        create shape with a top-level `description`. It has never run
+        against a real tenant and almost certainly needs the same
+        diff-based treatment. Investigate when a real update is exercised.
 - [x] **Import dropped host groups without an env suffix.**
       `policy_from_api` inferred a host group's env solely from its name
       suffix and silently skipped any group lacking one, so bootstrapping

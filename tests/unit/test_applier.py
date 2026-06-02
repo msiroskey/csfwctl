@@ -645,13 +645,18 @@ def test_bootstrap_only_writes_metadata_never_modifies_content() -> None:
         options=_options(initial_bootstrap=True),
         safety_options=_safety(initial_bootstrap=True),
     )
-    # The bootstrap path sends a metadata-only payload.
+    # The bootstrap path sends a diff-based, metadata-only payload: the
+    # description trailer is changed via a JSON Patch op, and rule content
+    # (rule_ids) is preserved rather than rewritten.
     assert client.rule_groups.updated
     payload = client.rule_groups.updated[0]
-    # id and description are always present; the API also requires tracking,
-    # diff_type, and rule_ids which are copied from the live record.
-    assert {"id", "description"}.issubset(payload.keys())
-    sig = parse_signature(payload["description"])
+    assert payload["diff_type"] == "application/json-patch+json"
+    assert "rule_ids" in payload
+    ops = payload["diff_operations"]
+    assert len(ops) == 1
+    assert ops[0]["op"] == "replace"
+    assert ops[0]["path"] == "/description"
+    sig = parse_signature(ops[0]["value"])
     assert sig is not None
     # No previous signature on the live record → version 1.
     assert sig.version == 1

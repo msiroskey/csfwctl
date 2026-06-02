@@ -882,6 +882,42 @@ def _bootstrap_metadata(
             )
 
 
+# The firewall rule-group update endpoint is diff-based. ``diff_type`` has
+# exactly one accepted value, and a field can only be changed via a JSON
+# Patch operation in ``diff_operations`` — a top-level ``description`` key is
+# silently ignored.
+_RULE_GROUP_DIFF_TYPE = "application/json-patch+json"
+
+
+def _rule_group_metadata_payload(
+    live_id: str,
+    new_description: str,
+    live_record: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build a metadata-only rule-group update as a JSON Patch.
+
+    The update endpoint rejects payloads missing ``diff_type``,
+    ``tracking``, or ``rule_ids`` and ignores a top-level ``description``,
+    so the trailer change is expressed as a ``replace /description`` patch.
+    ``rule_ids`` and ``tracking`` are copied verbatim from the live record
+    so rule content and the optimistic-concurrency token are preserved —
+    bootstrap never touches rule content.
+    """
+    record = live_record or {}
+    payload: dict[str, Any] = {
+        "id": live_id,
+        "diff_type": _RULE_GROUP_DIFF_TYPE,
+        "diff_operations": [
+            {"op": "replace", "path": "/description", "value": new_description}
+        ],
+        "rule_ids": list(record.get("rule_ids") or []),
+    }
+    tracking = record.get("tracking")
+    if tracking:
+        payload["tracking"] = tracking
+    return payload
+
+
 def _bootstrap_write(
     client: FalconClient,
     *,
@@ -896,15 +932,15 @@ def _bootstrap_write(
 ) -> None:
     """Issue a metadata-only update for one bootstrap target.
 
-    For rule groups the API requires ``tracking``, ``diff_type``, and
-    ``rule_ids`` even for description-only updates; they are copied from
-    ``live_record`` when provided.
+    Locations and policies accept a minimal ``{id, description}`` update.
+    Rule groups go through the diff-based update endpoint instead — see
+    :func:`_rule_group_metadata_payload`.
     """
-    payload: dict[str, Any] = {"id": live_id, "description": new_description}
-    if kind == KIND_RULE_GROUP and live_record:
-        for required_field in ("tracking", "diff_type", "rule_ids"):
-            if required_field in live_record:
-                payload[required_field] = live_record[required_field]
+    payload: dict[str, Any]
+    if kind == KIND_RULE_GROUP:
+        payload = _rule_group_metadata_payload(live_id, new_description, live_record)
+    else:
+        payload = {"id": live_id, "description": new_description}
     if options.dry_run:
         report.actions.append(
             AppliedAction(
