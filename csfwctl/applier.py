@@ -554,7 +554,7 @@ def apply_change_set(
     index = _build_live_index(state, options.env)
 
     if options.initial_bootstrap:
-        _bootstrap_metadata(client, repo, options, report, index)
+        _bootstrap_metadata(client, repo, options, report, index, state)
         return report
 
     # ---- desired-state projection (matches the differ) --------------------
@@ -781,6 +781,7 @@ def _bootstrap_metadata(
     options: ApplyOptions,
     report: ApplyReport,
     index: _LiveIndex,
+    state: Any,
 ) -> None:
     """``--initial-bootstrap`` body: rewrite metadata only.
 
@@ -819,6 +820,16 @@ def _bootstrap_metadata(
                 "rerun without --initial-bootstrap to create it"
             )
 
+    from csfwctl.exporter import strip_env_suffix
+    from csfwctl.exporter import to_slug as _to_slug
+
+    rg_by_slug: dict[str, dict[str, Any]] = {}
+    for record in state.rule_groups:
+        if not isinstance(record, dict) or "id" not in record:
+            continue
+        base, _ = strip_env_suffix(str(record.get("name", "")))
+        rg_by_slug[_to_slug(base)] = record
+
     for slug, (live_id, live_description) in index.rule_groups.items():
         if slug not in desired_rule_groups:
             report.warnings.append(
@@ -833,6 +844,7 @@ def _bootstrap_metadata(
             display_name=f"{desired_rule_groups[slug].display_name or slug}{options.env_suffix}",
             live_id=live_id,
             new_description=new_description,
+            live_record=rg_by_slug.get(slug),
             options=options,
             report=report,
         )
@@ -878,17 +890,21 @@ def _bootstrap_write(
     display_name: str,
     live_id: str,
     new_description: str,
+    live_record: dict[str, Any] | None = None,
     options: ApplyOptions,
     report: ApplyReport,
 ) -> None:
     """Issue a metadata-only update for one bootstrap target.
 
-    The payload is intentionally minimal: just ``id`` and the new
-    ``description``. The CrowdStrike API treats unspecified fields as
-    unchanged, so rule content, status, and assignments stay where they
-    were even if the live record drifted earlier.
+    For rule groups the API requires ``tracking``, ``diff_type``, and
+    ``rule_ids`` even for description-only updates; they are copied from
+    ``live_record`` when provided.
     """
-    payload = {"id": live_id, "description": new_description}
+    payload: dict[str, Any] = {"id": live_id, "description": new_description}
+    if kind == KIND_RULE_GROUP and live_record:
+        for required_field in ("tracking", "diff_type", "rule_ids"):
+            if required_field in live_record:
+                payload[required_field] = live_record[required_field]
     if options.dry_run:
         report.actions.append(
             AppliedAction(
