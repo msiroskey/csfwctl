@@ -907,9 +907,7 @@ def _rule_group_metadata_payload(
     payload: dict[str, Any] = {
         "id": live_id,
         "diff_type": _RULE_GROUP_DIFF_TYPE,
-        "diff_operations": [
-            {"op": "replace", "path": "/description", "value": new_description}
-        ],
+        "diff_operations": [{"op": "replace", "path": "/description", "value": new_description}],
         "rule_ids": list(record.get("rule_ids") or []),
     }
     tracking = record.get("tracking")
