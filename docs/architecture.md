@@ -281,6 +281,29 @@ the trailer block and re-appends the new line). Bootstrap mode rewrites
 only that field; it does not touch rule content, status, or
 assignments.
 
+**Rule-group update is diff-based (discovered in bootstrap testing).**
+The firewall rule-group *update* endpoint
+(``firewall_rule_groups.update`` → FalconPy ``update_rule_group``) does
+**not** accept the same full-content shape as *create*. Its documented
+body is ``{id, tracking, diff_type, rule_ids, rule_versions,
+diff_operations}`` — there is no top-level ``description`` field, and a
+``description`` key sent at the top level is silently ignored (HTTP 200,
+zero writes). To change any field you submit a JSON Patch op in
+``diff_operations``, and ``diff_type`` has exactly one accepted value,
+``application/json-patch+json``. The endpoint also rejects payloads that
+omit ``tracking`` or ``rule_ids`` with HTTP 400 (``"cannot be empty"`` /
+``"array must be provided"``). Consequently **bootstrap** builds its
+metadata-only rule-group update as a single
+``replace /description`` patch (see
+``applier._rule_group_metadata_payload``), copying ``rule_ids`` and
+``tracking`` verbatim from the live record so rule content and the
+optimistic-concurrency token are preserved. Locations and policies still
+take the simple ``{id, description}`` update. NOTE: the *normal*
+(non-bootstrap) rule-group update path in ``_build_rule_group_payload``
+still emits the full-content shape with a top-level ``description``; that
+path has not yet been exercised against a real tenant and likely needs
+the same diff-based treatment — tracked as follow-up.
+
 **Safety rails.** Each gate is a small pure function in
 ``csfwctl/safety.py``:
 
