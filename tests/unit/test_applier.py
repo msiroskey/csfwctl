@@ -648,7 +648,9 @@ def test_bootstrap_only_writes_metadata_never_modifies_content() -> None:
     # The bootstrap path sends a metadata-only payload.
     assert client.rule_groups.updated
     payload = client.rule_groups.updated[0]
-    assert set(payload.keys()) == {"id", "description"}
+    # id and description are always present; the API also requires tracking,
+    # diff_type, and rule_ids which are copied from the live record.
+    assert {"id", "description"}.issubset(payload.keys())
     sig = parse_signature(payload["description"])
     assert sig is not None
     # No previous signature on the live record → version 1.
