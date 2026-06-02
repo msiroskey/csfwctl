@@ -304,6 +304,12 @@ still emits the full-content shape with a top-level ``description``; that
 path has not yet been exercised against a real tenant and likely needs
 the same diff-based treatment — tracked as follow-up.
 
+The *response* shape also differs from create-style endpoints: rule-group
+create and update return ``resources`` as a list of bare **ID strings**,
+not full objects. ``RuleGroupsAPI._first_resource`` normalises this —
+wrapping a string as ``{"id": ...}`` and passing a dict through unchanged
+— so callers can uniformly read ``result["id"]``.
+
 **Safety rails.** Each gate is a small pure function in
 ``csfwctl/safety.py``:
 

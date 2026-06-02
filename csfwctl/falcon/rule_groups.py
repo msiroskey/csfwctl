@@ -58,9 +58,7 @@ class RuleGroupsAPI:
             "firewall_rule_groups.create",
             lambda: self._svc().create_rule_group(body=rule_group),
         )
-        body = result.get("body") or {}
-        resources = body.get("resources") or []
-        return dict(resources[0]) if resources else {}
+        return self._first_resource(result)
 
     def update(self, rule_group: dict[str, Any]) -> dict[str, Any]:
         """Update a rule group."""
@@ -68,9 +66,25 @@ class RuleGroupsAPI:
             "firewall_rule_groups.update",
             lambda: self._svc().update_rule_group(body=rule_group),
         )
+        return self._first_resource(result)
+
+    @staticmethod
+    def _first_resource(result: dict[str, Any]) -> dict[str, Any]:
+        """Normalise the first resource of a create/update response.
+
+        The rule-group create and update endpoints return ``resources`` as
+        a list of bare ID strings, not full objects. Callers only need the
+        id threaded back, so wrap a string as ``{"id": ...}``; a dict (some
+        endpoints / mocks return one) is passed through unchanged.
+        """
         body = result.get("body") or {}
         resources = body.get("resources") or []
-        return dict(resources[0]) if resources else {}
+        if not resources:
+            return {}
+        first = resources[0]
+        if isinstance(first, dict):
+            return dict(first)
+        return {"id": str(first)}
 
     def delete(self, ids: list[str]) -> None:
         """Delete the listed rule-group IDs."""
