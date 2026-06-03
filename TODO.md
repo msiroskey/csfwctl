@@ -50,6 +50,19 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       create/update/dry-run for managed host groups, and
       build_desired_state inheritance materialisation.
 
+## Enhancements
+
+- [x] **Per-action change detail in apply logs.** `AppliedAction` now
+      carries the `field_changes` / `host_group_changes` /
+      `managed_group_changes` tuples threaded off the originating
+      `ObjectChange`, so the operator-facing render, the
+      `apply.succeeded` notifier payload, the `--output` JSON, and the
+      structured `csfwctl.applier` log records all surface *what*
+      changed (rule edits, host-group adds/removes, FQL updates), not
+      just *which object* changed. Rule-list edits show a per-rule
+      add/remove/modify summary with key-level deltas on modified rules.
+      See `docs/cli_reference.md` § "Per-action change detail".
+
 ## Bug fixes
 
 - [x] **Bootstrap rule-group update rejected with HTTP 400.** The

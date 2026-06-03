@@ -31,6 +31,7 @@ from csfwctl.differ import (
     KIND_POLICY,
     KIND_RULE_GROUP,
     ChangeSet,
+    FieldChange,
     LiveState,
     compute_diff,
     fetch_live_state,
@@ -290,7 +291,9 @@ def _render_report(console: Console, change_set: ChangeSet, report: ApplyReport)
 
 
 def _render_action(console: Console, action: AppliedAction) -> None:
-    """One line per action with colour matching the operation."""
+    """One line per action with colour matching the operation, followed by
+    indented per-change detail (field-level diffs, host-group reassignments,
+    managed dynamic-group changes) so the operator sees *what* changed."""
     colour = _OP_COLOR.get(action.op, "white")
     suffix = ""
     if action.detail and action.op != "host-group":
@@ -301,6 +304,21 @@ def _render_action(console: Console, action: AppliedAction) -> None:
         f"  [{colour}]{action.op}[/{colour}] {action.kind} "
         f"[bold]{action.display_name}[/bold]{suffix}"
     )
+    for fc in action.field_changes:
+        for line in _summarise_field_change(fc):
+            console.print(f"      [dim]{line}[/dim]")
+    # The dedicated "host-group" action rows already encode the op + group
+    # name in `detail`; only render structured host-group lines on the
+    # parent policy action so we don't double-print.
+    if action.kind != "host-group":
+        for hg in action.host_group_changes:
+            console.print(
+                f"      [dim]host-group: {hg.op} {hg.group_name} (env={hg.env.value})[/dim]"
+            )
+        for mg in action.managed_group_changes:
+            console.print(
+                f"      [dim]managed-group: {mg.op} {mg.group_name} fql={mg.desired_fql!r}[/dim]"
+            )
 
 
 _OP_COLOR: dict[str, str] = {
@@ -310,6 +328,69 @@ _OP_COLOR: dict[str, str] = {
     "metadata": "cyan",
     "host-group": "magenta",
 }
+
+
+def _summarise_field_change(fc: FieldChange) -> list[str]:
+    """Render one :class:`FieldChange` as one or more short console lines.
+
+    Scalar leaves: ``path: before -> after``. List leaves whose entries
+    are dicts (e.g. ``rules``): a header counting added/removed/modified
+    items, then one nested line per item, with modified items showing
+    only the keys that differ. List leaves of opaque scalars fall back
+    to a count summary.
+    """
+    before, after = fc.before, fc.after
+    if isinstance(before, list) and isinstance(after, list):
+        return _summarise_list_change(fc.path, before, after)
+    return [f"{fc.path}: {_short(before)} -> {_short(after)}"]
+
+
+def _summarise_list_change(path: str, before: list[Any], after: list[Any]) -> list[str]:
+    """Per-item add/remove/modify summary for a list-typed field change."""
+    if before and isinstance(before[0], dict) or after and isinstance(after[0], dict):
+        before_by_key, after_by_key = _index_dicts(before), _index_dicts(after)
+        added = [k for k in after_by_key if k not in before_by_key]
+        removed = [k for k in before_by_key if k not in after_by_key]
+        modified = [
+            k for k in before_by_key if k in after_by_key and before_by_key[k] != after_by_key[k]
+        ]
+        lines = [f"{path}: {len(added)} added, {len(removed)} removed, {len(modified)} modified"]
+        for key in added:
+            lines.append(f"  + {key}")
+        for key in removed:
+            lines.append(f"  - {key}")
+        for key in modified:
+            mods = _diff_dict_keys(before_by_key[key], after_by_key[key])
+            lines.append(f"  ~ {key}: {', '.join(mods)}" if mods else f"  ~ {key}")
+        return lines
+    return [f"{path}: list changed ({len(before)} -> {len(after)} items)"]
+
+
+def _index_dicts(items: list[Any]) -> dict[Any, dict[str, Any]]:
+    """Key a list of dicts by ``name`` if present, else by position."""
+    out: dict[Any, dict[str, Any]] = {}
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            out[i] = {"_value": item}
+            continue
+        key = item.get("name", i)
+        out[key] = item
+    return out
+
+
+def _diff_dict_keys(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """Compact ``key: before -> after`` list for the differing keys."""
+    out: list[str] = []
+    for key in sorted(set(before) | set(after)):
+        if before.get(key) != after.get(key):
+            out.append(f"{key}: {_short(before.get(key))} -> {_short(after.get(key))}")
+    return out
+
+
+def _short(value: Any, *, max_len: int = 60) -> str:
+    """Truncate a repr to keep console lines readable."""
+    text = repr(value)
+    return text if len(text) <= max_len else text[: max_len - 1] + "…"
 
 
 __all__ = ["run_apply"]

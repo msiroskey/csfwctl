@@ -34,6 +34,7 @@ from csfwctl.differ import (
     KIND_POLICY,
     KIND_RULE_GROUP,
     ChangeSet,
+    FieldChange,
     HostGroupChange,
     ManagedGroupChange,
     ObjectChange,
@@ -101,22 +102,40 @@ class ApplyOptions:
 
 @dataclass(frozen=True)
 class AppliedAction:
-    """One write the applier performed (or would have, in dry-run)."""
+    """One write the applier performed (or would have, in dry-run).
+
+    ``field_changes`` / ``host_group_changes`` / ``managed_group_changes``
+    carry the diff that produced the action so the apply log, the
+    ``apply.succeeded`` notifier payload, and any ``--output`` JSON
+    record exactly *what* changed — not just *which object* changed.
+    Deletes and metadata-only bootstrap writes carry empty tuples.
+    """
 
     kind: str  # "location" | "rule-group" | "policy" | "host-group"
     op: str  # "create" | "update" | "delete" | "metadata" | "host-group"
     slug: str
     display_name: str
     detail: str = ""
+    field_changes: tuple[FieldChange, ...] = ()
+    host_group_changes: tuple[HostGroupChange, ...] = ()
+    managed_group_changes: tuple[ManagedGroupChange, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "kind": self.kind,
             "op": self.op,
             "slug": self.slug,
             "display_name": self.display_name,
-            **({"detail": self.detail} if self.detail else {}),
         }
+        if self.detail:
+            payload["detail"] = self.detail
+        if self.field_changes:
+            payload["field_changes"] = [fc.to_json() for fc in self.field_changes]
+        if self.host_group_changes:
+            payload["host_group_changes"] = [hg.to_json() for hg in self.host_group_changes]
+        if self.managed_group_changes:
+            payload["managed_group_changes"] = [mg.to_json() for mg in self.managed_group_changes]
+        return payload
 
 
 @dataclass
@@ -379,22 +398,24 @@ def _resolve_host_group_ids(
             if options.dry_run:
                 synth_id = f"dry-run-host-group-{name}"
                 resolved[name] = synth_id
-                report.actions.append(
+                _append_action(
+                    report,
                     AppliedAction(
                         kind="host-group",
                         op="create",
                         slug=name.lower(),
                         display_name=name,
                         detail="dry-run",
-                    )
+                    ),
                 )
                 continue
             created = client.host_groups.create(name)
             if not created or "id" not in created:
                 raise ApplyError(f"failed to create host group {name!r}: empty response")
             resolved[name] = str(created["id"])
-            report.actions.append(
-                AppliedAction(kind="host-group", op="create", slug=name.lower(), display_name=name)
+            _append_action(
+                report,
+                AppliedAction(kind="host-group", op="create", slug=name.lower(), display_name=name),
             )
             continue
         # warn
@@ -444,14 +465,16 @@ def _apply_managed_host_groups(
             if options.dry_run:
                 synth_id = f"dry-run-managed-hg-{policy_slug}"
                 resolved[mgc.group_name] = synth_id
-                report.actions.append(
+                _append_action(
+                    report,
                     AppliedAction(
                         kind="host-group",
                         op="create",
                         slug=policy_slug,
                         display_name=mgc.group_name,
                         detail=f"dry-run (dynamic, fql={mgc.desired_fql!r})",
-                    )
+                        managed_group_changes=(mgc,),
+                    ),
                 )
                 continue
             try:
@@ -467,14 +490,16 @@ def _apply_managed_host_groups(
                 continue
             if created and created.get("id"):
                 resolved[mgc.group_name] = str(created["id"])
-                report.actions.append(
+                _append_action(
+                    report,
                     AppliedAction(
                         kind="host-group",
                         op="create",
                         slug=policy_slug,
                         display_name=mgc.group_name,
                         detail=str(created["id"]),
-                    )
+                        managed_group_changes=(mgc,),
+                    ),
                 )
             continue
 
@@ -493,14 +518,16 @@ def _apply_managed_host_groups(
         live_id = str(live_record["id"])
         if options.dry_run:
             resolved[mgc.group_name] = live_id
-            report.actions.append(
+            _append_action(
+                report,
                 AppliedAction(
                     kind="host-group",
                     op="update",
                     slug=policy_slug,
                     display_name=mgc.group_name,
                     detail=f"dry-run (fql={mgc.desired_fql!r})",
-                )
+                    managed_group_changes=(mgc,),
+                ),
             )
             continue
         # Check managed-status: warn if group exists but isn't csfwctl-managed.
@@ -521,14 +548,16 @@ def _apply_managed_host_groups(
             )
             continue
         resolved[mgc.group_name] = live_id
-        report.actions.append(
+        _append_action(
+            report,
             AppliedAction(
                 kind="host-group",
                 op="update",
                 slug=policy_slug,
                 display_name=mgc.group_name,
                 detail=live_id,
-            )
+                managed_group_changes=(mgc,),
+            ),
         )
     return resolved
 
@@ -612,6 +641,7 @@ def apply_change_set(
             index=index,
             options=options,
             report=report,
+            change=change,
         )
     for change in _ordered(change_set.updates, KIND_LOCATION):
         loc_model = desired_locations[change.slug]
@@ -632,6 +662,7 @@ def apply_change_set(
             index=index,
             options=options,
             report=report,
+            change=change,
         )
 
     # ---- 2. rule groups: creates + updates --------------------------------
@@ -650,6 +681,7 @@ def apply_change_set(
             index=index,
             options=options,
             report=report,
+            change=change,
         )
     for change in _ordered(change_set.updates, KIND_RULE_GROUP):
         rg_model = desired_rule_groups[change.slug]
@@ -671,6 +703,7 @@ def apply_change_set(
             index=index,
             options=options,
             report=report,
+            change=change,
         )
 
     # ---- 3. policies (with host groups + RG IDs) --------------------------
@@ -725,6 +758,7 @@ def apply_change_set(
             index=index,
             options=options,
             report=report,
+            change=change,
         )
     for change in policy_updates:
         p_model = desired_policies[change.slug]
@@ -747,6 +781,7 @@ def apply_change_set(
             index=index,
             options=options,
             report=report,
+            change=change,
         )
         # Host-group reassignments are recorded explicitly so the report
         # surfaces them; the policy update payload above already carries
@@ -774,6 +809,7 @@ def apply_change_set(
             live_id=live[0],
             options=options,
             report=report,
+            change=change,
         )
     for change in _ordered(change_set.deletes, KIND_RULE_GROUP):
         live = index.rule_groups.get(change.slug)
@@ -788,6 +824,7 @@ def apply_change_set(
             live_id=live[0],
             options=options,
             report=report,
+            change=change,
         )
     for change in _ordered(change_set.deletes, KIND_LOCATION):
         live = index.locations.get(change.slug)
@@ -802,6 +839,7 @@ def apply_change_set(
             live_id=live[0],
             options=options,
             report=report,
+            change=change,
         )
 
     return report
@@ -975,14 +1013,15 @@ def _bootstrap_write(
     else:
         payload = {"id": live_id, "description": new_description}
     if options.dry_run:
-        report.actions.append(
+        _append_action(
+            report,
             AppliedAction(
                 kind=kind,
                 op="metadata",
                 slug=slug,
                 display_name=display_name,
                 detail="dry-run",
-            )
+            ),
         )
         return
     if kind == KIND_LOCATION:
@@ -991,8 +1030,9 @@ def _bootstrap_write(
         client.rule_groups.update(payload)
     else:  # policy
         client.policies.update([payload])
-    report.actions.append(
-        AppliedAction(kind=kind, op="metadata", slug=slug, display_name=display_name)
+    _append_action(
+        report,
+        AppliedAction(kind=kind, op="metadata", slug=slug, display_name=display_name),
     )
 
 
@@ -1015,17 +1055,21 @@ def _do_write(
     index: _LiveIndex,
     options: ApplyOptions,
     report: ApplyReport,
+    change: ObjectChange | None = None,
 ) -> None:
     """Dispatch one create/update to the right sub-client.
 
     Records the action on the report and, on a successful create,
     threads the new id back into ``index`` so subsequent payloads (e.g.,
     a policy that references a freshly-created rule group) can resolve
-    it without a second round-trip.
+    it without a second round-trip. ``change`` carries the diff that
+    produced this write so the recorded action surfaces the field-level
+    detail (rule edits, host-group adds/removes, managed-group FQL).
     """
     if options.dry_run:
-        report.actions.append(
-            AppliedAction(kind=kind, op=op, slug=slug, display_name=display_name, detail="dry-run")
+        _append_action(
+            report,
+            _build_action(kind, op, slug, display_name, "dry-run", change),
         )
         # Even in dry-run, allocate a synthetic id so downstream payloads
         # (e.g. a policy referencing a freshly-created RG) still build.
@@ -1060,9 +1104,7 @@ def _do_write(
             new_id = str(results[0]["id"])
 
     detail = new_id or ""
-    report.actions.append(
-        AppliedAction(kind=kind, op=op, slug=slug, display_name=display_name, detail=detail)
-    )
+    _append_action(report, _build_action(kind, op, slug, display_name, detail, change))
 
     if op == "create" and new_id is not None:
         if kind == KIND_LOCATION:
@@ -1082,17 +1124,13 @@ def _do_delete(
     live_id: str,
     options: ApplyOptions,
     report: ApplyReport,
+    change: ObjectChange | None = None,
 ) -> None:
     """Delete one live object via the matching sub-client."""
     if options.dry_run:
-        report.actions.append(
-            AppliedAction(
-                kind=kind,
-                op="delete",
-                slug=slug,
-                display_name=display_name,
-                detail="dry-run",
-            )
+        _append_action(
+            report,
+            _build_action(kind, "delete", slug, display_name, "dry-run", change),
         )
         return
     if kind == KIND_LOCATION:
@@ -1101,9 +1139,7 @@ def _do_delete(
         client.rule_groups.delete([live_id])
     else:
         client.policies.delete([live_id])
-    report.actions.append(
-        AppliedAction(kind=kind, op="delete", slug=slug, display_name=display_name)
-    )
+    _append_action(report, _build_action(kind, "delete", slug, display_name, "", change))
 
 
 def _record_host_group_change(
@@ -1114,16 +1150,70 @@ def _record_host_group_change(
     The actual membership change rides on the policy update payload's
     ``groups`` list; this entry exists so the operator-facing summary
     distinguishes "policy rule content changed" from "policy host group
-    changed".
+    changed". ``hg_change`` is preserved on the action so JSON consumers
+    see the structured op/group_name/env triple, not just the formatted
+    ``detail`` string.
     """
-    report.actions.append(
+    _append_action(
+        report,
         AppliedAction(
             kind="host-group",
             op="host-group",
             slug=change.slug,
             display_name=change.display_name,
             detail=f"{hg_change.op} {hg_change.group_name}",
-        )
+            host_group_changes=(hg_change,),
+        ),
+    )
+
+
+def _build_action(
+    kind: str,
+    op: str,
+    slug: str,
+    display_name: str,
+    detail: str,
+    change: ObjectChange | None,
+) -> AppliedAction:
+    """Assemble an :class:`AppliedAction`, copying diff detail off ``change``."""
+    return AppliedAction(
+        kind=kind,
+        op=op,
+        slug=slug,
+        display_name=display_name,
+        detail=detail,
+        field_changes=change.field_changes if change else (),
+        host_group_changes=change.host_group_changes if change else (),
+        managed_group_changes=change.managed_group_changes if change else (),
+    )
+
+
+def _append_action(report: ApplyReport, action: AppliedAction) -> None:
+    """Append an action to the report and emit a structured log record.
+
+    The log record's ``extra`` dict carries the same structured detail
+    as :meth:`AppliedAction.to_json` so the text + JSON formatters in
+    :mod:`csfwctl.observability` surface field-level changes correlated
+    by request ID.
+    """
+    report.actions.append(action)
+    extra: dict[str, Any] = {
+        "kind": action.kind,
+        "op": action.op,
+        "slug": action.slug,
+        "display_name": action.display_name,
+    }
+    if action.detail:
+        extra["detail"] = action.detail
+    if action.field_changes:
+        extra["field_changes"] = [fc.to_json() for fc in action.field_changes]
+    if action.host_group_changes:
+        extra["host_group_changes"] = [hg.to_json() for hg in action.host_group_changes]
+    if action.managed_group_changes:
+        extra["managed_group_changes"] = [mg.to_json() for mg in action.managed_group_changes]
+    _logger.info(
+        f"apply.action {action.op} {action.kind} {action.display_name}",
+        extra=extra,
     )
 
 
