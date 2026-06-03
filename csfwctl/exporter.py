@@ -895,8 +895,15 @@ def _endpoint_to_api_shape(endpoint: Endpoint) -> dict[str, Any]:
 
 
 def _port_to_api_shape(port: int | str) -> dict[str, int]:
+    """Encode a port or port-range as the CrowdStrike API dict format.
+
+    CrowdStrike uses ``end: 0`` as the sentinel meaning "same as start"
+    (i.e., a single port). Sending ``end == start`` is rejected by the
+    create endpoint with "Duplicate ports listed in range." For a range
+    (``"80-90"``) both start and end are set to their respective values.
+    """
     if isinstance(port, int):
-        return {"start": port, "end": port}
+        return {"start": port, "end": 0}
     low, _, high = port.partition("-")
     return {"start": int(low), "end": int(high)}
 
