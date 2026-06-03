@@ -405,7 +405,12 @@ def test_apply_update_rewrites_metadata_trailer_with_incremented_version() -> No
     )
     assert client.rule_groups.updated
     payload = client.rule_groups.updated[0]
-    sig = parse_signature(payload["description"])
+    # Normal updates use the diff-based format; the description trailer is
+    # expressed as a JSON Patch replace operation, not a top-level key.
+    assert payload["diff_type"] == "application/json-patch+json"
+    assert "rule_ids" in payload
+    desc_value = payload["diff_operations"][0]["value"]
+    sig = parse_signature(desc_value)
     assert sig is not None
     # Previous version was 1; the applier bumped it.
     assert sig.version == 2
@@ -626,6 +631,49 @@ def test_apply_dry_run_makes_no_writes_but_reports_actions() -> None:
     assert all(a.detail == "dry-run" for a in report.actions if a.op == "create")
 
 
+# ---- rule group update uses diff-based format ----------------------------
+
+
+def test_apply_update_rule_group_uses_diff_based_format() -> None:
+    """Normal rule-group UPDATE sends diff_type + tracking + rule_ids, not full content.
+
+    The CrowdStrike PATCH endpoint rejects payloads lacking these fields with
+    HTTP 400.  This test verifies the applier emits the correct format.
+    """
+    rg = _windows_rg()
+    repo = _repo_with(rule_groups=[rg])
+    state = _render_live_state(env="test", rule_groups=[rg])
+    # Inject a tracking token so we can confirm it threads through.
+    live_rg = state.rule_groups[0]
+    live_rg["tracking"] = "tok-abc123"
+    # Force an update by tampering with a rule field.
+    next(iter(state.rules_by_id.values()))["action"] = "DENY"
+    cs = compute_diff(repo, "test", state)
+    assert cs.updates
+
+    client = FakeFalconClient()
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(git_sha="sha999"),
+        safety_options=_safety(),
+    )
+
+    assert client.rule_groups.updated
+    payload = client.rule_groups.updated[0]
+    assert payload["diff_type"] == "application/json-patch+json"
+    assert payload["tracking"] == "tok-abc123"
+    assert "rule_ids" in payload
+    ops = payload["diff_operations"]
+    assert ops[0]["op"] == "replace"
+    assert ops[0]["path"] == "/description"
+    sig = parse_signature(ops[0]["value"])
+    assert sig is not None
+    assert sig.git_sha == "sha999"
+
+
 # ---- bootstrap mode ------------------------------------------------------
 
 
@@ -763,7 +811,10 @@ def test_apply_preserves_existing_free_text_in_description() -> None:
         safety_options=_safety(),
     )
     payload = client.rule_groups.updated[0]
+    # Normal updates use the diff-based format; description is in diff_operations.
+    assert payload["diff_type"] == "application/json-patch+json"
+    desc_value = payload["diff_operations"][0]["value"]
     # Free-text "Baseline rules for Windows endpoints." is preserved.
-    assert "Baseline rules for Windows endpoints." in payload["description"]
+    assert "Baseline rules for Windows endpoints." in desc_value
     # And the new trailer is present.
-    assert "Managed by csfwctl" in payload["description"]
+    assert "Managed by csfwctl" in desc_value

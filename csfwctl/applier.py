@@ -159,11 +159,17 @@ class ApplyError(Exception):
 
 @dataclass
 class _LiveIndex:
-    """Slug → ``(id, raw description)`` lookup for each managed kind."""
+    """Slug → ``(id, raw description)`` lookup for each managed kind.
+
+    ``rule_group_live`` stores the full raw live record for each rule group
+    so the update path can extract ``tracking`` and ``rule_ids`` for the
+    diff-based PATCH endpoint.
+    """
 
     policies: dict[str, tuple[str, str | None]] = field(default_factory=dict)
     rule_groups: dict[str, tuple[str, str | None]] = field(default_factory=dict)
     locations: dict[str, tuple[str, str | None]] = field(default_factory=dict)
+    rule_group_live: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _build_live_index(state: Any, env: str) -> _LiveIndex:
@@ -188,7 +194,9 @@ def _build_live_index(state: Any, env: str) -> _LiveIndex:
         base, suffix_env = strip_env_suffix(str(record.get("name", "")))
         if suffix_env != env:
             continue
-        idx.rule_groups[to_slug(base)] = (str(record["id"]), record.get("description"))
+        slug = to_slug(base)
+        idx.rule_groups[slug] = (str(record["id"]), record.get("description"))
+        idx.rule_group_live[slug] = record
     for record in state.locations:
         if not isinstance(record, dict) or "id" not in record:
             continue
@@ -247,6 +255,32 @@ def _build_rule_group_payload(
     new_description, _ = _signature_for(live_description or rule_group.description, options)
     shape["description"] = new_description
     return shape
+
+
+def _build_rule_group_update_payload(
+    rule_group: RuleGroup,
+    options: ApplyOptions,
+    *,
+    live_id: str,
+    live_description: str | None,
+    live_record: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build a diff-based rule-group PATCH payload.
+
+    The rule-group update endpoint rejects any payload missing ``diff_type``,
+    ``tracking``, or ``rule_ids`` with HTTP 400.  Description is expressed as
+    a JSON Patch ``replace /description`` operation; ``tracking`` and
+    ``rule_ids`` are copied verbatim from the live record so the
+    optimistic-concurrency token and rule membership are preserved.
+
+    Rule content changes (action, direction, protocol, endpoints) are not yet
+    expressed via ``diff_operations`` — the JSON Patch paths for ``/rules``
+    are unconfirmed against a real tenant.  Those changes remain visible in
+    the differ output but are deferred to a follow-up once the paths are
+    confirmed.
+    """
+    new_description, _ = _signature_for(live_description or rule_group.description, options)
+    return _rule_group_metadata_payload(live_id, new_description, live_record)
 
 
 def _build_policy_payload(
@@ -620,11 +654,12 @@ def apply_change_set(
     for change in _ordered(change_set.updates, KIND_RULE_GROUP):
         rg_model = desired_rule_groups[change.slug]
         rg_live = index.rule_groups.get(change.slug)
-        rg_payload = _build_rule_group_payload(
+        rg_payload = _build_rule_group_update_payload(
             rg_model,
             options,
-            live_id=rg_live[0] if rg_live else None,
+            live_id=rg_live[0] if rg_live else "",
             live_description=rg_live[1] if rg_live else None,
+            live_record=index.rule_group_live.get(change.slug),
         )
         _do_write(
             client,

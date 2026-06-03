@@ -312,17 +312,22 @@ zero writes). To change any field you submit a JSON Patch op in
 ``diff_operations``, and ``diff_type`` has exactly one accepted value,
 ``application/json-patch+json``. The endpoint also rejects payloads that
 omit ``tracking`` or ``rule_ids`` with HTTP 400 (``"cannot be empty"`` /
-``"array must be provided"``). Consequently **bootstrap** builds its
-metadata-only rule-group update as a single
-``replace /description`` patch (see
-``applier._rule_group_metadata_payload``), copying ``rule_ids`` and
-``tracking`` verbatim from the live record so rule content and the
-optimistic-concurrency token are preserved. Locations and policies still
-take the simple ``{id, description}`` update. NOTE: the *normal*
-(non-bootstrap) rule-group update path in ``_build_rule_group_payload``
-still emits the full-content shape with a top-level ``description``; that
-path has not yet been exercised against a real tenant and likely needs
-the same diff-based treatment — tracked as follow-up.
+``"array must be provided"``). Both **bootstrap** and **normal** rule-group
+updates use the diff-based format.  Bootstrap calls
+``applier._rule_group_metadata_payload`` directly; normal updates call
+``applier._build_rule_group_update_payload``, which computes the new
+description trailer (incrementing the version counter) then delegates to
+``_rule_group_metadata_payload``.  In both cases ``rule_ids`` and
+``tracking`` are copied verbatim from the live record.  Locations and
+policies still take the simple ``{id, description}`` update.
+
+**Rule content changes are deferred.** The JSON Patch paths for individual
+rule fields (``/rules/N/action`` etc.) are unconfirmed against a real
+tenant.  The differ correctly detects rule content drift and reports it;
+the applier currently preserves ``rule_ids`` from the live record (keeping
+existing rules intact) and does not yet propagate content changes via
+``diff_operations``.  This is tracked as a follow-up once the correct
+paths are confirmed.
 
 The *response* shape also differs from create-style endpoints: rule-group
 create and update return ``resources`` as a list of bare **ID strings**,
