@@ -545,3 +545,38 @@ def test_change_set_helpers() -> None:
     assert cs.has_changes is False
     assert cs.total_changes == 0
     assert cs.all_actionable() == []
+
+
+# ---- family-id rule lookup (fetch_live_state) ----------------------------
+
+
+def test_compute_diff_detects_update_when_rules_keyed_by_family_id() -> None:
+    """Differ must not treat a rule group as 'new' when rule_ids are family IDs.
+
+    CrowdStrike group GET records carry hex family IDs in rule_ids that differ
+    from the numeric id on the rule detail records.  If rules_by_id is only
+    keyed by numeric id, rule_group_from_api raises ImporterError and the group
+    is silently dropped from the live state — causing a create instead of an
+    update on every subsequent apply.  fetch_live_state now uses multi-strategy
+    lookup (numeric id + value scan + positional fallback) to handle both forms.
+    We simulate the mismatch here: rule_ids = ["family-abc"], rule record id = "42".
+    """
+    rg = _baseline_rg()
+    shape = rule_group_to_api_shape(rg, "test")
+    # Replace the shape's rule_ids with a fake family ID that won't match
+    # the numeric id in the rule records.
+    family_id = "838b17a58aab40e59c9a952299fd0b00"
+    rule_record = shape["rules"][0]
+    rule_record["id"] = "42"  # numeric id on the detail record
+    shape["rule_ids"] = [family_id]
+
+    # Build a LiveState that mirrors the fetch_live_state mismatch:
+    # rules_by_id is keyed by family_id (multi-strategy would produce this),
+    # not by the numeric "42".
+    state = LiveState()
+    state.rule_groups = [shape]
+    state.rules_by_id = {family_id: rule_record}  # family-id key, as multi-strategy builds it
+
+    cs = compute_diff(_repo_with(rule_groups=[rg]), "test", state)
+    # Group is correctly detected as existing (no creates).
+    assert not cs.creates, f"unexpected creates: {cs.creates}"

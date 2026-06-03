@@ -385,7 +385,26 @@ def fetch_live_state(client: FalconClient) -> LiveState:
             seen.add(rid_str)
             rule_ids.append(rid_str)
     rule_records = client.rule_groups.get_rules(rule_ids) if rule_ids else []
-    rules_by_id = {str(r["id"]): r for r in rule_records if "id" in r}
+    # CrowdStrike rule-group GET records carry hex "family IDs" in rule_ids
+    # (e.g. "838b17a58aab40e59c9a952299fd0b00"), but the rule detail records
+    # returned by get_rules have a separate numeric id field.  Keying only
+    # by numeric id means lookups by family id silently fail in
+    # rule_group_from_api, causing the group to be dropped from the live
+    # state and the differ to treat it as "new" on every run.  Use the same
+    # multi-strategy approach as exporter._fetch_rules_for_groups:
+    # 1. key by numeric id, 2. scan all string values for a family-id match,
+    # 3. positional fallback when the count matches.
+    rule_id_set = set(rule_ids)
+    rules_by_id: dict[str, Any] = {}
+    for r in rule_records:
+        if "id" in r:
+            rules_by_id[str(r["id"])] = r
+        for v in r.values():
+            if isinstance(v, str) and v in rule_id_set:
+                rules_by_id[v] = r
+    if len(rule_records) == len(rule_ids):
+        for req_id, r in zip(rule_ids, rule_records, strict=False):
+            rules_by_id.setdefault(req_id, r)
     return LiveState(
         policies=policies,
         rule_groups=rule_groups,
