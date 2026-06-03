@@ -279,6 +279,31 @@ csfwctl apply --env {test|pilot|production}
 | `--max-changes N`     | Refuse to proceed if creates + updates + deletes exceeds `N` (default: from `csfwctl.toml`). Bootstrap mode is exempt. |
 | `--output PATH`       | Persist the diff + apply payload as JSON to `PATH`.                                                         |
 
+### Per-action change detail
+
+Every action recorded on the `ApplyReport` carries the diff that produced
+it, so the operator-facing render, the structured log records, the
+`apply.succeeded` notifier payload, and the `--output` JSON all surface
+*what* changed — not just *which object* changed.
+
+Three structured fields appear on each `AppliedAction`:
+
+- `field_changes` — one entry per leaf-level difference (e.g. a
+  rule-group's `status` flipped, a policy's `priority` changed). For
+  list-typed leaves such as `rules`, the JSON payload carries the full
+  before/after lists and the console renderer prints a compact
+  `N added, M removed, K modified` summary with one nested line per
+  added/removed/modified rule (modified rules list only the keys that
+  differ — direction, IP range, protocol, etc.).
+- `host_group_changes` — `(op, group_name, env)` triples on policy
+  updates, mirroring the standalone `host-group` action rows.
+- `managed_group_changes` — `(op, group_name, env, desired_fql,
+  live_fql)` rows for csfwctl-managed dynamic host groups.
+
+Each action is also emitted as one structured `INFO` log record on the
+`csfwctl.applier` logger, so `--log-format json` produces one JSON line
+per action carrying the same fields, correlated by the request ID.
+
 ### Initial bootstrap
 
 First-ever apply against a tenant uses `--initial-bootstrap`. In this

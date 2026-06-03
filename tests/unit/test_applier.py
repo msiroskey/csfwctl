@@ -818,3 +818,127 @@ def test_apply_preserves_existing_free_text_in_description() -> None:
     assert "Baseline rules for Windows endpoints." in desc_value
     # And the new trailer is present.
     assert "Managed by csfwctl" in desc_value
+
+
+# ---- structured per-action diff detail -----------------------------------
+
+
+def test_applied_action_to_json_carries_structured_change_detail() -> None:
+    """``AppliedAction`` JSON surfaces field / host-group / managed-group changes."""
+    import json
+
+    from csfwctl.differ import FieldChange, HostGroupChange, ManagedGroupChange
+
+    action = AppliedAction(
+        kind="policy",
+        op="update",
+        slug="abc01-endpoints-windows",
+        display_name="ABC01-Endpoints-Windows-Test",
+        detail="policy-id-1",
+        field_changes=(FieldChange(path="status", before="enabled", after="disabled"),),
+        host_group_changes=(HostGroupChange(op="add", group_name="HG-New", env=HostGroupEnv.test),),
+        managed_group_changes=(
+            ManagedGroupChange(
+                op="update",
+                group_name="HG-Managed",
+                env=HostGroupEnv.test,
+                desired_fql="hostname:['a','b']",
+                live_fql="hostname:['a']",
+            ),
+        ),
+    )
+    payload = json.loads(json.dumps(action.to_json()))
+    assert payload["field_changes"] == [
+        {"path": "status", "before": "enabled", "after": "disabled"}
+    ]
+    assert payload["host_group_changes"] == [{"op": "add", "group_name": "HG-New", "env": "test"}]
+    assert payload["managed_group_changes"][0]["op"] == "update"
+    assert payload["managed_group_changes"][0]["desired_fql"] == "hostname:['a','b']"
+    assert payload["managed_group_changes"][0]["live_fql"] == "hostname:['a']"
+
+
+def test_apply_rule_group_update_action_carries_field_changes() -> None:
+    """A rule-group rule edit shows up on the recorded action, not just the payload."""
+    rg = _windows_rg()
+    repo = _repo_with(rule_groups=[rg])
+    state = _render_live_state(env="test", rule_groups=[rg])
+    # Tamper so the differ emits a content update.
+    next(iter(state.rules_by_id.values()))["action"] = "DENY"
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    report = apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    rg_actions = [a for a in report.actions if a.kind == "rule-group" and a.op == "update"]
+    assert rg_actions, "expected a rule-group update action"
+    field_paths = {fc.path for fc in rg_actions[0].field_changes}
+    # The rule-list change is recorded under the 'rules' leaf.
+    assert "rules" in field_paths
+
+
+def test_apply_policy_update_action_carries_host_group_changes() -> None:
+    """Adding a host group on a policy surfaces a host_group_changes entry."""
+    policy = _windows_policy(with_inline=False)
+    rg = _windows_rg()
+    # Live: policy currently has *no* host groups assigned in the test env.
+    repo = _repo_with(policies=[policy], rule_groups=[rg])
+    state = _render_live_state(env="test", policies=[policy], rule_groups=[rg])
+    # Strip the live policy's groups list so the differ emits an add.
+    state.policies[0]["groups"] = []
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient(host_groups={"ABC01-Endpoints-Windows-Test": "hg-test"})
+    report = apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    policy_updates = [a for a in report.actions if a.kind == "policy" and a.op == "update"]
+    assert policy_updates, "expected a policy update action"
+    hg_ops = [(hg.op, hg.group_name) for hg in policy_updates[0].host_group_changes]
+    assert ("add", "ABC01-Endpoints-Windows-Test") in hg_ops
+    # And the standalone host-group action row carries the same structured entry.
+    hg_rows = [a for a in report.actions if a.kind == "host-group" and a.op == "host-group"]
+    assert hg_rows
+    assert hg_rows[0].host_group_changes
+    assert hg_rows[0].host_group_changes[0].group_name == "ABC01-Endpoints-Windows-Test"
+
+
+def test_apply_emits_structured_log_record_per_action(caplog: Any) -> None:
+    """Each AppliedAction emits one INFO record on the csfwctl.applier logger."""
+    import logging
+
+    rg = _windows_rg()
+    repo = _repo_with(rule_groups=[rg])
+    state = _render_live_state(env="test", rule_groups=[rg])
+    next(iter(state.rules_by_id.values()))["action"] = "DENY"
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    with caplog.at_level(logging.INFO, logger="csfwctl.applier"):
+        apply_change_set(
+            client=client,
+            repo=repo,
+            change_set=cs,
+            state=state,
+            options=_options(),
+            safety_options=_safety(),
+        )
+    action_records = [
+        r for r in caplog.records if r.name == "csfwctl.applier" and "apply.action" in r.message
+    ]
+    assert action_records, "expected at least one apply.action log record"
+    rg_record = next(
+        (r for r in action_records if getattr(r, "kind", "") == "rule-group"),
+        None,
+    )
+    assert rg_record is not None
+    # The structured field_changes ride in the log record's extras.
+    assert getattr(rg_record, "field_changes", None)
+    assert any(fc["path"] == "rules" for fc in rg_record.field_changes)
