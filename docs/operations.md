@@ -396,6 +396,27 @@ Repeat for `--env pilot` and `--env production`.
 After bootstrap, `csfwctl status --all-envs` should show all expected
 objects as managed (`[M]`) with `version: 1`.
 
+### First normal apply after bootstrap
+
+After bootstrap the objects carry version:1 signatures. Any subsequent
+`apply` that touches those objects — including the very first CI
+`apply-test` run — **must pass `--enforce`**. Without it, the drift gate
+blocks the apply because it sees managed objects whose live state differs
+from the YAML (the intentional changes you are about to apply).
+
+```bash
+csfwctl apply --env test --enforce --repo .
+```
+
+`--enforce` tells csfwctl "this change is intentional; I reviewed the
+diff." It is safe to use unconditionally in CI because the MR review
+(including the diff comment posted by CI) is the gate that confirms
+intent. The drift gate is a guard for *unexpected* console edits; it is
+not meant to block planned CI applies.
+
+> **CI configuration:** every `apply-test`, `apply-pilot`, and
+> `apply-prod` GitLab job should always pass `--enforce`.
+
 ### What bootstrap does not do
 
 - It does not create new objects. YAML entries with no matching live object
@@ -448,11 +469,16 @@ This is a one-time operation.
 ### `csfwctl apply` refuses due to drift
 
 ```
-Error: live state has drifted from prior apply. Re-run with --enforce to overwrite.
+apply: 1 managed object(s) have drifted: policy:foo. Rerun with --enforce to overwrite drifted state.
 ```
 
-See [Responding to drift alerts](#responding-to-drift-alerts). Use
-`--enforce` only after reviewing the drift with `csfwctl diff --env ...`.
+**In CI (`apply-test` / `apply-pilot` / `apply-prod`):** always pass
+`--enforce`. CI applies are intentional YAML changes; `--enforce` is
+required to apply them to managed objects. See
+[First normal apply after bootstrap](#first-normal-apply-after-bootstrap).
+
+**On a workstation:** review the unexpected change first, then decide.
+See [Responding to drift alerts](#responding-to-drift-alerts).
 
 ### Blast-radius limit exceeded
 

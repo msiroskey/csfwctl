@@ -282,7 +282,8 @@ def check_drift(change_set: ChangeSet, options: SafetyOptions) -> None:
         more = "" if len(drifted) <= 5 else f" (+{len(drifted) - 5} more)"
         raise DriftBlocked(
             f"{len(drifted)} managed object(s) have drifted: {names}{more}. "
-            "Rerun with --enforce to overwrite drifted state."
+            "Rerun with --enforce to overwrite drifted state. "
+            "(CI apply-* jobs should always pass --enforce; see docs/operations.md.)"
         )
 
 
