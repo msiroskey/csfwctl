@@ -541,6 +541,36 @@ def test_rule_group_to_api_shape_ipv6_address_family() -> None:
     assert shape["rules"][0]["address_family"] == "IP6"
 
 
+def test_rule_group_to_api_shape_icmpv6_forces_ip6_without_addresses() -> None:
+    """ICMPv6 rules emit address_family=IP6 even with no explicit IPv6 address.
+
+    Regression: the CrowdStrike API rejects ICMPv6 paired with IP4 with
+    "Address family IPv4 is not allowed with protocol ICMPv6". An ICMPv6
+    wildcard rule (e.g. neighbor discovery) carries no addresses, so
+    address-only inference fell back to IP4.
+    """
+    rg = RuleGroup(
+        name="icmpv6-wildcard",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="allow-nd",
+                action=Action.allow,
+                direction=Direction.inbound,
+                protocol=Protocol.icmpv6,
+            ),
+            Rule(
+                name="allow-ipv6-proto",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.ipv6,
+            ),
+        ],
+    )
+    shape = rule_group_to_api_shape(rg, "test")
+    assert all(r["address_family"] == "IP6" for r in shape["rules"])
+
+
 def test_rule_group_to_api_shape_single_port_uses_end_zero_sentinel() -> None:
     """Single ports must use end=0 (CS sentinel), not end=N (rejected as duplicate)."""
     rg = RuleGroup(

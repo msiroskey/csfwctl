@@ -90,6 +90,20 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       `CrowdStrikeName` (was `DisplayName`) so verbatim CrowdStrike names
       containing underscores/spaces are representable. Tests in
       `test_exporter_translation.py`; `docs/schema_reference.md` updated.
+- [x] **Rule create rejected with `Address family IPv4 is not allowed with
+      protocol ICMPv6`.** `_infer_address_family` derived the address
+      family only from configured endpoint addresses, so an ICMPv6
+      wildcard rule (no explicit IPv6 address) fell back to `IP4` and the
+      CrowdStrike rule-create endpoint rejected the payload. Surfaced
+      during a Test → Pilot promotion when the pilot rule group was
+      being created for the first time. Fix: when the protocol is
+      `Protocol.ipv6` or `Protocol.icmpv6`, `_infer_address_family`
+      returns `"IP6"` unconditionally; address-based inference still
+      applies for protocol-agnostic cases (TCP/UDP/etc.) and the
+      raw-integer "Advanced" path is unchanged. Regression test in
+      `tests/unit/test_exporter_translation.py`
+      (`test_rule_group_to_api_shape_icmpv6_forces_ip6_without_addresses`);
+      `docs/schema_reference.md` updated.
 
 ## Phase 10 tasks
 

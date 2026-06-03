@@ -831,14 +831,26 @@ def _address_to_api_dict(addr: str) -> dict[str, Any]:
 
 
 def _infer_address_family(rule: Rule) -> str:
-    """Return ``"IP6"`` if any endpoint address contains ``":"``, else ``"IP4"``.
+    """Return ``"IP6"`` for IPv6-family rules, else ``"IP4"``.
 
     CrowdStrike's rule CREATE/UPDATE endpoint requires a non-empty
-    ``address_family`` field. We derive it from the endpoint addresses
-    rather than storing it in the schema: any IPv6 CIDR (contains ``:``)
-    implies ``"IP6"``; everything else (IPv4, empty, wildcard) maps to
-    ``"IP4"``.
+    ``address_family`` field and rejects mismatches with
+    ``"Address family IPv4 is not allowed with protocol ICMPv6"`` (and
+    the analogous IPv6 variant). Resolution order:
+
+    1. If the protocol is an IPv6-family named protocol (:attr:`Protocol.ipv6`
+       or :attr:`Protocol.icmpv6`), the family is always ``"IP6"`` — even
+       when no explicit IPv6 address is configured (e.g. an ICMPv6 wildcard
+       rule for neighbor discovery).
+    2. Otherwise, if any local/remote address contains ``":"`` it is an
+       IPv6 CIDR and the family is ``"IP6"``.
+    3. Otherwise ``"IP4"``.
+
+    Raw-integer ("Advanced") protocols bypass the named-enum check; the
+    user is expected to supply matching addresses in that case.
     """
+    if rule.protocol in (Protocol.ipv6, Protocol.icmpv6):
+        return "IP6"
     all_addresses: list[str] = []
     if rule.local:
         all_addresses.extend(rule.local.addresses)
