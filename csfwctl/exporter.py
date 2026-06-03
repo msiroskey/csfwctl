@@ -771,6 +771,10 @@ def rule_group_to_api_shape(rule_group: RuleGroup, env: str) -> dict[str, Any]:
     also embeds the rule records under ``rules`` for the test harness's
     convenience — the importer ignores that field when ``rule_ids`` is
     populated, so it does not affect round-tripping.
+
+    ``platform`` uses the name string (``"Windows"``/``"Mac"``), which is
+    what the CREATE and UPDATE endpoints require. The GET response uses
+    numeric IDs (``"0"``/``"1"``); :data:`_PLATFORM_FROM_API` handles both.
     """
     suffix = _env_suffix(env)
     display_name = f"{rule_group.display_name or rule_group.name}{suffix}"
@@ -781,7 +785,7 @@ def rule_group_to_api_shape(rule_group: RuleGroup, env: str) -> dict[str, Any]:
         "id": _fake_uuid("rule-group", display_name),
         "name": display_name,
         "description": rule_group.description,
-        "platform": _PLATFORM_TO_API_ID[rule_group.platform],
+        "platform": _PLATFORM_TO_API_NAME[rule_group.platform],
         "enabled": rule_group.status is Status.enabled,
         "rule_ids": [r["id"] for r in rule_records],
         "rules": rule_records,
@@ -805,6 +809,26 @@ def location_to_api_shape(location: Location) -> dict[str, Any]:
     }
 
 
+def _infer_address_family(rule: Rule) -> str:
+    """Return ``"IP6"`` if any endpoint address contains ``":"``, else ``"IP4"``.
+
+    CrowdStrike's rule CREATE/UPDATE endpoint requires a non-empty
+    ``address_family`` field. We derive it from the endpoint addresses
+    rather than storing it in the schema: any IPv6 CIDR (contains ``:``)
+    implies ``"IP6"``; everything else (IPv4, empty, wildcard) maps to
+    ``"IP4"``.
+    """
+    all_addresses: list[str] = []
+    if rule.local:
+        all_addresses.extend(rule.local.addresses)
+    if rule.remote:
+        all_addresses.extend(rule.remote.addresses)
+    for addr in all_addresses:
+        if ":" in addr:
+            return "IP6"
+    return "IP4"
+
+
 def _rule_to_api_shape(rule: Rule, parent_display_name: str, index: int) -> dict[str, Any]:
     """Render a :class:`Rule` into API shape (used by the round-trip harness)."""
     proto_api = (
@@ -817,6 +841,7 @@ def _rule_to_api_shape(rule: Rule, parent_display_name: str, index: int) -> dict
         "action": _ACTION_TO_API[rule.action],
         "direction": _DIRECTION_TO_API[rule.direction],
         "protocol": proto_api,
+        "address_family": _infer_address_family(rule),
         "fields": [],
         "locations": list(rule.locations),
     }

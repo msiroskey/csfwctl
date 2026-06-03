@@ -513,8 +513,33 @@ def test_rule_group_to_api_shape_emits_rule_ids_and_inline_rules() -> None:
     )
     shape = rule_group_to_api_shape(rg, "test")
     assert shape["name"] == "windows-baseline-Test"
+    # CREATE/UPDATE endpoint requires name string, not numeric ID.
+    assert shape["platform"] == "Windows"
     assert len(shape["rule_ids"]) == 2
     assert {r["name"] for r in shape["rules"]} == {"r1", "r2"}
+    # Every rule must carry address_family for the CREATE endpoint.
+    assert all(r["address_family"] == "IP4" for r in shape["rules"])
+
+
+def test_rule_group_to_api_shape_ipv6_address_family() -> None:
+    """address_family is IP6 when any endpoint address is IPv6."""
+    from csfwctl.schema import Endpoint
+
+    rg = RuleGroup(
+        name="ipv6-rules",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="allow-ipv6",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.tcp,
+                remote=Endpoint(addresses=["2001:db8::/32"]),
+            ),
+        ],
+    )
+    shape = rule_group_to_api_shape(rg, "test")
+    assert shape["rules"][0]["address_family"] == "IP6"
 
 
 def test_location_to_api_shape_wraps_addresses_in_dicts() -> None:

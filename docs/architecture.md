@@ -125,11 +125,17 @@ discrepancies are localised to the translation helpers.
   "id": "<uuid>",
   "name": "windows-baseline-Test",
   "description": "...",
-  "platform": "0",                     # "0" Windows | "1" Mac
+  "platform": "0",                     # GET returns numeric ID: "0" Windows | "1" Mac
   "enabled": True,
   "rule_ids": ["<uuid>", "<uuid>"],
 }
 ```
+
+**Important:** The GET response uses numeric platform IDs (`"0"` / `"1"`), but the
+CREATE and UPDATE endpoints require the name string (`"Windows"` / `"Mac"`).
+`_PLATFORM_FROM_API` accepts both forms so the importer handles GET records
+regardless. `rule_group_to_api_shape` emits the name string so it is correct
+for CREATE/UPDATE payloads.
 
 **Rule (FirewallManagement.get_rules):**
 
@@ -141,12 +147,19 @@ discrepancies are localised to the translation helpers.
   "action": "ALLOW",                   # "ALLOW" | "DENY" | "MONITOR"
   "direction": "OUT",                  # "IN" | "OUT"
   "protocol": "17",                    # "0"/"*" any, "1" icmp, "6" tcp, "17" udp
+  "address_family": "IP4",             # required by CREATE: "IP4" | "IP6"
   "fields": [{"name": "tcp_state", "value": "established"}],   # optional state
   "local": {"addresses": [...], "ports": [{"start": N, "end": M}]},
   "remote": {...},
   "locations": [...],                  # slug list (csfwctl convention)
 }
 ```
+
+**Important:** The CREATE endpoint rejects rules where `address_family` is absent or
+empty. csfwctl does not store this field in the YAML schema — it is derived at
+apply time by `_infer_address_family`: `"IP6"` when any endpoint address contains
+`":"` (IPv6 CIDR), `"IP4"` otherwise. The importer silently drops this field on
+import since it is fully recoverable from the address data.
 
 **Network location (FirewallManagement.get_network_locations_details):**
 
