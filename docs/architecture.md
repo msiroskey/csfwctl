@@ -132,10 +132,11 @@ discrepancies are localised to the translation helpers.
 ```
 
 **Important:** The GET response uses numeric platform IDs (`"0"` / `"1"`), but the
-CREATE and UPDATE endpoints require the name string (`"Windows"` / `"Mac"`).
-`_PLATFORM_FROM_API` accepts both forms so the importer handles GET records
-regardless. `rule_group_to_api_shape` emits the name string so it is correct
-for CREATE/UPDATE payloads.
+CREATE and UPDATE endpoints require the lowercase platform-ID string (`"windows"` /
+`"mac"`), matching the IDs returned by the `GET /fwmgr/entities/platforms/v1`
+endpoint. `_PLATFORM_FROM_API` accepts all three forms (`"0"`, `"windows"`,
+`"Windows"`) so the importer handles GET records regardless. `rule_group_to_api_shape`
+emits the lowercase form so it is correct for CREATE/UPDATE payloads.
 
 **Rule (FirewallManagement.get_rules):**
 
@@ -155,11 +156,17 @@ for CREATE/UPDATE payloads.
 }
 ```
 
-**Important:** The CREATE endpoint rejects rules where `address_family` is absent or
-empty. csfwctl does not store this field in the YAML schema — it is derived at
-apply time by `_infer_address_family`: `"IP6"` when any endpoint address contains
-`":"` (IPv6 CIDR), `"IP4"` otherwise. The importer silently drops this field on
-import since it is fully recoverable from the address data.
+**Important — two CREATE-specific requirements:**
+
+1. `address_family` must be non-empty. csfwctl derives it at apply time via
+   `_infer_address_family`: `"IP6"` when any endpoint address contains `":"` (IPv6
+   CIDR), `"IP4"` otherwise. Not stored in YAML; fully recoverable from address data.
+
+2. Endpoint fields use flat keys (`local_address` / `local_port` / `remote_address` /
+   `remote_port` with `{"address": ip, "netmask": prefix}` dicts) rather than the
+   nested `local` / `remote` objects that test fixtures historically used. The importer
+   handles both shapes: `_endpoint_from_api` for nested, `_endpoint_from_api_flat` for
+   flat.
 
 **Network location (FirewallManagement.get_network_locations_details):**
 
