@@ -29,6 +29,7 @@ from csfwctl.schema import (
     Action,
     ConnectionState,
     Direction,
+    Endpoint,
     HostGroupEnv,
     Location,
     Platform,
@@ -523,8 +524,6 @@ def test_rule_group_to_api_shape_emits_rule_ids_and_inline_rules() -> None:
 
 def test_rule_group_to_api_shape_ipv6_address_family() -> None:
     """address_family is IP6 when any endpoint address is IPv6."""
-    from csfwctl.schema import Endpoint
-
     rg = RuleGroup(
         name="ipv6-rules",
         platform=Platform.windows,
@@ -540,6 +539,46 @@ def test_rule_group_to_api_shape_ipv6_address_family() -> None:
     )
     shape = rule_group_to_api_shape(rg, "test")
     assert shape["rules"][0]["address_family"] == "IP6"
+
+
+def test_rule_group_to_api_shape_single_port_uses_end_zero_sentinel() -> None:
+    """Single ports must use end=0 (CS sentinel), not end=N (rejected as duplicate)."""
+    rg = RuleGroup(
+        name="port-test",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="dns",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.udp,
+                remote=Endpoint(addresses=["10.1.1.53"], ports=[53]),
+            ),
+        ],
+    )
+    shape = rule_group_to_api_shape(rg, "test")
+    rule = shape["rules"][0]
+    assert rule["remote_port"] == [{"start": 53, "end": 0}]
+
+
+def test_rule_group_to_api_shape_port_range_uses_explicit_end() -> None:
+    """Port ranges keep both start and end."""
+    rg = RuleGroup(
+        name="range-test",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="ephemeral",
+                action=Action.allow,
+                direction=Direction.inbound,
+                protocol=Protocol.tcp,
+                local=Endpoint(ports=["1024-65535"]),
+            ),
+        ],
+    )
+    shape = rule_group_to_api_shape(rg, "test")
+    rule = shape["rules"][0]
+    assert rule["local_port"] == [{"start": 1024, "end": 65535}]
 
 
 def test_location_to_api_shape_wraps_addresses_in_dicts() -> None:
