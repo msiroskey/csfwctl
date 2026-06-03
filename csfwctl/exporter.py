@@ -772,9 +772,16 @@ def rule_group_to_api_shape(rule_group: RuleGroup, env: str) -> dict[str, Any]:
     convenience — the importer ignores that field when ``rule_ids`` is
     populated, so it does not affect round-tripping.
 
-    ``platform`` uses the name string (``"Windows"``/``"Mac"``), which is
-    what the CREATE and UPDATE endpoints require. The GET response uses
-    numeric IDs (``"0"``/``"1"``); :data:`_PLATFORM_FROM_API` handles both.
+    ``platform`` uses the platform-ID string (``"windows"``/``"mac"``),
+    which is what the CREATE and UPDATE endpoints require. The GET response
+    uses numeric IDs (``"0"``/``"1"``); :data:`_PLATFORM_FROM_API` handles
+    both forms on import.
+
+    Rule endpoint fields use the flat ``local_address`` / ``local_port`` /
+    ``remote_address`` / ``remote_port`` shape that the CREATE endpoint
+    expects. The importer's :func:`_endpoint_from_api_flat` handles both
+    the flat form (real API) and the nested ``local``/``remote`` form
+    (legacy test fixtures), so round-trips work regardless.
     """
     suffix = _env_suffix(env)
     display_name = f"{rule_group.display_name or rule_group.name}{suffix}"
@@ -785,7 +792,7 @@ def rule_group_to_api_shape(rule_group: RuleGroup, env: str) -> dict[str, Any]:
         "id": _fake_uuid("rule-group", display_name),
         "name": display_name,
         "description": rule_group.description,
-        "platform": _PLATFORM_TO_API_NAME[rule_group.platform],
+        "platform": _PLATFORM_TO_API_NAME[rule_group.platform].lower(),
         "enabled": rule_group.status is Status.enabled,
         "rule_ids": [r["id"] for r in rule_records],
         "rules": rule_records,
@@ -807,6 +814,20 @@ def location_to_api_shape(location: Location) -> dict[str, Any]:
         },
         "default_gateways": [{"address": a} for a in location.default_gateways],
     }
+
+
+def _address_to_api_dict(addr: str) -> dict[str, Any]:
+    """Convert ``'ip[/prefix]'`` to ``{'address': ip, 'netmask': prefix}``.
+
+    The CREATE/UPDATE rule endpoint expects address dicts with a numeric
+    ``netmask`` (CIDR prefix length). Zero is used when no prefix is
+    specified (host address). The import side's ``_flatten_addresses``
+    already handles both forms, so round-trips work correctly.
+    """
+    if "/" in addr:
+        ip, prefix = addr.rsplit("/", 1)
+        return {"address": ip, "netmask": int(prefix)}
+    return {"address": addr, "netmask": 0}
 
 
 def _infer_address_family(rule: Rule) -> str:
@@ -848,9 +869,19 @@ def _rule_to_api_shape(rule: Rule, parent_display_name: str, index: int) -> dict
     if rule.state is not None:
         record["fields"].append({"name": "tcp_state", "value": rule.state.value})
     if rule.local is not None:
-        record["local"] = _endpoint_to_api_shape(rule.local)
+        record["local_address"] = [_address_to_api_dict(a) for a in rule.local.addresses]
+        if rule.local.addresses_negated:
+            record["local_address_negated"] = True
+        record["local_port"] = [_port_to_api_shape(p) for p in rule.local.ports]
+        if rule.local.ports_negated:
+            record["local_port_negated"] = True
     if rule.remote is not None:
-        record["remote"] = _endpoint_to_api_shape(rule.remote)
+        record["remote_address"] = [_address_to_api_dict(a) for a in rule.remote.addresses]
+        if rule.remote.addresses_negated:
+            record["remote_address_negated"] = True
+        record["remote_port"] = [_port_to_api_shape(p) for p in rule.remote.ports]
+        if rule.remote.ports_negated:
+            record["remote_port_negated"] = True
     return record
 
 

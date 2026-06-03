@@ -513,8 +513,8 @@ def test_rule_group_to_api_shape_emits_rule_ids_and_inline_rules() -> None:
     )
     shape = rule_group_to_api_shape(rg, "test")
     assert shape["name"] == "windows-baseline-Test"
-    # CREATE/UPDATE endpoint requires name string, not numeric ID.
-    assert shape["platform"] == "Windows"
+    # CREATE/UPDATE endpoint uses lowercase platform ID, not numeric "0".
+    assert shape["platform"] == "windows"
     assert len(shape["rule_ids"]) == 2
     assert {r["name"] for r in shape["rules"]} == {"r1", "r2"}
     # Every rule must carry address_family for the CREATE endpoint.
