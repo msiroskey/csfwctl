@@ -124,7 +124,7 @@ Restrictions:
 | `enabled`   | bool                              | no       | Default `true`.                                    |
 | `action`    | `allow` \| `block` \| `monitor`   | yes      |                                                    |
 | `direction` | `inbound` \| `outbound` \| `both` | yes      | `both` matches traffic in either direction.        |
-| `protocol`  | named value or integer (0-255)    | yes      | Named: `any` `tcp` `udp` `icmp` `igmp` `ipip` `ipv6` `gre` `icmpv6`. Integer for unlisted protocols ("Advanced" mode). IPv6-family protocols (`ipv6`, `icmpv6`) should be paired with IPv6 addresses. |
+| `protocol`  | named value or integer (0-255)    | yes      | Named: `any` `tcp` `udp` `icmp` `igmp` `ipip` `ipv6` `gre` `icmpv6`. Integer for unlisted protocols ("Advanced" mode). IPv6-family protocols (`ipv6`, `icmpv6`) emit `address_family: IP6` on apply regardless of whether explicit IPv6 addresses are configured (an ICMPv6 wildcard rule is valid and supported). |
 | `state`     | `new` \| `established` \| `related` | no    | Only valid when `protocol` is `tcp` or `any`.       |
 | `locations` | list of slugs (or `any`)          | no       | Default `[any]`. Must be non-empty.                |
 | `local`     | `Endpoint`                        | no       |                                                    |
