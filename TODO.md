@@ -154,6 +154,27 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       `tests/unit/test_differ.py::test_compute_diff_does_not_drop_live_policy_with_unresolved_rule_group_ref`,
       `tests/unit/test_differ.py::test_compute_diff_matches_policy_by_display_name_when_slug_collapses`,
       and `tests/unit/test_applier.py::test_apply_updates_policy_with_camelcase_display_name`.
+- [x] **Host-group `create` rejected with `409 Duplicate group name`.**
+      With `--create-groups` enabled in CI, the applier called
+      `host_groups.find_by_name` (which uses the FQL filter
+      `name:'X'`); when that came back empty it issued
+      `host_groups.create`, which CrowdStrike then rejected because
+      the group did, in fact, exist. The `name:` filter is not
+      uniformly reliable across tenants — some return an empty
+      resource list for an exact-match name — and the unfiltered
+      `query_host_groups` default page size silently truncated the
+      list. Two fixes in `csfwctl/falcon/host_groups.py`:
+      (1) `query` now defaults `limit=5000` (matches the rule-groups
+      sub-client) so the unfiltered list cannot be silently
+      truncated; `find_by_name` falls back to enumerating every host
+      group and matching by exact name client-side when the FQL
+      filter returns empty. (2) `create` (and `create_dynamic`) now
+      catch a `409 Duplicate group name` `FalconAPIError`,
+      re-resolve the group via `find_by_name`, and return the
+      existing record — making both creates idempotent so a
+      misfiring lookup no longer aborts the apply. Regression tests:
+      `tests/unit/test_falcon_subclients.py::test_host_groups_find_by_name_falls_back_to_list_all`
+      and `tests/unit/test_falcon_subclients.py::test_host_groups_create_returns_existing_on_duplicate_409`.
 
 ## Phase 10 tasks
 
