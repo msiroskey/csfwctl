@@ -159,6 +159,10 @@ class FakePoliciesAPI(FakeSubClient):
         self.container_updates: list[dict[str, Any]] = []
         # perform_action calls: (action_name, ids, action_parameters)
         self.actions: list[tuple[str, list[str], list[dict[str, str]] | None]] = []
+        # Live container state by policy id; configured by tests that need
+        # to assert overlay semantics (existing values flow through unless
+        # the YAML overrides them).
+        self.container_state: dict[str, dict[str, Any]] = {}
 
     def create(self, policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -170,6 +174,12 @@ class FakePoliciesAPI(FakeSubClient):
     def update(self, policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
         self.updated.extend(policies)
         return [dict(p) for p in policies]
+
+    def get_policy_containers(self, ids: list[str]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for pid in ids:
+            out.append(self.container_state.get(pid, {"policy_id": pid}))
+        return out
 
     def update_policy_container(self, **kwargs: Any) -> dict[str, Any]:
         self.container_updates.append(dict(kwargs))
@@ -1090,6 +1100,98 @@ def test_apply_policy_create_applies_container_and_host_groups() -> None:
     assert ("enable", [created_id], None) in actions, (
         f"expected enable action on newly created policy; got {actions}"
     )
+
+
+def test_apply_policy_container_always_sends_required_fields() -> None:
+    """``update_policy_container`` rejects payloads missing
+    ``default_inbound``/``default_outbound``/``enforce``/``test_mode``
+    with HTTP 400 ``"... attribute cannot be empty"``.
+
+    The applier must always send those fields. When the YAML
+    ``settings`` block doesn't specify them, the values are taken
+    from the live container; when there's no live container yet
+    (fresh create), safe defaults apply.
+    """
+    rg = _windows_rg()
+    desired = _windows_policy()  # no ``settings`` block in the YAML
+    repo = _repo_with(policies=[desired], rule_groups=[rg])
+
+    state = _render_live_state(env="pilot", policies=[desired], rule_groups=[rg])
+    # Force an update by changing rule content so the diff routes through
+    # the policy update path.
+    state.policies[0]["enabled"] = False
+
+    cs = compute_diff(repo, "pilot", state)
+    client = FakeFalconClient(host_groups={"ABC01-Endpoints-Windows-Pilot": "hg-pilot"})
+    live_id = state.policies[0]["id"]
+    client.policies.container_state[live_id] = {
+        "policy_id": live_id,
+        "default_inbound": "DENY",
+        "default_outbound": "ALLOW",
+        "enforce": True,
+        "local_logging": False,
+        "test_mode": False,
+        "tracking": "tok-123",
+    }
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(env="pilot"),
+        safety_options=_safety(),
+    )
+    assert client.policies.container_updates, "expected an update_policy_container call"
+    payload = client.policies.container_updates[0]
+    # All four "cannot be empty" fields must be present with values
+    # overlaid from the existing container (no YAML override).
+    assert payload["default_inbound"] == "DENY"
+    assert payload["default_outbound"] == "ALLOW"
+    assert payload["enforce"] is True
+    assert payload["test_mode"] is False
+    # tracking flows through too so the API has its optimistic-
+    # concurrency token.
+    assert payload.get("tracking") == "tok-123"
+
+
+def test_apply_policy_container_uses_defaults_when_no_live_container() -> None:
+    """For a freshly created policy with no YAML ``settings`` and no
+    live container yet, the applier must still send valid defaults
+    for the required fields rather than leaving them empty.
+    """
+    rg = _windows_rg()
+    desired = _windows_policy()
+    repo = _repo_with(policies=[desired], rule_groups=[rg])
+    # Empty live state for the policy + a sentinel managed record to
+    # satisfy the bootstrap-tenant safety check.
+    state = LiveState()
+    state.locations.append(
+        {
+            "id": "loc-sentinel",
+            "name": "sentinel-location",
+            "description": _signed_description("any"),
+        }
+    )
+
+    cs = compute_diff(repo, "pilot", state)
+    client = FakeFalconClient(host_groups={"ABC01-Endpoints-Windows-Pilot": "hg-pilot"})
+    # No container_state seeded → get_policy_containers returns a stub
+    # with no settings → applier falls back to safe defaults.
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(env="pilot"),
+        safety_options=_safety(),
+    )
+    assert client.policies.container_updates
+    payload = client.policies.container_updates[0]
+    assert payload["default_inbound"] == "ALLOW"
+    assert payload["default_outbound"] == "ALLOW"
+    assert payload["enforce"] is False
+    assert payload["test_mode"] is False
+    assert payload["local_logging"] is False
 
 
 # ---- report serialization ------------------------------------------------
