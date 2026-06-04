@@ -199,6 +199,7 @@ class _LiveIndex:
     rule_group_live: dict[str, dict[str, Any]] = field(default_factory=dict)
     rule_groups_by_display_name: dict[str, tuple[str, str | None]] = field(default_factory=dict)
     rule_group_live_by_display_name: dict[str, dict[str, Any]] = field(default_factory=dict)
+    policies_by_display_name: dict[str, tuple[str, str | None]] = field(default_factory=dict)
 
 
 def _build_live_index(state: Any, env: str) -> _LiveIndex:
@@ -213,10 +214,13 @@ def _build_live_index(state: Any, env: str) -> _LiveIndex:
     for record in state.policies:
         if not isinstance(record, dict) or "id" not in record:
             continue
-        base, suffix_env = strip_env_suffix(str(record.get("name", "")))
+        raw_name = str(record.get("name", ""))
+        base, suffix_env = strip_env_suffix(raw_name)
         if suffix_env != env:
             continue
-        idx.policies[to_slug(base)] = (str(record["id"]), record.get("description"))
+        entry = (str(record["id"]), record.get("description"))
+        idx.policies[to_slug(base)] = entry
+        idx.policies_by_display_name[raw_name] = entry
     for record in state.rule_groups:
         if not isinstance(record, dict) or "id" not in record:
             continue
@@ -257,6 +261,23 @@ def _rule_group_live_lookup(
         entry = index.rule_groups_by_display_name.get(display_name)
         record = index.rule_group_live_by_display_name.get(display_name)
     return entry, record
+
+
+def _policy_live_lookup(
+    index: _LiveIndex, slug: str, display_name: str
+) -> tuple[str, str | None] | None:
+    """Return ``(id, description)`` for a desired policy.
+
+    Mirrors :func:`_rule_group_live_lookup`: primary lookup by
+    env-stripped slug, fallback by full env-suffixed display name. The
+    fallback prevents the applier from issuing a duplicate-name policy
+    create when the YAML slug and the live CrowdStrike display name do
+    not round-trip through ``to_slug``.
+    """
+    entry = index.policies.get(slug)
+    if entry is None:
+        entry = index.policies_by_display_name.get(display_name)
+    return entry
 
 
 # ---- payload builders -----------------------------------------------------
@@ -807,7 +828,7 @@ def apply_change_set(
         )
     for change in policy_updates:
         p_model = desired_policies[change.slug]
-        p_live = index.policies.get(change.slug)
+        p_live = _policy_live_lookup(index, change.slug, change.display_name)
         p_payload = _build_policy_payload(
             p_model,
             options,

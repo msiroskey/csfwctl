@@ -580,6 +580,7 @@ def policy_from_api(
     rule_groups_by_slug: dict[str, RuleGroup] | None = None,
     strip_suffix: bool = True,
     fold_overrides: bool = True,
+    tolerant_rule_group_refs: bool = False,
 ) -> Policy:
     """Convert a CrowdStrike firewall-policy detail record.
 
@@ -588,6 +589,15 @@ def policy_from_api(
     is true (the importer's default). Set it to ``False`` when the
     caller — e.g. the Phase 4 differ — wants to keep the override-group
     reference visible in ``rule_groups`` instead.
+
+    When ``tolerant_rule_group_refs`` is ``True``, a referenced rule
+    group whose record is missing from ``rule_groups_by_id`` is logged
+    and skipped instead of raising :class:`ImporterError`. The differ
+    fetches rule groups filtered by env suffix, so a live policy that
+    references a suffixless or cross-env rule group would otherwise
+    cause the entire live record to be dropped via the differ's
+    blanket except, masking the policy from the diff and producing a
+    spurious duplicate-name create on the next apply.
     """
     rule_groups_by_id = rule_groups_by_id or {}
     rule_groups_by_slug = rule_groups_by_slug or {}
@@ -686,6 +696,18 @@ def policy_from_api(
     for rg_id in rule_group_ids:
         rg_record = rule_groups_by_id.get(str(rg_id))
         if rg_record is None:
+            if tolerant_rule_group_refs:
+                from csfwctl.observability import get_logger
+
+                get_logger("exporter").warning(
+                    "import skipped unresolved rule group reference",
+                    extra={
+                        "event": "import.policy.rule_group.unresolved",
+                        "policy_name": raw_name,
+                        "rule_group_id": str(rg_id),
+                    },
+                )
+                continue
             raise ImporterError(
                 f"policy {raw_name!r} references rule group id {rg_id!r} but no record was fetched; "
                 "pass the full rule_groups_by_id map or import the rule group separately"
