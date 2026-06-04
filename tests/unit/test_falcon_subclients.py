@@ -221,6 +221,78 @@ def test_host_groups_create_returns_existing_on_duplicate_409(
     assert created.get("name") == "OSU-ASC-Endpoints-Windows-Pilot"
 
 
+def test_host_groups_query_sends_limit_500_by_default(
+    mocked_api: responses.RequestsMock,
+) -> None:
+    """The host-groups endpoint caps ``limit`` at 500 (HTTP 400 otherwise).
+
+    Regression: the default page size was previously 5 000, which the
+    server rejected with ``"5000 is an invalid page size, must be
+    between 1 and 500"``, breaking ``apply`` on every fetch of live
+    state.
+    """
+    import urllib.parse
+
+    captured_urls: list[str] = []
+
+    def _record(request: Any) -> tuple[int, dict[str, str], str]:
+        captured_urls.append(request.url)
+        return (200, {}, '{"resources": [], "errors": []}')
+
+    mocked_api.add_callback(
+        responses.GET,
+        f"{BASE}/devices/queries/host-groups/v1",
+        callback=_record,
+    )
+    client = _client()
+    client.host_groups.query()
+    assert captured_urls, "no request was made"
+    parsed = urllib.parse.urlparse(captured_urls[0])
+    params = urllib.parse.parse_qs(parsed.query)
+    assert params.get("limit") == ["500"]
+
+
+def test_host_groups_query_paginates_to_collect_all_ids(
+    mocked_api: responses.RequestsMock,
+) -> None:
+    """Without an explicit ``limit``, ``query`` paginates through all pages.
+
+    A tenant with more than 500 host groups was previously truncated
+    silently by the API page-size cap, which made the unfiltered
+    fallback in ``find_by_name`` miss exactly the record it was trying
+    to locate. The query must walk offset-based pages until the API
+    reports it has returned ``total`` results (or returns a short
+    page).
+    """
+    page_one = [f"hg-{i}" for i in range(500)]
+    page_two = [f"hg-{i}" for i in range(500, 750)]
+    mocked_api.add(
+        responses.GET,
+        f"{BASE}/devices/queries/host-groups/v1",
+        json={
+            "resources": page_one,
+            "errors": [],
+            "meta": {"pagination": {"offset": 0, "limit": 500, "total": 750}},
+        },
+        status=200,
+    )
+    mocked_api.add(
+        responses.GET,
+        f"{BASE}/devices/queries/host-groups/v1",
+        json={
+            "resources": page_two,
+            "errors": [],
+            "meta": {"pagination": {"offset": 500, "limit": 500, "total": 750}},
+        },
+        status=200,
+    )
+    client = _client()
+    ids = client.host_groups.query()
+    assert len(ids) == 750
+    assert ids[0] == "hg-0"
+    assert ids[-1] == "hg-749"
+
+
 def test_locations_list_all_calls_details_endpoint(mocked_api: responses.RequestsMock) -> None:
     mocked_api.add(
         responses.GET,

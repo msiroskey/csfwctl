@@ -18,6 +18,14 @@ if TYPE_CHECKING:
 class HostGroupsAPI:
     """Host-group read wrapper plus the minimum write surface for apply."""
 
+    _MAX_PAGE_SIZE = 500
+    """CrowdStrike caps ``limit`` on ``query_host_groups`` at 500.
+
+    Passing a higher value returns ``HTTP 400 "N is an invalid page size,
+    must be between 1 and 500"``. The rule-groups endpoint allows 5 000,
+    so this is a host-group-specific cap.
+    """
+
     def __init__(self, client: FalconClient) -> None:
         self._client = client
 
@@ -27,13 +35,48 @@ class HostGroupsAPI:
     def query(self, *, filter: str | None = None, limit: int | None = None) -> list[str]:
         """Return host-group IDs matching ``filter`` (FQL).
 
-        The CrowdStrike API default page size is small (10 on some
-        endpoints, 100 on others); callers that omit ``limit`` want
-        all results, so we pass the API maximum (5 000) to avoid silent
-        truncation. Matches the convention used in the rule-groups
-        sub-client.
+        When ``limit`` is omitted, paginates through every result page
+        and concatenates the ids. The host-groups endpoint caps a
+        single page at 500 (it returns HTTP 400 for anything larger);
+        without pagination a tenant with more than 500 groups would be
+        silently truncated, and the unfiltered fallback in
+        :meth:`find_by_name` would miss the very record it is trying to
+        locate.
+
+        When ``limit`` is supplied, a single page is fetched.  The
+        caller is responsible for keeping it within ``1..500``.
         """
-        params: dict[str, Any] = {"limit": limit if limit is not None else 5000}
+        if limit is not None:
+            return self._query_page(filter=filter, limit=limit, offset=0)
+
+        all_ids: list[str] = []
+        offset = 0
+        while True:
+            page_ids, total = self._query_page_with_total(
+                filter=filter, limit=self._MAX_PAGE_SIZE, offset=offset
+            )
+            if not page_ids:
+                break
+            all_ids.extend(page_ids)
+            if total > 0 and len(all_ids) >= total:
+                break
+            # A short page (fewer results than the requested limit) is
+            # the last page. This is the termination condition when the
+            # API does not return a ``meta.pagination.total`` count.
+            if len(page_ids) < self._MAX_PAGE_SIZE:
+                break
+            offset += len(page_ids)
+        return all_ids
+
+    def _query_page(self, *, filter: str | None, limit: int, offset: int) -> list[str]:
+        ids, _ = self._query_page_with_total(filter=filter, limit=limit, offset=offset)
+        return ids
+
+    def _query_page_with_total(
+        self, *, filter: str | None, limit: int, offset: int
+    ) -> tuple[list[str], int]:
+        """Fetch one page of ids and the reported ``total`` count."""
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
         if filter is not None:
             params["filter"] = filter
         result = self._client.call(
@@ -41,7 +84,14 @@ class HostGroupsAPI:
             lambda: self._svc().query_host_groups(parameters=params),
         )
         body = result.get("body") or {}
-        return [str(r) for r in body.get("resources") or []]
+        ids = [str(r) for r in body.get("resources") or []]
+        meta = body.get("meta") or {}
+        pagination = meta.get("pagination") or {}
+        try:
+            total = int(pagination.get("total") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        return ids, total
 
     def get(self, ids: list[str]) -> list[dict[str, Any]]:
         """Return full host-group detail records."""

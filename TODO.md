@@ -175,6 +175,23 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       misfiring lookup no longer aborts the apply. Regression tests:
       `tests/unit/test_falcon_subclients.py::test_host_groups_find_by_name_falls_back_to_list_all`
       and `tests/unit/test_falcon_subclients.py::test_host_groups_create_returns_existing_on_duplicate_409`.
+- [x] **`host_groups.query` rejected with `400 5000 is an invalid page
+      size, must be between 1 and 500`.** The previous fix set the
+      default `limit` on the unfiltered host-group query to `5000` to
+      match the rule-groups sub-client, but the host-groups endpoint
+      caps a single page at `500`. Apply now failed at the live-state
+      fetch stage. Two changes in `csfwctl/falcon/host_groups.py`:
+      (1) Added `_MAX_PAGE_SIZE = 500` constant. (2) `query()` now
+      paginates by offset when no explicit `limit` is supplied: each
+      page is `limit=500`, and the loop terminates on an empty page,
+      when `meta.pagination.total` is reached, or when the page is
+      shorter than the requested limit (so missing-`total` responses
+      still terminate). Explicit `limit` from a caller still fetches
+      a single page (the caller is responsible for keeping it in
+      `1..500`). Regression tests:
+      `tests/unit/test_falcon_subclients.py::test_host_groups_query_sends_limit_500_by_default`
+      and
+      `tests/unit/test_falcon_subclients.py::test_host_groups_query_paginates_to_collect_all_ids`.
 
 ## Phase 10 tasks
 
