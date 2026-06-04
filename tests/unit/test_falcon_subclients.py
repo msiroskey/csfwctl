@@ -125,6 +125,102 @@ def test_host_groups_find_by_name(mocked_api: responses.RequestsMock) -> None:
     assert group["id"] == "hg-1"
 
 
+def test_host_groups_find_by_name_falls_back_to_list_all(
+    mocked_api: responses.RequestsMock,
+) -> None:
+    """When the FQL ``name:`` filter returns empty, ``find_by_name`` lists
+    every host group and matches by exact name client-side.
+
+    Regression: some CrowdStrike tenants have been observed returning
+    empty resources for the ``name:`` filter even when an exact-match
+    group exists. The applier then issued ``create`` and the server
+    rejected it with ``409 Duplicate group name``.
+    """
+    # First call: filtered query returns no results.
+    mocked_api.add(
+        responses.GET,
+        f"{BASE}/devices/queries/host-groups/v1",
+        json={"resources": [], "errors": []},
+        status=200,
+    )
+    # Second call (fallback): unfiltered query returns several IDs.
+    mocked_api.add(
+        responses.GET,
+        f"{BASE}/devices/queries/host-groups/v1",
+        json={"resources": ["hg-1", "hg-2", "hg-3"], "errors": []},
+        status=200,
+    )
+    mocked_api.add(
+        responses.GET,
+        f"{BASE}/devices/entities/host-groups/v1",
+        json={
+            "resources": [
+                {"id": "hg-1", "name": "Other-Group"},
+                {"id": "hg-2", "name": "OSU-ASC-Endpoints-Windows-Pilot"},
+                {"id": "hg-3", "name": "Yet-Another"},
+            ],
+            "errors": [],
+        },
+        status=200,
+    )
+    client = _client()
+    group = client.host_groups.find_by_name("OSU-ASC-Endpoints-Windows-Pilot")
+    assert group is not None
+    assert group["id"] == "hg-2"
+
+
+def test_host_groups_create_returns_existing_on_duplicate_409(
+    mocked_api: responses.RequestsMock,
+) -> None:
+    """``create`` is idempotent on the duplicate-name 409.
+
+    The applier calls ``create`` when ``find_by_name`` returns ``None``.
+    If the FQL filter falsely reported the group as absent but the
+    server actually has it, the create returns 409. The wrapper falls
+    back to a thorough lookup and returns the existing record, so the
+    applier can use the live id instead of aborting the apply.
+    """
+    duplicate_body = {
+        "errors": [
+            {"code": 409, "message": "Duplicate group name OSU-ASC-Endpoints-Windows-Pilot."}
+        ],
+        "resources": None,
+    }
+    mocked_api.add(
+        responses.POST,
+        f"{BASE}/devices/entities/host-groups/v1",
+        json=duplicate_body,
+        status=409,
+    )
+    # Fallback lookup: name filter still returns empty (the original
+    # reason the create was attempted), then list_all returns the group.
+    mocked_api.add(
+        responses.GET,
+        f"{BASE}/devices/queries/host-groups/v1",
+        json={"resources": [], "errors": []},
+        status=200,
+    )
+    mocked_api.add(
+        responses.GET,
+        f"{BASE}/devices/queries/host-groups/v1",
+        json={"resources": ["hg-9"], "errors": []},
+        status=200,
+    )
+    mocked_api.add(
+        responses.GET,
+        f"{BASE}/devices/entities/host-groups/v1",
+        json={
+            "resources": [{"id": "hg-9", "name": "OSU-ASC-Endpoints-Windows-Pilot"}],
+            "errors": [],
+        },
+        status=200,
+    )
+    client = _client()
+    created = client.host_groups.create("OSU-ASC-Endpoints-Windows-Pilot")
+    assert created.get("id") == "hg-9"
+    assert created.get("name") == "OSU-ASC-Endpoints-Windows-Pilot"
+
+
 def test_locations_list_all_calls_details_endpoint(mocked_api: responses.RequestsMock) -> None:
     mocked_api.add(
         responses.GET,
