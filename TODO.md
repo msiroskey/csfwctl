@@ -192,6 +192,39 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       `tests/unit/test_falcon_subclients.py::test_host_groups_query_sends_limit_500_by_default`
       and
       `tests/unit/test_falcon_subclients.py::test_host_groups_query_paginates_to_collect_all_ids`.
+- [x] **Apply reported success but rule groups, host groups, and
+      enabled state were silently dropped.** ``apply`` logged
+      ``update policy ... rule_groups: list changed (0 -> 3 items),
+      status: 'disabled' -> 'enabled'`` yet the live policy stayed
+      empty and disabled. ``firewall_policies.update`` (PATCH) only
+      honours ``id``/``name``/``description``; ``firewall_policies.create``
+      (POST) only honours ``name``/``description``/``platform_name``.
+      Rule-group assignments live on the **policy container**
+      (``PUT /fwmgr/entities/policies/v1`` →
+      ``update_policy_container``), host-group membership goes through
+      ``perform_action add-host-group`` /
+      ``remove-host-group``, and the enabled flag toggles via
+      ``perform_action enable`` / ``disable``.
+      Fix:
+      (1) ``csfwctl/falcon/policies.py`` gained ``update_policy_container``,
+      and convenience ``enable``/``disable``/``add_host_group``/
+      ``remove_host_group`` wrappers around ``perform_action``;
+      ``perform_action`` signature now takes an
+      ``action_parameters: list[dict[str, str]] | None`` instead of a
+      single ``value: str`` that hard-coded ``name="filter"``.
+      (2) ``csfwctl/applier.py`` introduces ``_apply_policy_relations``
+      which is called after every policy create and update: it sets
+      ``rule_group_ids`` and the default-traffic / enforcement /
+      local-logging settings via ``update_policy_container``;
+      attaches the desired host groups (for creates) or applies each
+      ``HostGroupChange`` (for updates); and toggles the enabled
+      flag when the ``status`` field changed (updates) or the new
+      policy should be enabled (creates).
+      Regression tests in ``tests/unit/test_applier.py``:
+      ``test_apply_policy_update_routes_rule_groups_to_container_endpoint``,
+      ``test_apply_policy_update_toggles_enabled_state_via_perform_action``,
+      ``test_apply_policy_update_routes_host_group_changes_to_perform_action``,
+      ``test_apply_policy_create_applies_container_and_host_groups``.
 
 ## Phase 10 tasks
 

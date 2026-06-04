@@ -97,6 +97,63 @@ class PoliciesAPI:
         body = result.get("body") or {}
         return list(body.get("resources") or [])
 
+    def update_policy_container(
+        self,
+        *,
+        policy_id: str,
+        platform_id: str,
+        rule_group_ids: list[str],
+        tracking: str | None = None,
+        default_inbound: str | None = None,
+        default_outbound: str | None = None,
+        enforce: bool | None = None,
+        local_logging: bool | None = None,
+        test_mode: bool | None = None,
+        is_default_policy: bool | None = None,
+    ) -> dict[str, Any]:
+        """Update the policy container for one firewall policy.
+
+        ``update_policies`` (PATCH) only accepts ``id``/``name``/
+        ``description`` — rule-group assignments, enforcement mode,
+        default inbound/outbound traffic, and local-logging all live
+        on the **policy container**, which is updated through a
+        separate endpoint (``PUT /fwmgr/entities/policies/v1``). Without
+        this call, ``apply`` reports success but rule groups and
+        settings never land on the policy.
+
+        ``platform_id`` is the lowercase platform id
+        (``"windows"`` / ``"mac"`` / ``"linux"``), NOT the
+        Title-Case ``platform_name`` that ``create_policies`` accepts.
+        """
+        body: dict[str, Any] = {
+            "policy_id": policy_id,
+            "platform_id": platform_id,
+            "rule_group_ids": rule_group_ids,
+        }
+        if tracking is not None:
+            body["tracking"] = tracking
+        if default_inbound is not None:
+            body["default_inbound"] = default_inbound
+        if default_outbound is not None:
+            body["default_outbound"] = default_outbound
+        if enforce is not None:
+            body["enforce"] = enforce
+        if local_logging is not None:
+            body["local_logging"] = local_logging
+        if test_mode is not None:
+            body["test_mode"] = test_mode
+        if is_default_policy is not None:
+            body["is_default_policy"] = is_default_policy
+        result = self._client.call(
+            "firewall_management.update_policy_container",
+            lambda: self._client._firewall_management_service().update_policy_container(  # noqa: SLF001
+                body=body
+            ),
+        )
+        resp_body = result.get("body") or {}
+        resources = resp_body.get("resources") or []
+        return dict(resources[0]) if resources else {}
+
     def set_precedence(self, ids_in_order: list[str], *, platform_name: str) -> None:
         """Reorder policies for a platform.
 
@@ -111,14 +168,59 @@ class PoliciesAPI:
             ),
         )
 
-    def perform_action(self, action_name: str, ids: list[str], value: str) -> None:
-        """Run an action against policies (``add-host-group``, etc.)."""
+    def perform_action(
+        self,
+        action_name: str,
+        ids: list[str],
+        action_parameters: list[dict[str, str]] | None = None,
+    ) -> None:
+        """Run an action against policies.
+
+        ``action_name`` is one of ``add-host-group`` / ``remove-host-group`` /
+        ``add-rule-group`` / ``remove-rule-group`` / ``enable`` / ``disable``.
+        ``action_parameters`` is passed through verbatim — its expected
+        shape depends on the action:
+
+        - ``add-host-group`` / ``remove-host-group``:
+          ``[{"name": "group_id", "value": "<host_group_id>"}]``
+        - ``add-rule-group`` / ``remove-rule-group``:
+          ``[{"name": "rule_group_id", "value": "<rule_group_id>"}]``
+        - ``enable`` / ``disable``: ``None`` (no parameters required).
+        """
+        body: dict[str, Any] = {"ids": ids}
+        if action_parameters:
+            body["action_parameters"] = action_parameters
         self._client.call(
             "firewall_policies.perform_action",
-            lambda: self._svc().perform_action(
-                action_name=action_name,
-                body={"ids": ids, "action_parameters": [{"name": "filter", "value": value}]},
-            ),
+            lambda: self._svc().perform_action(action_name=action_name, body=body),
+        )
+
+    def enable(self, policy_ids: list[str]) -> None:
+        """Enable the listed policies via ``perform_action``."""
+        if not policy_ids:
+            return
+        self.perform_action("enable", policy_ids)
+
+    def disable(self, policy_ids: list[str]) -> None:
+        """Disable the listed policies via ``perform_action``."""
+        if not policy_ids:
+            return
+        self.perform_action("disable", policy_ids)
+
+    def add_host_group(self, policy_id: str, host_group_id: str) -> None:
+        """Attach a host group to a policy via ``perform_action``."""
+        self.perform_action(
+            "add-host-group",
+            [policy_id],
+            [{"name": "group_id", "value": host_group_id}],
+        )
+
+    def remove_host_group(self, policy_id: str, host_group_id: str) -> None:
+        """Detach a host group from a policy via ``perform_action``."""
+        self.perform_action(
+            "remove-host-group",
+            [policy_id],
+            [{"name": "group_id", "value": host_group_id}],
         )
 
 

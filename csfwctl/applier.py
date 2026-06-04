@@ -60,7 +60,7 @@ from csfwctl.safety import (
     next_signature,
     parse_signature,
 )
-from csfwctl.schema import Location, Platform, Policy, RuleGroup
+from csfwctl.schema import Location, Platform, Policy, RuleGroup, Status
 
 _logger = get_logger("applier")
 
@@ -413,6 +413,108 @@ def _projected_rule_group_slugs(policy: Policy) -> list[str]:
     applier therefore just trusts the projected ``rule_groups`` list.
     """
     return list(policy.rule_groups)
+
+
+def _apply_policy_relations(
+    client: FalconClient,
+    *,
+    policy: Policy,
+    policy_id: str,
+    host_group_ids: dict[str, str],
+    rule_group_ids: dict[str, str],
+    host_group_changes: tuple[HostGroupChange, ...],
+    status_changed: bool,
+    options: ApplyOptions,
+    report: ApplyReport,
+    is_create: bool,
+) -> None:
+    """Apply rule-group, host-group, and enabled state for one policy.
+
+    ``policies.update`` / ``policies.create`` only persist
+    ``id``/``name``/``description``/``platform_name``; rule-group
+    assignments, host-group memberships, and the enabled flag all need
+    dedicated endpoints. Without these calls ``apply`` reports success
+    but the policy in CrowdStrike remains empty and disabled.
+
+    Resolution order (must match the API's preconditions — the host
+    group has to exist before it can be attached, etc.):
+
+    1. ``update_policy_container`` — sets ``rule_group_ids`` plus the
+       default-traffic / enforcement / local-logging settings.
+    2. For creates: attach every desired host group via
+       ``perform_action add-host-group``. For updates: process each
+       :class:`HostGroupChange` add/remove.
+    3. Toggle the enabled flag via ``perform_action enable`` /
+       ``disable`` when the desired status differs from live (for
+       updates) or when a newly created policy should be enabled.
+    """
+    if options.dry_run:
+        return
+
+    rg_ids: list[str] = []
+    for slug in _projected_rule_group_slugs(policy):
+        rg_id = rule_group_ids.get(slug)
+        if rg_id is None:
+            raise ApplyError(
+                f"policy {policy.name!r} references rule group {slug!r} but no live "
+                "or freshly-created ID is available; was the rule group apply skipped?"
+            )
+        rg_ids.append(rg_id)
+
+    platform_id = policy.platform.value
+    container_kwargs: dict[str, Any] = {
+        "policy_id": policy_id,
+        "platform_id": platform_id,
+        "rule_group_ids": rg_ids,
+    }
+    if policy.settings is not None:
+        ps = policy.settings
+        from csfwctl.schema.policy_settings import EnforcementMode
+
+        if ps.enforcement_mode is not None:
+            container_kwargs["enforce"] = ps.enforcement_mode is EnforcementMode.enforce
+            container_kwargs["local_logging"] = ps.enforcement_mode is EnforcementMode.local_logging
+        if ps.default_inbound is not None:
+            container_kwargs["default_inbound"] = ps.default_inbound.upper()
+        if ps.default_outbound is not None:
+            container_kwargs["default_outbound"] = ps.default_outbound.upper()
+    # The container endpoint accepts ``tracking`` as an optimistic-
+    # concurrency token; we omit it here and let the server fill it
+    # in. If a future tenant rejects payloads without ``tracking``,
+    # fetch the container first via ``get_policy_containers`` and
+    # thread the value through.
+    client.policies.update_policy_container(**container_kwargs)
+
+    if is_create:
+        for hg_name in policy.host_groups:
+            hg_id = host_group_ids.get(hg_name)
+            if hg_id is None:
+                report.warnings.append(
+                    f"policy {policy.name!r}: host group {hg_name!r} not resolved; skipping attach"
+                )
+                continue
+            client.policies.add_host_group(policy_id, hg_id)
+    else:
+        for hgc in host_group_changes:
+            hg_id = host_group_ids.get(hgc.group_name)
+            if hg_id is None:
+                report.warnings.append(
+                    f"policy {policy.name!r}: host group {hgc.group_name!r} "
+                    f"not resolved; skipping {hgc.op}"
+                )
+                continue
+            if hgc.op == "add":
+                client.policies.add_host_group(policy_id, hg_id)
+            else:
+                client.policies.remove_host_group(policy_id, hg_id)
+
+    desired_enabled = policy.status is Status.enabled
+    should_toggle = status_changed if not is_create else desired_enabled
+    if should_toggle:
+        if desired_enabled:
+            client.policies.enable([policy_id])
+        else:
+            client.policies.disable([policy_id])
 
 
 # ---- host-group resolution -----------------------------------------------
@@ -826,6 +928,23 @@ def apply_change_set(
             report=report,
             change=change,
         )
+        # ``create_policies`` only persists name/description/platform_name;
+        # everything else (rule groups, host groups, enabled flag) lands
+        # via dedicated endpoints in :func:`_apply_policy_relations`.
+        created_entry = index.policies.get(change.slug)
+        if created_entry is not None:
+            _apply_policy_relations(
+                client,
+                policy=p_model,
+                policy_id=created_entry[0],
+                host_group_ids=host_group_ids,
+                rule_group_ids=rule_group_ids,
+                host_group_changes=(),
+                status_changed=False,
+                options=options,
+                report=report,
+                is_create=True,
+            )
     for change in policy_updates:
         p_model = desired_policies[change.slug]
         p_live = _policy_live_lookup(index, change.slug, change.display_name)
@@ -849,10 +968,25 @@ def apply_change_set(
             report=report,
             change=change,
         )
-        # Host-group reassignments are recorded explicitly so the report
-        # surfaces them; the policy update payload above already carries
-        # the new ``groups`` list, so the API call covers the membership
-        # change in one round-trip.
+        # ``update_policies`` only patches name/description. Apply rule-
+        # group, host-group, and enabled-state changes via dedicated
+        # endpoints. Without this the differ reports the update but
+        # nothing actually changes on the live policy.
+        if p_live is not None:
+            status_changed = any(fc.path == "status" for fc in change.field_changes)
+            _apply_policy_relations(
+                client,
+                policy=p_model,
+                policy_id=p_live[0],
+                host_group_ids=host_group_ids,
+                rule_group_ids=rule_group_ids,
+                host_group_changes=change.host_group_changes,
+                status_changed=status_changed,
+                options=options,
+                report=report,
+                is_create=False,
+            )
+        # Record host-group reassignments on the report for visibility.
         for hg_change in change.host_group_changes:
             _record_host_group_change(report, change, hg_change)
 

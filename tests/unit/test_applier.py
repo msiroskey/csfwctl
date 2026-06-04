@@ -153,6 +153,13 @@ class FakeRuleGroupsAPI(FakeSubClient):
 
 
 class FakePoliciesAPI(FakeSubClient):
+    def __init__(self) -> None:
+        super().__init__()
+        # Container updates (rule_group_ids + default-traffic / enforcement).
+        self.container_updates: list[dict[str, Any]] = []
+        # perform_action calls: (action_name, ids, action_parameters)
+        self.actions: list[tuple[str, list[str], list[dict[str, str]] | None]] = []
+
     def create(self, policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for p in policies:
@@ -163,6 +170,38 @@ class FakePoliciesAPI(FakeSubClient):
     def update(self, policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
         self.updated.extend(policies)
         return [dict(p) for p in policies]
+
+    def update_policy_container(self, **kwargs: Any) -> dict[str, Any]:
+        self.container_updates.append(dict(kwargs))
+        return {"id": kwargs.get("policy_id", "")}
+
+    def perform_action(
+        self,
+        action_name: str,
+        ids: list[str],
+        action_parameters: list[dict[str, str]] | None = None,
+    ) -> None:
+        self.actions.append((action_name, list(ids), action_parameters))
+
+    def enable(self, policy_ids: list[str]) -> None:
+        self.perform_action("enable", policy_ids)
+
+    def disable(self, policy_ids: list[str]) -> None:
+        self.perform_action("disable", policy_ids)
+
+    def add_host_group(self, policy_id: str, host_group_id: str) -> None:
+        self.perform_action(
+            "add-host-group",
+            [policy_id],
+            [{"name": "group_id", "value": host_group_id}],
+        )
+
+    def remove_host_group(self, policy_id: str, host_group_id: str) -> None:
+        self.perform_action(
+            "remove-host-group",
+            [policy_id],
+            [{"name": "group_id", "value": host_group_id}],
+        )
 
     def delete(self, ids: list[str]) -> None:
         self.deleted.extend(ids)
@@ -882,6 +921,175 @@ def test_apply_updates_policy_with_camelcase_display_name() -> None:
     assert client.policies.updated, "expected an update against the live policy"
     payload = client.policies.updated[0]
     assert payload["id"] == live_id
+
+
+def test_apply_policy_update_routes_rule_groups_to_container_endpoint() -> None:
+    """``update_policies`` does not accept ``rule_group_ids``; the change
+    must be routed through ``update_policy_container``.
+
+    Regression: the applier was sending rule_group_ids in the
+    ``update_policies`` body, where the server silently dropped them.
+    The change log read ``rule_groups: list changed (0 -> 3 items)``
+    but the live policy stayed empty.
+    """
+    rg = _windows_rg()
+    desired = _windows_policy()
+    repo = _repo_with(policies=[desired], rule_groups=[rg])
+
+    live_policy = Policy(
+        name=desired.name,
+        display_name=desired.display_name,
+        platform=desired.platform,
+        description=desired.description,
+        host_groups=desired.host_groups,
+        rules=[],
+        rule_groups=[],  # live has no rule groups attached
+    )
+    state = _render_live_state(env="pilot", policies=[live_policy], rule_groups=[rg])
+
+    cs = compute_diff(repo, "pilot", state)
+    p_updates = [c for c in cs.updates if c.kind == "policy"]
+    assert p_updates, "expected a policy update for rule_groups drift"
+
+    client = FakeFalconClient(host_groups={"ABC01-Endpoints-Windows-Pilot": "hg-pilot"})
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(env="pilot"),
+        safety_options=_safety(),
+    )
+    assert client.policies.container_updates, (
+        "expected update_policy_container to fire; rule_group_ids would otherwise "
+        "be silently dropped by update_policies"
+    )
+    payload = client.policies.container_updates[0]
+    assert payload["platform_id"] == "windows"
+    assert payload["rule_group_ids"], "container update missing rule_group_ids"
+    live_id = state.policies[0]["id"]
+    assert payload["policy_id"] == live_id
+
+
+def test_apply_policy_update_toggles_enabled_state_via_perform_action() -> None:
+    """A status change must be applied through ``perform_action``;
+    ``update_policies`` does not honour the ``enabled`` field.
+    """
+    rg = _windows_rg()
+    desired = _windows_policy()  # default Status.enabled
+    repo = _repo_with(policies=[desired], rule_groups=[rg])
+
+    state = _render_live_state(env="pilot", policies=[desired], rule_groups=[rg])
+    state.policies[0]["enabled"] = False
+    live_id = state.policies[0]["id"]
+
+    cs = compute_diff(repo, "pilot", state)
+    p_updates = [c for c in cs.updates if c.kind == "policy"]
+    assert p_updates and any(fc.path == "status" for c in p_updates for fc in c.field_changes)
+
+    client = FakeFalconClient(host_groups={"ABC01-Endpoints-Windows-Pilot": "hg-pilot"})
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(env="pilot"),
+        safety_options=_safety(),
+    )
+    assert ("enable", [live_id], None) in client.policies.actions, (
+        f"expected perform_action enable for {live_id}; got {client.policies.actions}"
+    )
+
+
+def test_apply_policy_update_routes_host_group_changes_to_perform_action() -> None:
+    """Host-group add/remove on an existing policy must use
+    ``perform_action add-host-group`` / ``remove-host-group`` — the
+    ``groups`` field on ``update_policies`` is silently dropped.
+    """
+    rg = _windows_rg()
+    desired = _windows_policy()
+    # Drop one host group from the live policy so the diff emits a
+    # HostGroupChange(op='add'). Reuse the live-state helper and then
+    # strip the Pilot group from the rendered shape.
+    repo = _repo_with(policies=[desired], rule_groups=[rg])
+    state = _render_live_state(env="pilot", policies=[desired], rule_groups=[rg])
+    state.policies[0]["groups"] = []
+    live_id = state.policies[0]["id"]
+
+    cs = compute_diff(repo, "pilot", state)
+    p_updates = [c for c in cs.updates if c.kind == "policy"]
+    assert p_updates and any(c.host_group_changes for c in p_updates)
+
+    client = FakeFalconClient(host_groups={"ABC01-Endpoints-Windows-Pilot": "hg-pilot"})
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(env="pilot"),
+        safety_options=_safety(),
+    )
+    matching = [
+        a
+        for a in client.policies.actions
+        if a[0] == "add-host-group"
+        and a[1] == [live_id]
+        and a[2]
+        and a[2][0] == {"name": "group_id", "value": "hg-pilot"}
+    ]
+    assert matching, f"expected add-host-group action; got {client.policies.actions}"
+
+
+def test_apply_policy_create_applies_container_and_host_groups() -> None:
+    """Creating a policy must follow up ``create_policies`` with
+    ``update_policy_container`` (rule groups + settings), per-host-group
+    ``add-host-group`` actions, and an ``enable`` toggle when the
+    desired status is enabled.
+
+    Regression: ``create_policies`` only accepts name/description/
+    platform_name; without the follow-up calls, a freshly created
+    policy ended up with no rule groups, no host groups attached, and
+    disabled.
+    """
+    rg = _windows_rg()
+    desired = _windows_policy()
+    repo = _repo_with(policies=[desired], rule_groups=[rg])
+    # Live has nothing for this policy but does have a managed sentinel
+    # record so the safety bootstrap check does not block the apply.
+    state = LiveState()
+    state.locations.append(
+        {
+            "id": "loc-sentinel",
+            "name": "sentinel-location",
+            "description": _signed_description("any"),
+        }
+    )
+
+    cs = compute_diff(repo, "pilot", state)
+    p_creates = [c for c in cs.creates if c.kind == "policy"]
+    assert p_creates, "expected a create"
+
+    client = FakeFalconClient(host_groups={"ABC01-Endpoints-Windows-Pilot": "hg-pilot"})
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(env="pilot"),
+        safety_options=_safety(),
+    )
+    created_id = f"policy-id-{desired.display_name}-Pilot"
+    assert client.policies.container_updates, "expected update_policy_container after create"
+    payload = client.policies.container_updates[0]
+    assert payload["policy_id"] == created_id
+    assert payload["platform_id"] == "windows"
+
+    actions = client.policies.actions
+    add_action = ("add-host-group", [created_id], [{"name": "group_id", "value": "hg-pilot"}])
+    assert add_action in actions, f"expected {add_action} in {actions}"
+    assert ("enable", [created_id], None) in actions, (
+        f"expected enable action on newly created policy; got {actions}"
+    )
 
 
 # ---- report serialization ------------------------------------------------
