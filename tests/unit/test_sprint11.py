@@ -661,6 +661,11 @@ class _FakeRuleGroupsAPI(_FakeSubClient):
 
 
 class _FakePoliciesAPI(_FakeSubClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.container_updates: list[dict] = []
+        self.actions: list[tuple] = []
+
     def create(self, policies: list[dict]) -> list[dict]:
         out = []
         for p in policies:
@@ -671,6 +676,38 @@ class _FakePoliciesAPI(_FakeSubClient):
     def update(self, policies: list[dict]) -> list[dict]:
         self.updated.extend(policies)
         return [dict(p) for p in policies]
+
+    def update_policy_container(self, **kwargs) -> dict:
+        self.container_updates.append(dict(kwargs))
+        return {"id": kwargs.get("policy_id", "")}
+
+    def perform_action(
+        self,
+        action_name: str,
+        ids: list[str],
+        action_parameters: list[dict] | None = None,
+    ) -> None:
+        self.actions.append((action_name, list(ids), action_parameters))
+
+    def enable(self, policy_ids: list[str]) -> None:
+        self.perform_action("enable", policy_ids)
+
+    def disable(self, policy_ids: list[str]) -> None:
+        self.perform_action("disable", policy_ids)
+
+    def add_host_group(self, policy_id: str, host_group_id: str) -> None:
+        self.perform_action(
+            "add-host-group",
+            [policy_id],
+            [{"name": "group_id", "value": host_group_id}],
+        )
+
+    def remove_host_group(self, policy_id: str, host_group_id: str) -> None:
+        self.perform_action(
+            "remove-host-group",
+            [policy_id],
+            [{"name": "group_id", "value": host_group_id}],
+        )
 
     def delete(self, ids: list[str]) -> None:
         self.deleted.extend(ids)
