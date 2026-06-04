@@ -225,6 +225,25 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       ``test_apply_policy_update_toggles_enabled_state_via_perform_action``,
       ``test_apply_policy_update_routes_host_group_changes_to_perform_action``,
       ``test_apply_policy_create_applies_container_and_host_groups``.
+- [x] **`update_policy_container` rejected with `"... attribute cannot
+      be empty"` for `default_inbound`/`default_outbound`/`enforce`/
+      `test_mode`.** The previous fix omitted those fields whenever
+      the YAML's `settings` block did not specify them — but the API
+      treats omission as "empty" and returns HTTP 400. Fix: the
+      applier now fetches the existing container via
+      `get_policy_containers` and uses **PUT semantics**: every required
+      field is sent on every update, with the value resolved
+      desired → existing → safe default (`ALLOW` / `False`). The
+      live container's `tracking` token, when present, is threaded
+      through for optimistic concurrency. Two small helpers
+      (`_resolve_container_str`, `_resolve_container_bool`) make the
+      overlay explicit. Regression tests:
+      `tests/unit/test_applier.py::test_apply_policy_container_always_sends_required_fields`
+      (asserts existing live values flow through when the YAML has no
+      `settings`) and
+      `tests/unit/test_applier.py::test_apply_policy_container_uses_defaults_when_no_live_container`
+      (asserts safe defaults are emitted for a fresh create with no
+      container yet).
 
 ## Phase 10 tasks
 

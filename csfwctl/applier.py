@@ -415,6 +415,31 @@ def _projected_rule_group_slugs(policy: Policy) -> list[str]:
     return list(policy.rule_groups)
 
 
+def _resolve_container_str(desired: str | None, existing: Any, default: str) -> str:
+    """Pick the value to send for a required string container field.
+
+    The ``update_policy_container`` endpoint rejects payloads where
+    ``default_inbound`` / ``default_outbound`` are missing or empty, so
+    we always have to send a value: the YAML's if specified, otherwise
+    whatever the live container holds, otherwise the API's standard
+    permissive default.
+    """
+    if desired is not None:
+        return desired
+    if existing is not None and str(existing).strip():
+        return str(existing).upper()
+    return default
+
+
+def _resolve_container_bool(desired: bool | None, existing: Any, default: bool) -> bool:
+    """Pick the value to send for a required boolean container field."""
+    if desired is not None:
+        return desired
+    if isinstance(existing, bool):
+        return existing
+    return default
+
+
 def _apply_policy_relations(
     client: FalconClient,
     *,
@@ -461,28 +486,63 @@ def _apply_policy_relations(
             )
         rg_ids.append(rg_id)
 
+    # Fetch the existing policy container so the update has PUT semantics:
+    # the API rejects payloads where ``default_inbound``, ``default_outbound``,
+    # ``enforce``, or ``test_mode`` are missing with HTTP 400
+    # ``"... attribute cannot be empty"``. Fields not set in the YAML
+    # ``settings`` block fall back to the live container value, then to
+    # safe defaults if the container fetch returned nothing (the
+    # newly-created-policy case, where eventual consistency can briefly
+    # mask the container).
+    existing_container: dict[str, Any] = {}
+    try:
+        containers = client.policies.get_policy_containers([policy_id])
+        if containers:
+            existing_container = containers[0]
+    except Exception as exc:  # noqa: BLE001
+        report.warnings.append(
+            f"policy {policy.name!r}: get_policy_containers failed ({exc}); "
+            "falling back to defaults for unspecified container fields"
+        )
+
+    desired_inbound: str | None = None
+    desired_outbound: str | None = None
+    desired_enforce: bool | None = None
+    desired_local_logging: bool | None = None
+    if policy.settings is not None:
+        from csfwctl.schema.policy_settings import EnforcementMode
+
+        ps = policy.settings
+        if ps.enforcement_mode is not None:
+            desired_enforce = ps.enforcement_mode is EnforcementMode.enforce
+            desired_local_logging = ps.enforcement_mode is EnforcementMode.local_logging
+        if ps.default_inbound is not None:
+            desired_inbound = ps.default_inbound.upper()
+        if ps.default_outbound is not None:
+            desired_outbound = ps.default_outbound.upper()
+
     platform_id = policy.platform.value
     container_kwargs: dict[str, Any] = {
         "policy_id": policy_id,
         "platform_id": platform_id,
         "rule_group_ids": rg_ids,
+        "default_inbound": _resolve_container_str(
+            desired_inbound, existing_container.get("default_inbound"), "ALLOW"
+        ),
+        "default_outbound": _resolve_container_str(
+            desired_outbound, existing_container.get("default_outbound"), "ALLOW"
+        ),
+        "enforce": _resolve_container_bool(
+            desired_enforce, existing_container.get("enforce"), False
+        ),
+        "test_mode": _resolve_container_bool(None, existing_container.get("test_mode"), False),
+        "local_logging": _resolve_container_bool(
+            desired_local_logging, existing_container.get("local_logging"), False
+        ),
     }
-    if policy.settings is not None:
-        ps = policy.settings
-        from csfwctl.schema.policy_settings import EnforcementMode
-
-        if ps.enforcement_mode is not None:
-            container_kwargs["enforce"] = ps.enforcement_mode is EnforcementMode.enforce
-            container_kwargs["local_logging"] = ps.enforcement_mode is EnforcementMode.local_logging
-        if ps.default_inbound is not None:
-            container_kwargs["default_inbound"] = ps.default_inbound.upper()
-        if ps.default_outbound is not None:
-            container_kwargs["default_outbound"] = ps.default_outbound.upper()
-    # The container endpoint accepts ``tracking`` as an optimistic-
-    # concurrency token; we omit it here and let the server fill it
-    # in. If a future tenant rejects payloads without ``tracking``,
-    # fetch the container first via ``get_policy_containers`` and
-    # thread the value through.
+    tracking = existing_container.get("tracking")
+    if tracking:
+        container_kwargs["tracking"] = str(tracking)
     client.policies.update_policy_container(**container_kwargs)
 
     if is_create:

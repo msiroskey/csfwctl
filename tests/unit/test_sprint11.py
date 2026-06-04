@@ -665,6 +665,7 @@ class _FakePoliciesAPI(_FakeSubClient):
         super().__init__()
         self.container_updates: list[dict] = []
         self.actions: list[tuple] = []
+        self.container_state: dict[str, dict] = {}
 
     def create(self, policies: list[dict]) -> list[dict]:
         out = []
@@ -676,6 +677,9 @@ class _FakePoliciesAPI(_FakeSubClient):
     def update(self, policies: list[dict]) -> list[dict]:
         self.updated.extend(policies)
         return [dict(p) for p in policies]
+
+    def get_policy_containers(self, ids: list[str]) -> list[dict]:
+        return [self.container_state.get(pid, {"policy_id": pid}) for pid in ids]
 
     def update_policy_container(self, **kwargs) -> dict:
         self.container_updates.append(dict(kwargs))
