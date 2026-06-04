@@ -128,6 +128,32 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       slug canonicalisation was lossy. Regression tests:
       `tests/unit/test_differ.py::test_compute_diff_matches_rule_group_by_display_name_when_slug_collapses`
       and `tests/unit/test_applier.py::test_apply_updates_rule_group_with_camelcase_display_name`.
+- [x] **Policy create rejected with `Duplicate policy name ... for <Platform> platform`.**
+      Two compounding causes:
+      (1) `policy_from_api` raised `ImporterError` when the live
+      policy's `rule_group_ids` referenced an id that was not in the
+      env-filtered fetched map (e.g. a suffixless or cross-env rule
+      group). `differ._translate_live_state` then silently swallowed
+      the exception, dropping the entire live policy from view. The
+      diff therefore emitted a create, which CrowdStrike rejected as a
+      duplicate. (2) Even after the policy was visible, the same
+      slug-vs-display-name mismatch fixed for rule groups in the
+      previous PR also applied to policies (e.g. YAML slug
+      `asc-mac-endpoints` paired with display `ASC-MacEndpoints`
+      produced live name `ASC-MacEndpoints-Pilot`, whose re-slug
+      `asc-macendpoints` did not match).
+      Fix: added a `tolerant_rule_group_refs` parameter to
+      `policy_from_api` that logs and skips unresolved RG references
+      instead of raising; the differ now passes it `True` and also
+      records translation exceptions as `ChangeSet.warnings` so a
+      dropped record is no longer invisible. Mirrored the rule-group
+      display-name fallback in `_diff_policies`, and added
+      `policies_by_display_name` plus `_policy_live_lookup` in the
+      applier so the update path resolves the live id by display name
+      when slug normalisation is lossy. Regression tests:
+      `tests/unit/test_differ.py::test_compute_diff_does_not_drop_live_policy_with_unresolved_rule_group_ref`,
+      `tests/unit/test_differ.py::test_compute_diff_matches_policy_by_display_name_when_slug_collapses`,
+      and `tests/unit/test_applier.py::test_apply_updates_policy_with_camelcase_display_name`.
 
 ## Phase 10 tasks
 

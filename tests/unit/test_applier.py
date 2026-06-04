@@ -838,6 +838,52 @@ def test_apply_updates_rule_group_with_camelcase_display_name() -> None:
     assert payload["id"] == live_id
 
 
+def test_apply_updates_policy_with_camelcase_display_name() -> None:
+    """Camel-case policy display names that do not round-trip via ``to_slug``
+    still resolve to the existing live policy on update.
+
+    Regression: a YAML slug ``asc-mac-endpoints`` with display name
+    ``ASC-MacEndpoints`` projected to live CrowdStrike name
+    ``ASC-MacEndpoints-Pilot``. Stripping the env suffix and re-slugging
+    yields ``asc-macendpoints``, so the slug-keyed live index never
+    matched. The applier therefore re-created the policy and
+    CrowdStrike rejected with ``Duplicate policy name``.
+    """
+    policy = Policy(
+        name="asc-mac-endpoints",
+        display_name="ASC-MacEndpoints",
+        platform=Platform.mac,
+        rule_groups=[],
+    )
+    repo = _repo_with(policies=[policy])
+    state = _render_live_state(env="pilot", policies=[policy])
+    # Force a content change so the diff routes through update.
+    state.policies[0]["enabled"] = False
+    live_id = state.policies[0]["id"]
+
+    cs = compute_diff(repo, "pilot", state)
+    p_creates = [c for c in cs.creates if c.kind == "policy"]
+    p_updates = [c for c in cs.updates if c.kind == "policy"]
+    assert p_creates == [], f"unexpected policy creates: {p_creates}"
+    assert any(c.slug == "asc-mac-endpoints" for c in p_updates)
+
+    client = FakeFalconClient()
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(env="pilot"),
+        safety_options=_safety(),
+    )
+    assert not client.policies.created, (
+        f"applier attempted to create a policy that already exists: {client.policies.created}"
+    )
+    assert client.policies.updated, "expected an update against the live policy"
+    payload = client.policies.updated[0]
+    assert payload["id"] == live_id
+
+
 # ---- report serialization ------------------------------------------------
 
 

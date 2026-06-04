@@ -442,12 +442,16 @@ class _LiveByKind:
     locations: dict[str, tuple[Location, dict[str, Any]]]
 
 
-def _translate_live_state(state: LiveState, env: str) -> _LiveByKind:
+def _translate_live_state(state: LiveState, env: str, cs: ChangeSet | None = None) -> _LiveByKind:
     """Translate env-filtered live records into schema models keyed by slug.
 
-    Failures translating individual records become warnings on the
-    :class:`ChangeSet`; we still continue so a single corrupt record
-    cannot black-hole the rest of the diff.
+    Failures translating individual records are recorded as warnings on
+    ``cs`` (when provided) and the record is skipped, so a single corrupt
+    record cannot black-hole the rest of the diff. Surfacing the warning
+    matters because a silently-dropped live policy or rule group looks
+    identical to "does not exist" to the differ and produces a spurious
+    create on the next apply — which CrowdStrike then rejects with
+    ``Duplicate ... name``.
     """
     rg_records_env = _filter_live_records_by_env(state.rule_groups, env)
     rule_groups_by_id_env: dict[str, dict[str, Any]] = {
@@ -458,7 +462,11 @@ def _translate_live_state(state: LiveState, env: str) -> _LiveByKind:
     for record in rg_records_env:
         try:
             rg_model = rule_group_from_api(record, state.rules_by_id, strip_suffix=True)
-        except Exception:  # noqa: BLE001 — recorded via warnings upstream
+        except Exception as exc:  # noqa: BLE001
+            if cs is not None:
+                cs.warnings.append(
+                    f"live rule group {record.get('name', '?')!r} could not be translated: {exc}"
+                )
             continue
         rule_groups[rg_model.name] = (rg_model, record)
 
@@ -471,8 +479,13 @@ def _translate_live_state(state: LiveState, env: str) -> _LiveByKind:
                 rule_groups_by_slug={},
                 strip_suffix=True,
                 fold_overrides=False,
+                tolerant_rule_group_refs=True,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if cs is not None:
+                cs.warnings.append(
+                    f"live policy {record.get('name', '?')!r} could not be translated: {exc}"
+                )
             continue
         slug = _slug_for_live_record(record)
         policies[slug] = (policy_model, record)
@@ -481,7 +494,11 @@ def _translate_live_state(state: LiveState, env: str) -> _LiveByKind:
     for record in state.locations:
         try:
             loc_model = location_from_api(record)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if cs is not None:
+                cs.warnings.append(
+                    f"live location {record.get('name', '?')!r} could not be translated: {exc}"
+                )
             continue
         locations[loc_model.name] = (loc_model, record)
 
@@ -781,13 +798,27 @@ def _diff_policies(
     """Append policy creates/updates/deletes/no-changes to ``cs``."""
     tombstoned = {entry.name for entry in repo.tombstones.policies}
     suffix = env_suffix(env)
+    # Secondary index by the live raw display name. The slug-only lookup
+    # misses cases where ``to_slug`` is not reversible (e.g. camelCase
+    # display names). Without the fallback the live record is invisible
+    # to the diff and the applier issues a duplicate-name create.
+    live_by_display_name: dict[str, str] = {
+        str(record.get("name", "")): live_slug for live_slug, (_, record) in live.items()
+    }
+    matched_live_slugs: set[str] = set()
     for slug, model in sorted(desired.items()):
         display_name = f"{model.display_name or model.name}{suffix}"
         # Compute managed-group changes from the pre-projection materialised policy.
         raw_policy = materialised.get(slug, model)
         mg_changes = _managed_group_changes(raw_policy, env, live_hg_by_name)
+        live_slug: str | None = None
         if slug in live:
-            live_model, live_record = live[slug]
+            live_slug = slug
+        elif display_name in live_by_display_name:
+            live_slug = live_by_display_name[display_name]
+        if live_slug is not None:
+            matched_live_slugs.add(live_slug)
+            live_model, live_record = live[live_slug]
             field_changes = _compare_models(model, live_model)
             hg_changes = _host_group_changes(model, live_model, env)
             managed = _classify_managed(live_record)
@@ -816,7 +847,7 @@ def _diff_policies(
                     managed_group_changes=tuple(mg_changes),
                 )
             )
-    for slug in sorted(set(live) - set(desired)):
+    for slug in sorted(set(live) - set(desired) - matched_live_slugs):
         live_model, live_record = live[slug]
         display = f"{live_model.display_name or live_model.name}{suffix}"
         if slug in tombstoned:
@@ -887,7 +918,7 @@ def compute_diff(repo: ConfigRepo, env: str, state: LiveState) -> ChangeSet:
     }
 
     desired_policies, desired_rule_groups, desired_locations = build_desired_state(repo, env)
-    live = _translate_live_state(state, env)
+    live = _translate_live_state(state, env, cs)
 
     # Index live host groups by display name for managed-group lookup.
     live_hg_by_name: dict[str, dict[str, Any]] = {

@@ -468,6 +468,65 @@ def test_compute_diff_matches_rule_group_by_display_name_when_slug_collapses() -
     assert any(c.slug == "asc-mac-endpoints" for c in rg_no_changes)
 
 
+def test_compute_diff_does_not_drop_live_policy_with_unresolved_rule_group_ref() -> None:
+    """A live policy that references an unfetched rule group must not vanish.
+
+    Regression: ``policy_from_api`` raised ``ImporterError`` on a
+    referenced rule-group ID that was not in the env-filtered fetched
+    map, and ``_translate_live_state`` silently swallowed the exception.
+    The whole live policy then disappeared from the diff and the next
+    apply emitted a create, which CrowdStrike rejected with
+    ``Duplicate policy name``.
+
+    With ``tolerant_rule_group_refs=True`` in the differ's call site,
+    the policy must remain visible (matched as ``no_change`` against the
+    YAML policy), the unresolved reference logged via a warning rather
+    than dropped silently, and no create emitted.
+    """
+    policy = _abc_policy(with_inline=False)
+    repo = _repo_with(policies=[policy])
+    state = _render_live(env="test", policies=[policy], extra_rule_groups_for_overrides=False)
+    # Sabotage the live policy so it references an RG id that is not in
+    # the env-filtered fetched state. Previously this crashed
+    # ``policy_from_api`` and the whole policy disappeared.
+    state.policies[0].setdefault("settings", {})["rule_group_ids"] = ["nonexistent-rg-id"]
+
+    cs = compute_diff(repo, "test", state)
+    policy_creates = [c for c in cs.creates if c.kind == "policy"]
+    policy_no_changes = [c for c in cs.no_changes if c.kind == "policy"]
+    policy_updates = [c for c in cs.updates if c.kind == "policy"]
+    assert policy_creates == [], f"unexpected policy creates: {policy_creates}"
+    assert any(c.slug == policy.name for c in (*policy_no_changes, *policy_updates))
+
+
+def test_compute_diff_matches_policy_by_display_name_when_slug_collapses() -> None:
+    """Policies with non-roundtripping camel-case display names match live.
+
+    Mirror of the rule-group regression: a YAML slug
+    ``asc-mac-endpoints`` paired with display name ``ASC-MacEndpoints``
+    projects to CrowdStrike name ``ASC-MacEndpoints-Pilot``, which
+    re-slugs to ``asc-macendpoints``. Without the display-name fallback
+    the differ emits a phantom policy create and CrowdStrike rejects
+    with ``Duplicate policy name``.
+    """
+    policy = Policy(
+        name="asc-mac-endpoints",
+        display_name="ASC-MacEndpoints",
+        platform=Platform.mac,
+        rule_groups=[],
+    )
+    repo = _repo_with(policies=[policy])
+    state = _render_live(env="pilot", policies=[policy], extra_rule_groups_for_overrides=False)
+
+    cs = compute_diff(repo, "pilot", state)
+    policy_creates = [c for c in cs.creates if c.kind == "policy"]
+    policy_unmanaged = [c for c in cs.unmanaged if c.kind == "policy"]
+    policy_no_changes = [c for c in cs.no_changes if c.kind == "policy"]
+    assert policy_creates == [], f"unexpected policy creates: {policy_creates}"
+    assert policy_unmanaged == [], f"unexpected policy unmanaged: {policy_unmanaged}"
+    assert any(c.slug == "asc-mac-endpoints" for c in policy_no_changes)
+
+
 # ---- JSON serialization -------------------------------------------------
 
 
