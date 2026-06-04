@@ -1050,6 +1050,96 @@ def test_apply_policy_update_routes_host_group_changes_to_perform_action() -> No
     assert matching, f"expected add-host-group action; got {client.policies.actions}"
 
 
+def test_apply_policy_update_removes_cross_env_host_group_drift() -> None:
+    """A host group attached to the wrong env's policy is removed.
+
+    Regression: ``_host_group_changes`` filtered both sides by the
+    current env, so a Pilot-env host group attached to the Test policy
+    was invisible to the applier. The differ flagged it as a generic
+    field-level change but no ``HostGroupChange(remove)`` was emitted,
+    so ``perform_action remove-host-group`` never fired and the stray
+    group remained on every apply.
+    """
+    rg = _windows_rg()
+    desired = _windows_policy()
+    repo = _repo_with(policies=[desired], rule_groups=[rg])
+    # The live Test policy has the Pilot host group attached -- drift.
+    state = _render_live_state(env="test", policies=[desired], rule_groups=[rg])
+    state.policies[0]["groups"] = [
+        {"id": "hg-pilot", "name": "ABC01-Endpoints-Windows-Pilot"},
+    ]
+    live_id = state.policies[0]["id"]
+
+    cs = compute_diff(repo, "test", state)
+    p_updates = [c for c in cs.updates if c.kind == "policy"]
+    assert p_updates, "expected an update"
+    ops = {(hgc.op, hgc.group_name) for c in p_updates for hgc in c.host_group_changes}
+    assert ("remove", "ABC01-Endpoints-Windows-Pilot") in ops
+    assert ("add", "ABC01-Endpoints-Windows-Test") in ops
+
+    client = FakeFalconClient(
+        host_groups={
+            "ABC01-Endpoints-Windows-Test": "hg-test",
+            "ABC01-Endpoints-Windows-Pilot": "hg-pilot",
+        }
+    )
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(env="test"),
+        safety_options=_safety(),
+    )
+    actions = client.policies.actions
+    add_test = (
+        "add-host-group",
+        [live_id],
+        [{"name": "group_id", "value": "hg-test"}],
+    )
+    remove_pilot = (
+        "remove-host-group",
+        [live_id],
+        [{"name": "group_id", "value": "hg-pilot"}],
+    )
+    assert add_test in actions, f"expected {add_test} in {actions}"
+    assert remove_pilot in actions, f"expected {remove_pilot} in {actions}"
+
+
+def test_apply_policy_update_remove_lookup_does_not_create_target() -> None:
+    """``--create-groups`` must not accidentally create a host group we
+    are about to detach. The remove-side lookup goes through
+    ``_lookup_host_group_ids`` and skips the create path.
+    """
+    rg = _windows_rg()
+    desired = _windows_policy()
+    repo = _repo_with(policies=[desired], rule_groups=[rg])
+    state = _render_live_state(env="test", policies=[desired], rule_groups=[rg])
+    state.policies[0]["groups"] = [
+        {"id": "hg-stale", "name": "ABC01-Endpoints-Stale-Group"},
+    ]
+
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient(
+        host_groups={
+            "ABC01-Endpoints-Windows-Test": "hg-test",
+            # The stale group exists so the remove can be issued.
+            "ABC01-Endpoints-Stale-Group": "hg-stale",
+        }
+    )
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(env="test", host_group_policy=HostGroupPolicy.create),
+        safety_options=_safety(),
+    )
+    # The stale group must not appear in the "created" log -- it was
+    # only looked up for the remove perform_action.
+    assert "ABC01-Endpoints-Stale-Group" not in client.host_groups.created
+
+
 def test_apply_policy_create_applies_container_and_host_groups() -> None:
     """Creating a policy must follow up ``create_policies`` with
     ``update_policy_container`` (rule groups + settings), per-host-group

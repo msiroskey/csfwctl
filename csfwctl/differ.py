@@ -572,15 +572,31 @@ def _compare_models(
 
 
 def _host_group_changes(desired: Policy, live: Policy, env: str) -> list[HostGroupChange]:
-    """Add/remove operations to converge live's host-group set to desired."""
+    """Add/remove operations to converge live's host-group set to desired.
+
+    Each env has its own CrowdStrike policy (``-Test`` / ``-Pilot`` /
+    ``-Production``), so a Test policy should only have the test-env
+    host group attached. Any other group on the live record is drift
+    and must be removed, including a cross-env group whose name carries
+    a different ``-Pilot`` / ``-Production`` suffix.
+
+    Compares the full host-group set on both sides (no env filter on
+    the live side). ``desired`` is already projected for the env via
+    :func:`project_policy_for_env`, so its keys are the only groups
+    that should remain attached.
+    """
     hg_env = env_to_host_group_env(env)
-    desired_names = {name for name, e in desired.host_groups.items() if e is hg_env}
-    live_names = {name for name, e in live.host_groups.items() if e is hg_env}
+    desired_names = set(desired.host_groups.keys())
+    live_names = set(live.host_groups.keys())
     out: list[HostGroupChange] = []
     for name in sorted(desired_names - live_names):
         out.append(HostGroupChange(op="add", group_name=name, env=hg_env))
     for name in sorted(live_names - desired_names):
-        out.append(HostGroupChange(op="remove", group_name=name, env=hg_env))
+        # Preserve the live env on the remove record when known so the
+        # report makes it obvious that we are removing a cross-env stray;
+        # fall back to the current env if the live record was not labelled.
+        remove_env = live.host_groups.get(name, hg_env)
+        out.append(HostGroupChange(op="remove", group_name=name, env=remove_env))
     return out
 
 

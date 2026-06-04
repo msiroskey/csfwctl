@@ -244,6 +244,29 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       `tests/unit/test_applier.py::test_apply_policy_container_uses_defaults_when_no_live_container`
       (asserts safe defaults are emitted for a fresh create with no
       container yet).
+- [x] **Cross-env host-group drift on a policy was silently retained.**
+      A live ``-Test`` policy with a stray ``-Pilot`` host group
+      attached produced a ``host_groups.<group>: 'pilot' -> None``
+      field-level diff entry in the change log but no
+      ``HostGroupChange(remove)``. The applier acts only on the
+      ``HostGroupChange`` tuple, so ``perform_action remove-host-group``
+      never fired and the stray group stayed on every apply. Root
+      cause in ``csfwctl/differ.py::_host_group_changes``: both sides
+      were filtered by the current env, hiding cross-env strays on
+      the live record. Fix:
+      (1) ``_host_group_changes`` now compares the full host-group
+      set on both sides (no env filter on live). ``desired`` is
+      already projected by ``project_policy_for_env`` so its keys are
+      the only groups that should remain attached; everything else on
+      live is drift and gets a remove. The remove record preserves
+      the live env when known.
+      (2) ``csfwctl/applier.py`` gained ``_lookup_host_group_ids``,
+      a find-by-name-only resolver used for the remove side of the
+      churn so ``--create-groups`` does not accidentally create the
+      very group we are about to detach. Regression tests:
+      ``tests/unit/test_differ.py::test_compute_diff_emits_remove_for_cross_env_host_group_drift``,
+      ``tests/unit/test_applier.py::test_apply_policy_update_removes_cross_env_host_group_drift``,
+      ``tests/unit/test_applier.py::test_apply_policy_update_remove_lookup_does_not_create_target``.
 
 ## Phase 10 tasks
 
