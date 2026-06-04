@@ -534,6 +534,13 @@ def _model_dump(model: Policy | RuleGroup | Location) -> dict[str, Any]:
     # Drop description from comparison: live carries the metadata trailer
     # and that is the applier's business, not the differ's.
     data.pop("description", None)
+    # ``name`` and ``display_name`` are identity, not state — the differ
+    # matches records via slug / display-name index lookup, so including
+    # them here only produces phantom diffs when slug canonicalisation
+    # is not reversible (e.g. ``ASC-MacEndpoints`` collapses to
+    # ``asc-macendpoints`` while the YAML carries ``asc-mac-endpoints``).
+    data.pop("name", None)
+    data.pop("display_name", None)
     if isinstance(model, Policy):
         for key in _POLICY_DIFF_EXCLUDE:
             data.pop(key, None)
@@ -681,14 +688,33 @@ def _diff_rule_groups(
     """Append rule-group creates/updates/deletes/no-changes to ``cs``."""
     tombstoned = {entry.name for entry in repo.tombstones.rule_groups}
     suffix = env_suffix(env)
+    # Secondary index: live records keyed by their raw CrowdStrike display
+    # name (env suffix included). Required because ``to_slug`` does not
+    # insert hyphens at camelCase boundaries, so a YAML slug
+    # ``asc-mac-endpoints`` paired with display name ``ASC-MacEndpoints``
+    # cannot be recovered from the live name ``ASC-MacEndpoints-Pilot``
+    # by slug normalisation alone (which yields ``asc-macendpoints``).
+    # Falling back to display-name matching prevents the applier from
+    # attempting to recreate a rule group that already exists, which the
+    # API rejects with ``Duplicate rule group name``.
+    live_by_display_name: dict[str, str] = {
+        str(record.get("name", "")): live_slug for live_slug, (_, record) in live.items()
+    }
+    matched_live_slugs: set[str] = set()
     for slug, model in sorted(desired.items()):
         display_name = (
             _override_display_name(slug, env)
             if _is_override_slug(slug)
             else f"{model.display_name or model.name}{suffix}"
         )
+        live_slug: str | None = None
         if slug in live:
-            live_model, live_record = live[slug]
+            live_slug = slug
+        elif display_name in live_by_display_name:
+            live_slug = live_by_display_name[display_name]
+        if live_slug is not None:
+            matched_live_slugs.add(live_slug)
+            live_model, live_record = live[live_slug]
             changes = _compare_models(model, live_model)
             managed = _classify_managed(live_record)
             change = ObjectChange(
@@ -710,7 +736,7 @@ def _diff_rule_groups(
                     managed=ManagedStatus.new,
                 )
             )
-    for slug in sorted(set(live) - set(desired)):
+    for slug in sorted(set(live) - set(desired) - matched_live_slugs):
         live_model, live_record = live[slug]
         display = f"{live_model.display_name or live_model.name}{suffix}"
         if slug in tombstoned:
