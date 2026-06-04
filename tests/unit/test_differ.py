@@ -427,6 +427,47 @@ def test_compute_diff_warns_about_orphan_override_rule_group() -> None:
     assert any("orphan override rule group" in w for w in cs.warnings)
 
 
+def test_compute_diff_matches_rule_group_by_display_name_when_slug_collapses() -> None:
+    """Live RGs whose camelCase name does not round-trip via ``to_slug``
+    are still matched against the desired YAML slug.
+
+    Regression: a desired RG with YAML slug ``asc-mac-endpoints`` and
+    display name ``ASC-MacEndpoints`` projects to live name
+    ``ASC-MacEndpoints-Pilot``. Stripping the env suffix and re-slugging
+    yields ``asc-macendpoints`` (``to_slug`` does not insert hyphens at
+    camelCase boundaries), so a slug-only lookup misses the live record.
+    The differ then emits a ``create`` and the rule-group create endpoint
+    rejects it with ``Duplicate rule group name``.
+
+    The fallback by full env-suffixed display name must produce
+    ``no_change`` here, with the live record neither re-created nor
+    flagged as unmanaged.
+    """
+    rg = RuleGroup(
+        name="asc-mac-endpoints",
+        display_name="ASC-MacEndpoints",
+        platform=Platform.mac,
+        rules=[
+            Rule(
+                name="Allow established inbound",
+                action=Action.allow,
+                direction=Direction.inbound,
+                protocol=Protocol.tcp,
+            ),
+        ],
+    )
+    repo = _repo_with(rule_groups=[rg])
+    state = _render_live(env="pilot", rule_groups=[rg])
+
+    cs = compute_diff(repo, "pilot", state)
+    rg_creates = [c for c in cs.creates if c.kind == "rule-group"]
+    rg_unmanaged = [c for c in cs.unmanaged if c.kind == "rule-group"]
+    rg_no_changes = [c for c in cs.no_changes if c.kind == "rule-group"]
+    assert rg_creates == [], f"unexpected creates: {rg_creates}"
+    assert rg_unmanaged == [], f"unexpected unmanaged: {rg_unmanaged}"
+    assert any(c.slug == "asc-mac-endpoints" for c in rg_no_changes)
+
+
 # ---- JSON serialization -------------------------------------------------
 
 

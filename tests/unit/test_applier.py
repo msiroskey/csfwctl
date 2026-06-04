@@ -773,6 +773,71 @@ def test_bootstrap_matches_live_rule_group_with_spaces_in_name() -> None:
     assert report.count("metadata") == 1
 
 
+def test_apply_updates_rule_group_with_camelcase_display_name() -> None:
+    """Camel-case display names that do not round-trip through ``to_slug``
+    still resolve to the existing live rule group on update.
+
+    Regression: a YAML slug ``asc-mac-endpoints`` paired with display
+    name ``ASC-MacEndpoints`` produces live name
+    ``ASC-MacEndpoints-Pilot``. Stripping the env suffix and re-slugging
+    yields ``asc-macendpoints`` (``to_slug`` only normalises whitespace
+    and underscores, not camel-case boundaries), so the slug-keyed live
+    index never matches. The applier therefore tried to *create* the
+    rule group again and CrowdStrike rejected with
+    ``Duplicate rule group name ASC-MacEndpoints-Pilot``.
+
+    With the display-name fallback in place, the rule group must be
+    routed to the update path and use the existing live ID.
+    """
+    rg = RuleGroup(
+        name="asc-mac-endpoints",
+        display_name="ASC-MacEndpoints",
+        platform=Platform.mac,
+        rules=[
+            Rule(
+                name="Allow established inbound",
+                action=Action.allow,
+                direction=Direction.inbound,
+                protocol=Protocol.tcp,
+            ),
+        ],
+    )
+    repo = _repo_with(rule_groups=[rg])
+    state = _render_live_state(env="pilot", rule_groups=[rg])
+    # Force a content change so the diff routes through the update path
+    # rather than no-change. The metadata trailer means the differ also
+    # has to route via update for the signature refresh.
+    next(iter(state.rules_by_id.values()))["action"] = "DENY"
+    # Capture the live id the applier should reuse.
+    live_id = state.rule_groups[0]["id"]
+
+    cs = compute_diff(repo, "pilot", state)
+    # Verify the differ matched via display-name fallback.
+    rg_creates = [c for c in cs.creates if c.kind == "rule-group"]
+    rg_updates = [c for c in cs.updates if c.kind == "rule-group"]
+    assert rg_creates == [], f"unexpected creates: {rg_creates}"
+    assert any(c.slug == "asc-mac-endpoints" for c in rg_updates)
+
+    client = FakeFalconClient()
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(env="pilot"),
+        safety_options=_safety(),
+    )
+    # The applier should have issued an UPDATE against the existing live
+    # ID, not a CREATE that would collide with the existing live name.
+    assert not client.rule_groups.created, (
+        f"applier attempted to create a rule group that already exists: "
+        f"{client.rule_groups.created}"
+    )
+    assert client.rule_groups.updated, "expected an update against the live RG"
+    payload = client.rule_groups.updated[0]
+    assert payload["id"] == live_id
+
+
 # ---- report serialization ------------------------------------------------
 
 

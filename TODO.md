@@ -104,6 +104,30 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       `tests/unit/test_exporter_translation.py`
       (`test_rule_group_to_api_shape_icmpv6_forces_ip6_without_addresses`);
       `docs/schema_reference.md` updated.
+- [x] **Rule-group create rejected with `Duplicate rule group name`.**
+      The differ and applier both keyed live rule groups by
+      `to_slug(strip_env_suffix(live_name))`. `to_slug` normalises
+      whitespace and underscores but does **not** insert hyphens at
+      camel-case boundaries, so a live record named
+      `ASC-MacEndpoints-Pilot` collapsed to slug `asc-macendpoints`
+      while the YAML carried `asc-mac-endpoints`. The slug-only lookup
+      missed the live record, the applier issued a create, and
+      CrowdStrike rejected the payload. Three coordinated fixes:
+      (1) `differ._diff_rule_groups` now falls back to matching by the
+      full env-suffixed display name when the slug lookup misses;
+      matched live slugs are excluded from the orphan loop so they are
+      not also flagged as unmanaged. (2) `applier._build_live_index`
+      additionally indexes rule groups by their raw env-suffixed
+      display name, and the new `_rule_group_live_lookup` helper drives
+      the update path through either key. (3) `_apply_policies` seeds
+      `rule_group_ids` with desired-slug → live-id entries via the same
+      display-name fallback so `_build_policy_payload` can resolve the
+      RG id regardless of slug canonicalisation. Also dropped `name` /
+      `display_name` from `_model_dump` because they are identity, not
+      state, and inflated the diff with phantom field changes whenever
+      slug canonicalisation was lossy. Regression tests:
+      `tests/unit/test_differ.py::test_compute_diff_matches_rule_group_by_display_name_when_slug_collapses`
+      and `tests/unit/test_applier.py::test_apply_updates_rule_group_with_camelcase_display_name`.
 
 ## Phase 10 tasks
 

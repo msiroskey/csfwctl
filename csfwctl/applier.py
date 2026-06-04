@@ -183,12 +183,22 @@ class _LiveIndex:
     ``rule_group_live`` stores the full raw live record for each rule group
     so the update path can extract ``tracking`` and ``rule_ids`` for the
     diff-based PATCH endpoint.
+
+    ``rule_groups_by_display_name`` is a secondary index by the full
+    env-suffixed CrowdStrike display name. The differ falls back to a
+    display-name match when slug normalisation is not reversible (e.g.
+    YAML slug ``asc-mac-endpoints`` vs. CrowdStrike name
+    ``ASC-MacEndpoints``, which ``to_slug`` collapses to
+    ``asc-macendpoints``). The applier needs the same fallback to retrieve
+    the live ID for the update path.
     """
 
     policies: dict[str, tuple[str, str | None]] = field(default_factory=dict)
     rule_groups: dict[str, tuple[str, str | None]] = field(default_factory=dict)
     locations: dict[str, tuple[str, str | None]] = field(default_factory=dict)
     rule_group_live: dict[str, dict[str, Any]] = field(default_factory=dict)
+    rule_groups_by_display_name: dict[str, tuple[str, str | None]] = field(default_factory=dict)
+    rule_group_live_by_display_name: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _build_live_index(state: Any, env: str) -> _LiveIndex:
@@ -210,12 +220,16 @@ def _build_live_index(state: Any, env: str) -> _LiveIndex:
     for record in state.rule_groups:
         if not isinstance(record, dict) or "id" not in record:
             continue
-        base, suffix_env = strip_env_suffix(str(record.get("name", "")))
+        raw_name = str(record.get("name", ""))
+        base, suffix_env = strip_env_suffix(raw_name)
         if suffix_env != env:
             continue
         slug = to_slug(base)
-        idx.rule_groups[slug] = (str(record["id"]), record.get("description"))
+        entry = (str(record["id"]), record.get("description"))
+        idx.rule_groups[slug] = entry
         idx.rule_group_live[slug] = record
+        idx.rule_groups_by_display_name[raw_name] = entry
+        idx.rule_group_live_by_display_name[raw_name] = record
     for record in state.locations:
         if not isinstance(record, dict) or "id" not in record:
             continue
@@ -225,6 +239,24 @@ def _build_live_index(state: Any, env: str) -> _LiveIndex:
             continue
         idx.locations[to_slug(name)] = (str(record["id"]), record.get("description"))
     return idx
+
+
+def _rule_group_live_lookup(
+    index: _LiveIndex, slug: str, display_name: str
+) -> tuple[tuple[str, str | None] | None, dict[str, Any] | None]:
+    """Return ``((id, description), full_record)`` for a desired rule group.
+
+    Primary lookup is by env-stripped slug; falls back to the full
+    env-suffixed display name to cover camelCase display names that do
+    not round-trip through ``to_slug``. Returns ``(None, None)`` if
+    neither matches.
+    """
+    entry = index.rule_groups.get(slug)
+    record = index.rule_group_live.get(slug)
+    if entry is None:
+        entry = index.rule_groups_by_display_name.get(display_name)
+        record = index.rule_group_live_by_display_name.get(display_name)
+    return entry, record
 
 
 # ---- payload builders -----------------------------------------------------
@@ -685,13 +717,13 @@ def apply_change_set(
         )
     for change in _ordered(change_set.updates, KIND_RULE_GROUP):
         rg_model = desired_rule_groups[change.slug]
-        rg_live = index.rule_groups.get(change.slug)
+        rg_live, rg_live_record = _rule_group_live_lookup(index, change.slug, change.display_name)
         rg_payload = _build_rule_group_update_payload(
             rg_model,
             options,
             live_id=rg_live[0] if rg_live else "",
             live_description=rg_live[1] if rg_live else None,
-            live_record=index.rule_group_live.get(change.slug),
+            live_record=rg_live_record,
         )
         _do_write(
             client,
@@ -732,6 +764,19 @@ def apply_change_set(
     rule_group_ids: dict[str, str] = {
         slug: live_id for slug, (live_id, _desc) in index.rule_groups.items()
     }
+    # Seed entries for desired slugs whose CrowdStrike display name does
+    # not round-trip through ``to_slug`` (e.g. ``ASC-MacEndpoints``
+    # collapses to ``asc-macendpoints`` while the YAML carries
+    # ``asc-mac-endpoints``). Without this fallback the policy payload
+    # builder cannot resolve a live RG id and either re-creates the
+    # group (``Duplicate rule group name``) or raises ApplyError.
+    for desired_slug, rg_model in desired_rule_groups.items():
+        if desired_slug in rule_group_ids:
+            continue
+        display_name = f"{rg_model.display_name or rg_model.name}{env_suffix(options.env)}"
+        entry = index.rule_groups_by_display_name.get(display_name)
+        if entry is not None:
+            rule_group_ids[desired_slug] = entry[0]
     # Add the IDs of rule groups we just created (or would create in
     # dry-run, with a synthetic id so the policy payload still builds).
     for action in report.actions:
