@@ -580,6 +580,33 @@ def _apply_policy_relations(
 # ---- host-group resolution -----------------------------------------------
 
 
+def _lookup_host_group_ids(
+    client: FalconClient,
+    names: Iterable[str],
+    report: ApplyReport,
+) -> dict[str, str]:
+    """Resolve host-group names to ids without ever creating them.
+
+    Used for the *remove* side of host-group churn: we need an id so
+    ``perform_action remove-host-group`` can target the live record,
+    but creating a group we are about to detach is nonsensical and a
+    naive call to :func:`_resolve_host_group_ids` would do exactly
+    that under ``--create-groups``. Names that cannot be resolved are
+    recorded as warnings on the report; the applier then skips the
+    remove instead of aborting.
+    """
+    resolved: dict[str, str] = {}
+    for name in dict.fromkeys(names):
+        try:
+            record = client.host_groups.find_by_name(name)
+        except Exception as exc:  # noqa: BLE001 — surface as warning
+            report.warnings.append(f"host group lookup {name!r} failed: {exc}")
+            continue
+        if record and record.get("id"):
+            resolved[name] = str(record["id"])
+    return resolved
+
+
 def _resolve_host_group_ids(
     client: FalconClient,
     names: Iterable[str],
@@ -933,6 +960,7 @@ def apply_change_set(
     managed_group_ids = _apply_managed_host_groups(client, all_managed_changes, options, report)
 
     needed_host_groups: list[str] = []
+    remove_host_group_names: list[str] = []
     for change in (*policy_creates, *policy_updates):
         p_model = desired_policies[change.slug]
         needed_host_groups.extend(p_model.host_groups.keys())
@@ -940,7 +968,14 @@ def apply_change_set(
         for hg_change in change.host_group_changes:
             if hg_change.op == "add":
                 needed_host_groups.append(hg_change.group_name)
+            else:
+                remove_host_group_names.append(hg_change.group_name)
     host_group_ids = _resolve_host_group_ids(client, needed_host_groups, options, report)
+    # Look up (but never create) IDs for groups we are detaching. Without
+    # this, ``--create-groups`` would accidentally try to create the very
+    # group we are about to remove, and the perform_action remove call
+    # would be skipped with a "not resolved" warning.
+    host_group_ids.update(_lookup_host_group_ids(client, remove_host_group_names, report))
     # Merge managed group IDs so policy payloads can reference them.
     host_group_ids.update(managed_group_ids)
 

@@ -339,6 +339,40 @@ def test_compute_diff_update_detects_host_group_change() -> None:
     assert update.host_group_changes[0].group_name == "ABC01-Endpoints-Windows-Test"
 
 
+def test_compute_diff_emits_remove_for_cross_env_host_group_drift() -> None:
+    """A Pilot-env host group attached to the Test policy is drift.
+
+    Regression: ``_host_group_changes`` previously filtered both sides
+    by the current env, so a Pilot-named host group on the live Test
+    policy was invisible and no ``HostGroupChange(remove)`` was
+    emitted. The applier acts only on the ``HostGroupChange`` tuple,
+    so the stray group was silently retained on every apply even
+    though the change log reported ``host_groups.<group>: 'pilot' ->
+    None`` via the field-level model diff.
+    """
+    policy = _abc_policy(with_inline=False)
+    rg = _baseline_rg()
+    state = _render_live(env="test", policies=[policy], rule_groups=[rg])
+    # Swap the (correct) Test host group for the Pilot one so the live
+    # Test policy looks like it has cross-env drift: the Pilot group is
+    # attached to a Test policy.
+    state.policies[0]["groups"] = [
+        {"id": "hg-pilot", "name": "ABC01-Endpoints-Windows-Pilot"},
+    ]
+
+    repo = _repo_with(policies=[policy], rule_groups=[rg])
+    cs = compute_diff(repo, "test", state)
+    update = next(c for c in cs.updates if c.kind == "policy")
+    ops = {(hgc.op, hgc.group_name) for hgc in update.host_group_changes}
+    # The Test group should be added, the stray Pilot group removed.
+    assert ("add", "ABC01-Endpoints-Windows-Test") in ops, (
+        f"missing add for the desired Test host group: {ops}"
+    )
+    assert ("remove", "ABC01-Endpoints-Windows-Pilot") in ops, (
+        f"missing remove for the cross-env drift Pilot host group: {ops}"
+    )
+
+
 # ---- end-to-end diff: deletes / tombstones ------------------------------
 
 
