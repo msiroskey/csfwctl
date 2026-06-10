@@ -151,22 +151,39 @@ def validate(
 @app.command()
 def diff(
     ctx: typer.Context,
-    env: Annotated[Env, typer.Option("--env", help="Target environment.")],
+    env: Annotated[
+        Env | None,
+        typer.Option(
+            "--env",
+            help="Target environment. Omit to diff all environments (test/pilot/production).",
+        ),
+    ] = None,
     repo: Annotated[Path | None, typer.Option("--repo", help="Config repo path.")] = None,
     output: Annotated[
         Path | None,
         typer.Option("--output", help="Write JSON diff to this path."),
     ] = None,
+    fail_on_env_drift: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-env-drift",
+            help=(
+                "All-envs mode only: exit non-zero when a downstream env "
+                "(pilot/production) has more pending changes than test."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """Show YAML vs. live state for the named environment."""
+    """Show YAML vs. live state for one environment, or all when --env is omitted."""
     from csfwctl.diff_cmd import run_diff
 
     run_diff(
-        env.value,
+        env.value if env is not None else None,
         repo,
         output,
         profile=_profile_from_ctx(ctx),
         credentials_file=_credentials_file_from_ctx(ctx),
+        fail_on_env_drift=fail_on_env_drift,
     )
 
 

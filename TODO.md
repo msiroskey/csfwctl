@@ -5,7 +5,42 @@ Project plan: ./csfwctl-project-plan.md
 
 ## Current phase
 
+Sprint 12: Cross-env diff + richer MR comments — complete.
 Sprint 11: Policy inheritance, policy settings, and managed host groups — complete.
+
+## Sprint 12 tasks
+
+- [x] **All-envs `diff` mode.** `--env` is now optional on `csfwctl diff`;
+      omitting it runs the diff against test/pilot/production from a single
+      live fetch (the fetch is env-agnostic, so no extra API calls). New
+      `differ.MultiEnvDiff` aggregate + `compute_all_envs_diff(repo, state)`
+      hold the three `ChangeSet`s and derive the cross-env ripple warning.
+- [x] **Cross-env ripple warning.** `ChangeSet.env_scoped_change_count`
+      (locations excluded, since they are tenant-global and appear in every
+      env) drives `MultiEnvDiff.env_drift_warnings`: a downstream env
+      (pilot/production) with more pending changes than test means an
+      un-promoted change would ride along on the next downstream apply.
+      `--fail-on-env-drift` exits `2` when detected (warn + exit 0 by
+      default). Exit code `2` parallels `drift-check --fail-on-drift`.
+- [x] **Richer GitLab MR comment.** `diff.changes_detected` now carries the
+      full change set(s) in `details` (single-env: `change_set`; all-envs:
+      `change_sets` + `env_drift` / `env_drift_warnings`). The gitlab
+      notifier's `_build_markdown` renders a per-env summary table at the
+      top, a ripple callout, and a per-object detail log below — capped at
+      `MAX_DETAIL_LINES` for GitLab's note size limit. Makes planned
+      changes visible on the MR without opening the pipeline.
+- [x] **Docs:** `docs/cli_reference.md` (diff modes, ripple section, exit
+      codes, notifier payload), `docs/notifications.md` (enriched gitlab
+      comment), `docs/config-repo-ci.md` (`diff-test` → `diff-all` job),
+      `README.md` (all-envs example).
+- [x] Unit tests: 579 passing total. New differ tests cover
+      `compute_all_envs_diff` env ordering, no-drift-when-equal, downstream
+      ripple detection, `env_scoped_change_count` location exclusion, and
+      `MultiEnvDiff.to_json`. New diff_cmd tests cover all-envs render,
+      multi-env JSON output, `--fail-on-env-drift` exit code, and single-env
+      backward compatibility. New notifier tests cover single-env and
+      multi-env markdown rendering, the ripple callout, and the non-diff
+      event shape staying unchanged.
 
 ## Sprint 11 tasks
 

@@ -199,14 +199,19 @@ validate:
   script:
     - csfwctl validate --repo .
 
-# Posts a diff of planned Test changes as a comment on the MR.
-diff-test:
+# Posts a diff of planned changes across all environments as a comment on
+# the MR. Omitting --env diffs test/pilot/production in a single live
+# fetch and surfaces a cross-env ripple warning when a downstream env has
+# more pending changes than test (i.e. an un-promoted change would ride
+# along on the next pilot/production apply). Drop --fail-on-env-drift if
+# you want the ripple to warn without blocking the MR pipeline.
+diff-all:
   extends: .csfwctl-job
   stage: validate
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   script:
-    - csfwctl diff --env test --repo .
+    - csfwctl diff --repo . --fail-on-env-drift
 
 # ─── Apply — Test (automatic on merge) ───────────────────────────────────────
 
@@ -266,9 +271,16 @@ hostname and project path.
 
 | Trigger | Jobs that run |
 |---|---|
-| Merge request opened / updated | `validate`, `diff-test` |
+| Merge request opened / updated | `validate`, `diff-all` |
 | Merge to `main` | `validate`, `apply-test`, then `apply-pilot` and `apply-production` on manual trigger |
 | Scheduled pipeline | `validate`, `drift-check` |
+
+The `diff-all` job posts a per-environment diff to the MR (via the
+`gitlab` notifier configured in `csfwctl.toml`) so reviewers see the
+planned test/pilot/production changes — and any cross-env ripple — without
+opening the pipeline. With `--fail-on-env-drift` the job fails (exit `2`)
+when a downstream env has more pending changes than test, flagging an
+un-promoted change that would advance on the next pilot/production apply.
 
 **`apply-pilot`** and **`apply-production`** are `when: manual`. They appear
 in the GitLab pipeline UI as blocked jobs. Use GitLab Environments with
@@ -278,7 +290,7 @@ two for Production. Set this up in `csfwctl-config` →
 
 `CSFWCTL_ALLOW_DELETE=1` must be set in the relevant GitLab environment
 before triggering an apply job that includes deletions. The CI pipeline will
-surface planned deletions in the `diff-test` MR comment so they are visible
+surface planned deletions in the `diff-all` MR comment so they are visible
 before approval. See [Deleting a managed object](operations.md#deleting-a-managed-object).
 
 ---

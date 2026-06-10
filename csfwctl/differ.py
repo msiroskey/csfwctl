@@ -209,6 +209,21 @@ class ChangeSet:
         """``True`` when at least one create/update/delete is queued."""
         return self.total_changes > 0
 
+    @property
+    def env_scoped_change_count(self) -> int:
+        """Count of create/update/delete excluding tenant-global locations.
+
+        Locations are not env-suffixed, so an identical set of location
+        changes appears in every environment's change set. The cross-env
+        ripple comparison (see :class:`MultiEnvDiff`) excludes them so a
+        pending location change cannot mask or inflate the signal.
+        """
+        return sum(
+            1
+            for change in (*self.creates, *self.updates, *self.deletes)
+            if change.kind != KIND_LOCATION
+        )
+
     def all_actionable(self) -> list[ObjectChange]:
         """Flattened create/update/delete list in apply-order."""
         return [*self.creates, *self.updates, *self.deletes]
@@ -956,9 +971,95 @@ def compute_diff(repo: ConfigRepo, env: str, state: LiveState) -> ChangeSet:
     return cs
 
 
+# ---- multi-env aggregation ------------------------------------------------
+
+ENV_ORDER: tuple[str, ...] = ("test", "pilot", "production")
+"""Promotion order. ``compute_all_envs_diff`` iterates in this order."""
+
+
+@dataclass
+class MultiEnvDiff:
+    """All three environments' change sets from a single live fetch.
+
+    Produced by :func:`compute_all_envs_diff`: one :class:`ChangeSet` per
+    environment, each computed against the *same* :class:`LiveState`
+    snapshot (one round-trip to CrowdStrike, three in-memory passes).
+
+    The aggregate exists to surface a cross-env ripple condition. Because
+    all environments read the same config-repo YAML but apply on
+    independent gates (Test auto, Pilot/Production manual), a change merged
+    and applied to Test that has not yet been promoted shows up as a
+    pending change downstream. If a *second* change then merges, an
+    operator approving a Pilot/Production apply would unknowingly advance
+    the still-in-testing change alongside the new one. A downstream env
+    with more env-scoped pending changes than Test is the signal for that
+    condition.
+    """
+
+    change_sets: dict[str, ChangeSet] = field(default_factory=dict)
+
+    @property
+    def has_changes(self) -> bool:
+        """``True`` when any environment has at least one queued change."""
+        return any(cs.has_changes for cs in self.change_sets.values())
+
+    @property
+    def env_drift_warnings(self) -> list[str]:
+        """One warning per downstream env that exceeds Test's change count.
+
+        Compares env-scoped change counts (locations excluded) of Pilot
+        and Production against Test. An empty list means no ripple was
+        detected.
+        """
+        test = self.change_sets.get("test")
+        if test is None:
+            return []
+        baseline = test.env_scoped_change_count
+        out: list[str] = []
+        for env in ("pilot", "production"):
+            downstream = self.change_sets.get(env)
+            if downstream is None:
+                continue
+            count = downstream.env_scoped_change_count
+            if count > baseline:
+                ahead = count - baseline
+                out.append(
+                    f"{env}: {count} pending change(s) vs test's {baseline} — applying {env} "
+                    f"now would advance {ahead} change(s) not yet settled in test "
+                    f"(possible in-flight promotion riding along)"
+                )
+        return out
+
+    @property
+    def has_env_drift(self) -> bool:
+        """``True`` when at least one downstream env exceeds Test."""
+        return bool(self.env_drift_warnings)
+
+    def to_json(self) -> dict[str, Any]:
+        """Render the multi-env diff as a plain dict for ``json.dumps``."""
+        return {
+            "summary": {env: cs.to_json()["summary"] for env, cs in self.change_sets.items()},
+            "env_drift": self.has_env_drift,
+            "env_drift_warnings": list(self.env_drift_warnings),
+            "change_sets": {env: cs.to_json() for env, cs in self.change_sets.items()},
+        }
+
+
+def compute_all_envs_diff(repo: ConfigRepo, state: LiveState) -> MultiEnvDiff:
+    """Diff ``repo`` against ``state`` for every environment in one pass.
+
+    Calls :func:`compute_diff` once per env in :data:`ENV_ORDER`, reusing
+    the single ``state`` snapshot (the live fetch is env-agnostic, so no
+    extra API calls are needed). Returns a :class:`MultiEnvDiff` carrying
+    the cross-env ripple warnings.
+    """
+    return MultiEnvDiff(change_sets={env: compute_diff(repo, env, state) for env in ENV_ORDER})
+
+
 __all__ = [
     "ChangeSet",
     "DiffOp",
+    "ENV_ORDER",
     "FieldChange",
     "HostGroupChange",
     "KIND_LOCATION",
@@ -969,8 +1070,10 @@ __all__ = [
     "METADATA_SIGNATURE_TOKEN",
     "ManagedGroupChange",
     "ManagedStatus",
+    "MultiEnvDiff",
     "ObjectChange",
     "build_desired_state",
+    "compute_all_envs_diff",
     "compute_diff",
     "env_suffix",
     "env_to_host_group_env",

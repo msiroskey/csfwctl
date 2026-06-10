@@ -93,15 +93,27 @@ registration order alongside the built-ins.
 
 ## `csfwctl diff`
 
-**Implemented (Phase 4).** Compares the loaded config repo against one
-environment's live CrowdStrike state and prints a structured change set.
-Read-only against the tenant.
+**Implemented (Phase 4).** Compares the loaded config repo against
+CrowdStrike's live state and prints a structured change set. Read-only
+against the tenant.
 
 ```
-csfwctl diff --env {test|pilot|production} [--repo PATH] [--output FILE]
+csfwctl diff [--env {test|pilot|production}] [--repo PATH] [--output FILE]
+             [--fail-on-env-drift]
 ```
 
-What it produces:
+Two modes:
+
+- **Single env** (`--env test`): diffs the config repo against the named
+  environment only.
+- **All envs** (`--env` omitted): fetches live state once and diffs it
+  against all three environments. The live fetch is env-agnostic, so this
+  is a single round-trip to CrowdStrike plus three in-memory passes — no
+  extra API cost. Renders a combined per-env summary table followed by a
+  per-env detail log, and surfaces a **cross-env ripple warning** when a
+  downstream env (pilot/production) carries more pending changes than test.
+
+What it produces (single env):
 
 - A summary table on stdout listing the counts of creates, updates,
   deletes, no-change objects, unmanaged live-only objects, and any
@@ -111,7 +123,32 @@ What it produces:
   lines for policies.
 - A "no changes" line when desired and live converge.
 - The same change set as JSON written to ``--output PATH`` if given,
-  ready for MR comments and (in Phase 5) the applier to consume.
+  ready for MR comments and the applier to consume.
+
+What it produces (all envs):
+
+- A combined table with one row per environment.
+- A `⚠ cross-env ripple detected` callout listing each downstream env
+  whose pending-change count exceeds test's, followed by per-env detail
+  logs.
+- A multi-env JSON document to ``--output PATH`` (keys: `summary`,
+  `env_drift`, `env_drift_warnings`, `change_sets`).
+
+### Cross-env ripple warning
+
+Because all three environments read the same config-repo YAML but apply on
+independent gates (Test auto on merge, Pilot/Production manual), a change
+that was merged and applied to Test but **not yet promoted** shows up as a
+pending change downstream. If a *second* change then merges, an operator
+approving a Pilot/Production apply would unknowingly advance the
+still-in-testing change alongside the new one.
+
+The all-envs diff detects this: a downstream env with more *env-scoped*
+pending changes than Test (tenant-global locations are excluded from the
+comparison, since they appear identically in every env) is reported as a
+ripple. With `--fail-on-env-drift`, the command exits `2` when a ripple is
+detected so a pipeline can block on it; without the flag it warns and
+exits `0`.
 
 Behaviour notes:
 
@@ -133,7 +170,19 @@ Behaviour notes:
 
 Exit codes: ``0`` on success regardless of whether changes were
 detected. ``1`` if the config repo fails to load or if the live-state
-fetch errors out.
+fetch errors out. ``2`` in all-envs mode when ``--fail-on-env-drift`` is
+set and a cross-env ripple is detected.
+
+### Notifier payload
+
+When the diff finds changes it emits a `diff.changes_detected` event. In
+single-env mode the event's `details` carries the full change set under
+`change_set`; in all-envs mode it carries every env's change set under
+`change_sets` plus `env_drift` / `env_drift_warnings`. The GitLab notifier
+renders this into an MR comment — a per-env summary table at the top, the
+ripple warning (if any) as a callout, and a per-object detail log below —
+so the planned changes are visible on the merge request without opening the
+pipeline. See [docs/notifications.md](notifications.md).
 
 ## `csfwctl drift-check`
 
