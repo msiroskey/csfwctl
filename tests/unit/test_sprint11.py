@@ -77,6 +77,7 @@ def _rg(name: str = "baseline", platform: Platform = Platform.windows) -> RuleGr
 def test_policy_settings_defaults() -> None:
     ps = PolicySettings()
     assert ps.enforcement_mode is None
+    assert ps.local_logging is None
     assert ps.default_inbound is None
     assert ps.default_outbound is None
 
@@ -91,9 +92,17 @@ def test_policy_settings_monitor() -> None:
     assert ps.enforcement_mode is EnforcementMode.monitor
 
 
-def test_policy_settings_local_logging() -> None:
-    ps = PolicySettings(enforcement_mode="local_logging")
-    assert ps.enforcement_mode is EnforcementMode.local_logging
+def test_policy_settings_disabled() -> None:
+    ps = PolicySettings(enforcement_mode="disabled")
+    assert ps.enforcement_mode is EnforcementMode.disabled
+
+
+def test_policy_settings_local_logging_independent() -> None:
+    # Local logging is independent of enforcement mode and may be enabled
+    # even when enforcement is disabled.
+    ps = PolicySettings(enforcement_mode="disabled", local_logging=True)
+    assert ps.enforcement_mode is EnforcementMode.disabled
+    assert ps.local_logging is True
 
 
 def test_policy_settings_default_traffic() -> None:
@@ -460,18 +469,29 @@ def test_policy_to_api_shape_enforce_mode() -> None:
     p = _policy(settings=PolicySettings(enforcement_mode="enforce"))
     shape = policy_to_api_shape(p, "test")
     assert shape["settings"]["enforce"] is True
-    assert shape["settings"]["local_logging"] is False
+    assert shape["settings"]["test_mode"] is False
+    # local_logging is independent; unset means it is not emitted.
+    assert "local_logging" not in shape["settings"]
 
 
 def test_policy_to_api_shape_monitor_mode() -> None:
     p = _policy(settings=PolicySettings(enforcement_mode="monitor"))
     shape = policy_to_api_shape(p, "test")
+    # monitor requires enforcement enabled; test_mode distinguishes it.
+    assert shape["settings"]["enforce"] is True
+    assert shape["settings"]["test_mode"] is True
+
+
+def test_policy_to_api_shape_disabled_mode() -> None:
+    p = _policy(settings=PolicySettings(enforcement_mode="disabled"))
+    shape = policy_to_api_shape(p, "test")
     assert shape["settings"]["enforce"] is False
-    assert shape["settings"]["local_logging"] is False
+    assert shape["settings"]["test_mode"] is False
 
 
-def test_policy_to_api_shape_local_logging() -> None:
-    p = _policy(settings=PolicySettings(enforcement_mode="local_logging"))
+def test_policy_to_api_shape_local_logging_independent() -> None:
+    # Local logging can be enabled even while enforcement is disabled.
+    p = _policy(settings=PolicySettings(enforcement_mode="disabled", local_logging=True))
     shape = policy_to_api_shape(p, "test")
     assert shape["settings"]["enforce"] is False
     assert shape["settings"]["local_logging"] is True
@@ -499,11 +519,30 @@ def test_policy_from_api_reads_enforce_settings() -> None:
 
 def test_policy_from_api_reads_monitor_mode() -> None:
     record = _base_policy_api_record()
-    record["settings"]["enforce"] = False
-    record["settings"]["local_logging"] = False
+    record["settings"]["enforce"] = True
+    record["settings"]["test_mode"] = True
     p = policy_from_api(record, rule_groups_by_id={})
     assert p.settings is not None
     assert p.settings.enforcement_mode is EnforcementMode.monitor
+
+
+def test_policy_from_api_reads_disabled_mode() -> None:
+    record = _base_policy_api_record()
+    record["settings"]["enforce"] = False
+    record["settings"]["test_mode"] = False
+    p = policy_from_api(record, rule_groups_by_id={})
+    assert p.settings is not None
+    assert p.settings.enforcement_mode is EnforcementMode.disabled
+
+
+def test_policy_from_api_reads_local_logging_independent() -> None:
+    record = _base_policy_api_record()
+    record["settings"]["enforce"] = False
+    record["settings"]["local_logging"] = True
+    p = policy_from_api(record, rule_groups_by_id={})
+    assert p.settings is not None
+    assert p.settings.enforcement_mode is EnforcementMode.disabled
+    assert p.settings.local_logging is True
 
 
 def test_policy_from_api_no_settings_when_absent() -> None:

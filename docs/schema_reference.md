@@ -44,23 +44,29 @@ Precedence buckets: `emergency` `high` `medium` `default` `low`.
 
 ## PolicySettings (`settings` block inside a policy)
 
-| Field              | Type                                           | Notes                                                                              |
-|--------------------|------------------------------------------------|------------------------------------------------------------------------------------|
-| `enforcement_mode` | `enforce` \| `monitor` \| `local_logging`      | Maps to CrowdStrike's `enforce`/`local_logging` booleans. Default: API default.    |
-| `default_inbound`  | `allow` \| `deny`                              | Default action for inbound traffic not matched by any rule.                        |
-| `default_outbound` | `allow` \| `deny`                              | Default action for outbound traffic not matched by any rule.                       |
+| Field              | Type                                      | Notes                                                                              |
+|--------------------|-------------------------------------------|------------------------------------------------------------------------------------|
+| `enforcement_mode` | `enforce` \| `monitor` \| `disabled`      | Maps to CrowdStrike's `enforce`/`test_mode` booleans. Default: API default.        |
+| `local_logging`    | bool                                      | Independent of `enforcement_mode`. Default: API default.                           |
+| `default_inbound`  | `allow` \| `deny`                         | Default action for inbound traffic not matched by any rule.                        |
+| `default_outbound` | `allow` \| `deny`                         | Default action for outbound traffic not matched by any rule.                       |
 
-All three fields are optional. If `settings` is omitted the policy inherits the
+All four fields are optional. If `settings` is omitted the policy inherits the
 tenant's global defaults.
 
 `enforcement_mode` values:
 
 - `enforce` — policy is fully enforced; block rules block traffic.
-- `monitor` — monitor-only mode; all traffic is allowed but block events are
-  recorded as "would be blocked". Equivalent to setting CrowdStrike's
-  `enforce: false, local_logging: false`.
-- `local_logging` — block rules block traffic and events are written to the
-  local event log without being sent to the cloud.
+  (`enforce: true, test_mode: false`)
+- `monitor` — rules are evaluated but no traffic is dropped; block events are
+  recorded as "would be blocked". The console requires enforcement to be
+  enabled for monitor mode, so this maps to `enforce: true, test_mode: true`.
+- `disabled` — the firewall policy does not enforce any rules.
+  (`enforce: false`)
+
+`local_logging` is **not** part of the enforcement mode. It toggles
+CrowdStrike's `local_logging` boolean independently — local event logging can
+be enabled even when `enforcement_mode` is `disabled`.
 
 ## Policy inheritance
 

@@ -65,6 +65,18 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
 
 ## Bug fixes
 
+- [x] **`enforcement_mode` conflated local logging with enforcement and
+      lacked a `disabled` mode.** The enum was `enforce | monitor |
+      local_logging`, with `monitor` wrongly mapped to `enforce: false`.
+      In the console, `monitor` requires enforcement *enabled* and local
+      logging is an independent toggle. Fix: enum is now `enforce |
+      monitor | disabled`; `monitor` maps to `enforce: true, test_mode:
+      true`, `disabled` to `enforce: false`. Added an independent
+      `local_logging: bool` field on `PolicySettings` (maps straight to
+      the container `local_logging` boolean, can be set even when
+      enforcement is disabled). Updated applier, exporter importer +
+      `policy_to_api_shape`, `docs/schema_reference.md`, README, and
+      tests.
 - [x] **Bootstrap rule-group update rejected with HTTP 400.** The
       `firewall_rule_groups.update` endpoint is diff-based: it has no
       top-level `description` field and requires `diff_type`

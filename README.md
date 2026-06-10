@@ -335,13 +335,17 @@ The full `settings` block with all options:
 
 ```yaml
 settings:
-  enforcement_mode: enforce       # enforce | monitor | local_logging
+  enforcement_mode: enforce       # enforce | monitor | disabled
+  local_logging:    true          # independent of enforcement_mode
   default_inbound:  deny          # allow | deny
   default_outbound: allow         # allow | deny
 ```
 
-If `settings` is omitted the tenant's global defaults apply. All three
-fields are independently optional.
+If `settings` is omitted the tenant's global defaults apply. All four
+fields are independently optional. `monitor` mode keeps enforcement
+enabled (the console requires it) but drops no traffic; `local_logging`
+is a separate toggle that can be enabled even when `enforcement_mode` is
+`disabled`.
 
 ### Managed host groups
 

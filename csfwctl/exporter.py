@@ -671,20 +671,22 @@ def policy_from_api(
     # Parse optional enforcement and default-traffic settings.
     policy_settings: PolicySettings | None = None
     enforce_val = settings.get("enforce")
-    local_logging_val = settings.get("local_logging", False)
+    test_mode_val = settings.get("test_mode")
+    local_logging_val = settings.get("local_logging")
     inbound_val = settings.get("inbound")
     outbound_val = settings.get("outbound")
-    if any(v is not None for v in (enforce_val, inbound_val, outbound_val)):
+    if any(v is not None for v in (enforce_val, local_logging_val, inbound_val, outbound_val)):
         enforcement_mode: EnforcementMode | None = None
         if enforce_val is not None:
-            if local_logging_val:
-                enforcement_mode = EnforcementMode.local_logging
-            elif enforce_val:
-                enforcement_mode = EnforcementMode.enforce
-            else:
+            if not enforce_val:
+                enforcement_mode = EnforcementMode.disabled
+            elif test_mode_val:
                 enforcement_mode = EnforcementMode.monitor
+            else:
+                enforcement_mode = EnforcementMode.enforce
         policy_settings = PolicySettings(
             enforcement_mode=enforcement_mode,
+            local_logging=(bool(local_logging_val) if local_logging_val is not None else None),
             default_inbound=(DefaultTrafficAction(inbound_val.lower()) if inbound_val else None),
             default_outbound=(DefaultTrafficAction(outbound_val.lower()) if outbound_val else None),
         )
@@ -765,8 +767,15 @@ def policy_to_api_shape(policy: Policy, env: str) -> dict[str, Any]:
     if policy.settings is not None:
         ps = policy.settings
         if ps.enforcement_mode is not None:
-            api_settings["enforce"] = ps.enforcement_mode is EnforcementMode.enforce
-            api_settings["local_logging"] = ps.enforcement_mode is EnforcementMode.local_logging
+            # ``monitor`` requires enforcement enabled; ``test_mode`` is what
+            # distinguishes it from a full ``enforce``.
+            api_settings["enforce"] = ps.enforcement_mode in (
+                EnforcementMode.enforce,
+                EnforcementMode.monitor,
+            )
+            api_settings["test_mode"] = ps.enforcement_mode is EnforcementMode.monitor
+        if ps.local_logging is not None:
+            api_settings["local_logging"] = ps.local_logging
         if ps.default_inbound is not None:
             api_settings["inbound"] = ps.default_inbound.upper()
         if ps.default_outbound is not None:
