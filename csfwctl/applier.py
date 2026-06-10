@@ -396,8 +396,15 @@ def _build_policy_payload(
         if ps.enforcement_mode is not None:
             from csfwctl.schema.policy_settings import EnforcementMode
 
-            settings["enforce"] = ps.enforcement_mode is EnforcementMode.enforce
-            settings["local_logging"] = ps.enforcement_mode is EnforcementMode.local_logging
+            # ``monitor`` requires enforcement enabled; ``test_mode`` is what
+            # distinguishes it from a full ``enforce``.
+            settings["enforce"] = ps.enforcement_mode in (
+                EnforcementMode.enforce,
+                EnforcementMode.monitor,
+            )
+            settings["test_mode"] = ps.enforcement_mode is EnforcementMode.monitor
+        if ps.local_logging is not None:
+            settings["local_logging"] = ps.local_logging
         if ps.default_inbound is not None:
             settings["inbound"] = ps.default_inbound.upper()
         if ps.default_outbound is not None:
@@ -508,14 +515,22 @@ def _apply_policy_relations(
     desired_inbound: str | None = None
     desired_outbound: str | None = None
     desired_enforce: bool | None = None
+    desired_test_mode: bool | None = None
     desired_local_logging: bool | None = None
     if policy.settings is not None:
         from csfwctl.schema.policy_settings import EnforcementMode
 
         ps = policy.settings
         if ps.enforcement_mode is not None:
-            desired_enforce = ps.enforcement_mode is EnforcementMode.enforce
-            desired_local_logging = ps.enforcement_mode is EnforcementMode.local_logging
+            # ``monitor`` requires enforcement enabled; ``test_mode`` is what
+            # distinguishes it from a full ``enforce``.
+            desired_enforce = ps.enforcement_mode in (
+                EnforcementMode.enforce,
+                EnforcementMode.monitor,
+            )
+            desired_test_mode = ps.enforcement_mode is EnforcementMode.monitor
+        if ps.local_logging is not None:
+            desired_local_logging = ps.local_logging
         if ps.default_inbound is not None:
             desired_inbound = ps.default_inbound.upper()
         if ps.default_outbound is not None:
@@ -535,7 +550,9 @@ def _apply_policy_relations(
         "enforce": _resolve_container_bool(
             desired_enforce, existing_container.get("enforce"), False
         ),
-        "test_mode": _resolve_container_bool(None, existing_container.get("test_mode"), False),
+        "test_mode": _resolve_container_bool(
+            desired_test_mode, existing_container.get("test_mode"), False
+        ),
         "local_logging": _resolve_container_bool(
             desired_local_logging, existing_container.get("local_logging"), False
         ),
