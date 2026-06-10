@@ -675,10 +675,7 @@ def policy_from_api(
     local_logging_val = settings.get("local_logging")
     inbound_val = settings.get("inbound")
     outbound_val = settings.get("outbound")
-    if any(
-        v is not None
-        for v in (enforce_val, local_logging_val, inbound_val, outbound_val)
-    ):
+    if any(v is not None for v in (enforce_val, local_logging_val, inbound_val, outbound_val)):
         enforcement_mode: EnforcementMode | None = None
         if enforce_val is not None:
             if not enforce_val:
