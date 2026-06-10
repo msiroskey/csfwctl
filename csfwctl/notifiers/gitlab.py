@@ -32,6 +32,7 @@ import json
 import os
 import re
 import urllib.request
+from typing import Any
 
 from csfwctl.notifiers import Event, event_matches
 from csfwctl.schema.tool_config import NotifierConfig
@@ -123,8 +124,22 @@ class GitLabNotifier:
             pass
 
 
+MAX_DETAIL_LINES = 400
+"""Cap on rendered per-object detail lines so a huge change set cannot
+blow past GitLab's note size limit. Truncated output ends with a count
+of how many lines were dropped."""
+
+
 def _build_markdown(event: Event) -> str:
-    """Build a Markdown comment body for a GitLab MR note."""
+    """Build a Markdown comment body for a GitLab MR note.
+
+    Always renders the header, summary, and metadata table. When the
+    event carries diff detail in ``details`` — a multi-env diff
+    (``change_sets``) or a single change set (``change_set``) — a
+    per-environment summary table is rendered first, followed by a
+    per-object detail log. Cross-env ripple warnings, when present, are
+    surfaced as a callout above the tables.
+    """
     icon = {"error": "🔴", "warn": "🟡", "info": "🔵"}.get(event.severity, "⚪")
     lines = [
         f"{icon} **csfwctl {event.type}**",
@@ -139,4 +154,97 @@ def _build_markdown(event: Event) -> str:
         f"| Request ID | `{event.request_id}` |",
         f"| Timestamp | `{event.timestamp.isoformat()}` |",
     ]
+
+    detail = _render_diff_detail(event.details)
+    if detail:
+        lines.append("")
+        lines.extend(detail)
+
     return "\n".join(lines)
+
+
+def _render_diff_detail(details: dict[str, Any]) -> list[str]:
+    """Render diff tables + per-object detail from an event's ``details``.
+
+    Returns an empty list when ``details`` carries no recognised diff
+    payload, so non-diff events (apply, validate, drift) keep their
+    existing comment shape.
+    """
+    change_sets = _change_sets_from_details(details)
+    if not change_sets:
+        return []
+
+    lines: list[str] = []
+
+    warnings = details.get("env_drift_warnings") or []
+    if warnings:
+        lines.append("> ⚠️ **Cross-env ripple detected** — a downstream env has more pending")
+        lines.append("> changes than test; an apply there may advance still-in-testing changes.")
+        for warning in warnings:
+            lines.append(f"> - {warning}")
+        lines.append("")
+
+    # Summary table — one row per environment, at the top.
+    lines.append("| Env | creates | updates | deletes | no-change | unmanaged |")
+    lines.append("| --- | ------- | ------- | ------- | --------- | --------- |")
+    for env, cs in change_sets.items():
+        summary = cs.get("summary", {})
+        lines.append(
+            f"| `{env}` | {summary.get('creates', 0)} | {summary.get('updates', 0)} "
+            f"| {summary.get('deletes', 0)} | {summary.get('no_changes', 0)} "
+            f"| {summary.get('unmanaged', 0)} |"
+        )
+    lines.append("")
+
+    # Per-object detail log below the table.
+    detail: list[str] = []
+    for env, cs in change_sets.items():
+        env_detail = _render_change_set_detail(cs)
+        if not env_detail:
+            continue
+        detail.append(f"#### {env}")
+        detail.extend(env_detail)
+        detail.append("")
+
+    if len(detail) > MAX_DETAIL_LINES:
+        dropped = len(detail) - MAX_DETAIL_LINES
+        detail = detail[:MAX_DETAIL_LINES]
+        detail.append(f"_… {dropped} more line(s) truncated; see the pipeline for the full diff._")
+
+    lines.extend(detail)
+    return lines
+
+
+def _change_sets_from_details(details: dict[str, Any]) -> dict[str, Any]:
+    """Normalise ``details`` into an ordered ``{env: change_set_json}`` map.
+
+    Accepts the multi-env shape (``change_sets``) and the single-env shape
+    (``change_set``). Returns ``{}`` for anything else.
+    """
+    multi = details.get("change_sets")
+    if isinstance(multi, dict) and multi:
+        return multi
+    single = details.get("change_set")
+    if isinstance(single, dict) and single:
+        return {str(single.get("env", "—")): single}
+    return {}
+
+
+def _render_change_set_detail(cs: dict[str, Any]) -> list[str]:
+    """Render the create/update/delete object detail for one change set."""
+    lines: list[str] = []
+    for section in ("creates", "updates", "deletes"):
+        items = cs.get(section) or []
+        if not items:
+            continue
+        lines.append(f"**{section}** ({len(items)})")
+        for obj in items:
+            line = f"- `{obj.get('op', '?')}` {obj.get('kind', '?')} **{obj.get('display_name', '?')}**"
+            if obj.get("reason"):
+                line += f" — {obj['reason']}"
+            lines.append(line)
+            for fc in obj.get("field_changes", []):
+                lines.append(f"    - `{fc['path']}`: `{fc['before']}` → `{fc['after']}`")
+            for hg in obj.get("host_group_changes", []):
+                lines.append(f"    - host group {hg['op']}: `{hg['group_name']}`")
+    return lines

@@ -444,6 +444,106 @@ def test_build_markdown_contains_event_fields() -> None:
     assert "🔴" in md
 
 
+def test_build_markdown_renders_single_env_diff_detail() -> None:
+    """A ``change_set`` in details produces a summary table + object detail."""
+    ev = _sample_event(
+        type="diff.changes_detected",
+        severity="warn",
+        env="test",
+        details={
+            "change_set": {
+                "env": "test",
+                "summary": {
+                    "creates": 1,
+                    "updates": 0,
+                    "deletes": 0,
+                    "no_changes": 0,
+                    "unmanaged": 0,
+                    "warnings": 0,
+                },
+                "creates": [
+                    {
+                        "kind": "policy",
+                        "op": "create",
+                        "slug": "abc01-endpoints-windows",
+                        "display_name": "ABC01-Endpoints-Windows-Test",
+                        "managed": "new",
+                    }
+                ],
+                "updates": [],
+                "deletes": [],
+            }
+        },
+    )
+    md = _build_markdown(ev)
+    assert "| Env | creates" in md
+    assert "**creates** (1)" in md
+    assert "ABC01-Endpoints-Windows-Test" in md
+
+
+def test_build_markdown_renders_multi_env_diff_with_ripple_warning() -> None:
+    """A multi-env ``change_sets`` payload renders per-env detail + warning."""
+    ev = _sample_event(
+        type="diff.changes_detected",
+        severity="warn",
+        env=None,
+        details={
+            "env_drift": True,
+            "env_drift_warnings": ["pilot: 2 pending change(s) vs test's 0 — ..."],
+            "change_sets": {
+                "test": {
+                    "env": "test",
+                    "summary": {
+                        "creates": 0,
+                        "updates": 0,
+                        "deletes": 0,
+                        "no_changes": 0,
+                        "unmanaged": 0,
+                        "warnings": 0,
+                    },
+                    "creates": [],
+                    "updates": [],
+                    "deletes": [],
+                },
+                "pilot": {
+                    "env": "pilot",
+                    "summary": {
+                        "creates": 1,
+                        "updates": 0,
+                        "deletes": 0,
+                        "no_changes": 0,
+                        "unmanaged": 0,
+                        "warnings": 0,
+                    },
+                    "creates": [
+                        {
+                            "kind": "policy",
+                            "op": "create",
+                            "slug": "abc01-endpoints-windows",
+                            "display_name": "ABC01-Endpoints-Windows-Pilot",
+                            "managed": "new",
+                        }
+                    ],
+                    "updates": [],
+                    "deletes": [],
+                },
+            },
+        },
+    )
+    md = _build_markdown(ev)
+    assert "Cross-env ripple detected" in md
+    assert "pilot: 2 pending" in md
+    assert "#### pilot" in md
+    assert "ABC01-Endpoints-Windows-Pilot" in md
+
+
+def test_build_markdown_no_diff_detail_for_non_diff_event() -> None:
+    """Apply/validate events keep their original comment shape."""
+    ev = _sample_event(type="apply.succeeded", details={"report": {}})
+    md = _build_markdown(ev)
+    assert "| Env | creates" not in md
+
+
 def test_gitlab_notifier_supports_glob(monkeypatch: pytest.MonkeyPatch) -> None:
     _gitlab_env(monkeypatch)
     cfg = NotifierConfig(events=["diff.*"], **{})

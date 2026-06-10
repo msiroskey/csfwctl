@@ -19,6 +19,7 @@ from csfwctl.differ import (
     LiveState,
     ManagedStatus,
     build_desired_state,
+    compute_all_envs_diff,
     compute_diff,
     env_suffix,
     is_managed_description,
@@ -580,6 +581,82 @@ def test_change_set_to_json_round_trips() -> None:
     assert parsed["summary"]["updates"] == 1
     assert parsed["updates"][0]["kind"] == "rule-group"
     assert parsed["updates"][0]["op"] == "update"
+
+
+# ---- multi-env aggregation ----------------------------------------------
+
+
+def test_compute_all_envs_diff_runs_every_env() -> None:
+    """One fetch, three change sets keyed by env in promotion order."""
+    repo = _repo_with(
+        policies=[_abc_policy(with_inline=False)],
+        rule_groups=[_baseline_rg()],
+    )
+    multi = compute_all_envs_diff(repo, LiveState())
+    assert list(multi.change_sets.keys()) == ["test", "pilot", "production"]
+    # Empty live -> every env shows the same creates.
+    assert all(cs.has_changes for cs in multi.change_sets.values())
+
+
+def test_compute_all_envs_diff_no_env_drift_when_all_equal() -> None:
+    """All envs equally behind (empty live) -> no ripple warning."""
+    repo = _repo_with(
+        policies=[_abc_policy(with_inline=False)],
+        rule_groups=[_baseline_rg()],
+        locations=[Location(name="corp-vpn", addresses=["10.100.0.0/16"])],
+    )
+    multi = compute_all_envs_diff(repo, LiveState())
+    assert multi.has_changes is True
+    assert multi.has_env_drift is False
+    assert multi.env_drift_warnings == []
+
+
+def test_compute_all_envs_diff_detects_downstream_ripple() -> None:
+    """Test converged but pilot/production behind -> ripple warnings."""
+    rg = _baseline_rg()
+    policy = _abc_policy(with_inline=False)
+    repo = _repo_with(policies=[policy], rule_groups=[rg])
+    # Live carries only the test-env records, so test is converged while
+    # pilot and production still need the policy + rule group created.
+    state = _render_live(env="test", policies=[policy], rule_groups=[rg])
+
+    multi = compute_all_envs_diff(repo, state)
+    assert multi.change_sets["test"].has_changes is False
+    assert multi.change_sets["pilot"].has_changes is True
+    assert multi.change_sets["production"].has_changes is True
+    assert multi.has_env_drift is True
+    warnings = multi.env_drift_warnings
+    assert len(warnings) == 2
+    assert any(w.startswith("pilot:") for w in warnings)
+    assert any(w.startswith("production:") for w in warnings)
+
+
+def test_env_scoped_change_count_excludes_locations() -> None:
+    """Tenant-global location changes don't count toward the ripple signal."""
+    repo = _repo_with(
+        locations=[Location(name="corp-vpn", addresses=["10.100.0.0/16"])],
+    )
+    cs = compute_diff(repo, "test", LiveState())
+    # One location create, but it is excluded from the env-scoped count.
+    assert cs.total_changes == 1
+    assert cs.env_scoped_change_count == 0
+
+
+def test_multi_env_diff_to_json_shape() -> None:
+    import json
+
+    rg = _baseline_rg()
+    policy = _abc_policy(with_inline=False)
+    repo = _repo_with(policies=[policy], rule_groups=[rg])
+    state = _render_live(env="test", policies=[policy], rule_groups=[rg])
+
+    multi = compute_all_envs_diff(repo, state)
+    payload = json.loads(json.dumps(multi.to_json()))
+    assert set(payload["summary"].keys()) == {"test", "pilot", "production"}
+    assert payload["env_drift"] is True
+    assert len(payload["env_drift_warnings"]) == 2
+    assert set(payload["change_sets"].keys()) == {"test", "pilot", "production"}
+    assert payload["change_sets"]["test"]["env"] == "test"
 
 
 # ---- unknown env --------------------------------------------------------

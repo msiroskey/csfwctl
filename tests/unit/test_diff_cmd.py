@@ -140,3 +140,99 @@ def test_diff_no_changes_shows_summary(
     result = runner.invoke(app, ["diff", "--env", "test", "--repo", str(empty_repo)])
     assert result.exit_code == 0, result.output + result.stderr
     assert "no changes" in result.output
+
+
+# ---- all-envs mode (--env omitted) --------------------------------------
+
+
+def test_diff_all_envs_renders_combined_table(
+    realistic_repo_root: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Omitting --env runs the all-envs diff and prints the combined table."""
+    monkeypatch.setattr(
+        "csfwctl.diff_cmd._default_state_provider",
+        lambda profile, credentials_file: lambda: LiveState(),
+    )
+    result = runner.invoke(app, ["diff", "--repo", str(realistic_repo_root)])
+    assert result.exit_code == 0, result.output + result.stderr
+    assert "all environments" in result.output
+    # Each env appears as its own detail section.
+    for env in ("test", "pilot", "production"):
+        assert env in result.output
+
+
+def test_diff_all_envs_writes_multi_env_json(realistic_repo_root: Path, tmp_path: Path) -> None:
+    """All-envs ``--output`` carries the multi-env JSON shape."""
+    from csfwctl.diff_cmd import run_diff
+
+    output = tmp_path / "all.json"
+    try:
+        run_diff(
+            env=None,
+            repo=realistic_repo_root,
+            output=output,
+            state_provider=lambda: LiveState(),
+        )
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert set(payload["change_sets"].keys()) == {"test", "pilot", "production"}
+    assert "env_drift" in payload
+
+
+def test_diff_all_envs_fail_on_env_drift_exits_nonzero(
+    realistic_repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--fail-on-env-drift`` exits ENV_DRIFT_EXIT_CODE when a ripple is found."""
+    from csfwctl import diff_cmd
+    from csfwctl.differ import (
+        KIND_POLICY,
+        ChangeSet,
+        DiffOp,
+        ManagedStatus,
+        MultiEnvDiff,
+        ObjectChange,
+    )
+
+    def fake_multi(_config: Any, _state: Any) -> MultiEnvDiff:
+        test = ChangeSet(env="test")
+        pilot = ChangeSet(env="pilot")
+        pilot.creates.append(
+            ObjectChange(
+                kind=KIND_POLICY,
+                op=DiffOp.create,
+                slug="abc01-endpoints-windows",
+                display_name="ABC01-Endpoints-Windows-Pilot",
+                managed=ManagedStatus.new,
+            )
+        )
+        production = ChangeSet(env="production")
+        return MultiEnvDiff(change_sets={"test": test, "pilot": pilot, "production": production})
+
+    monkeypatch.setattr(diff_cmd, "compute_all_envs_diff", fake_multi)
+
+    import typer
+
+    with pytest.raises(typer.Exit) as excinfo:
+        diff_cmd.run_diff(
+            env=None,
+            repo=realistic_repo_root,
+            output=None,
+            state_provider=lambda: LiveState(),
+            fail_on_env_drift=True,
+        )
+    assert excinfo.value.exit_code == diff_cmd.ENV_DRIFT_EXIT_CODE
+
+
+def test_diff_single_env_still_works_with_explicit_env(
+    realistic_repo_root: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backward compatibility: ``--env test`` keeps the single-env output."""
+    monkeypatch.setattr(
+        "csfwctl.diff_cmd._default_state_provider",
+        lambda profile, credentials_file: lambda: LiveState(),
+    )
+    result = runner.invoke(app, ["diff", "--env", "test", "--repo", str(realistic_repo_root)])
+    assert result.exit_code == 0, result.output + result.stderr
+    assert "csfwctl diff --env test" in result.output

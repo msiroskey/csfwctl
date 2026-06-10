@@ -118,6 +118,25 @@ The `token_env` name must start with `GITLAB_` or `CI_` and contain
 `CI_`; `api_url` must use `https://`. See the
 [Security boundary](#security-boundary) section below.
 
+Every comment carries the header, summary, and a metadata table
+(environment, git SHA, severity, request id, timestamp). When the event
+carries diff detail — `diff.changes_detected` events do — the comment is
+enriched:
+
+- A **per-env summary table** at the top (creates / updates / deletes /
+  no-change / unmanaged), one row per environment.
+- A **cross-env ripple callout** (`⚠️ Cross-env ripple detected`) when the
+  all-envs diff found a downstream env with more pending changes than test.
+- A **per-object detail log** below the table: one bullet per
+  create/update/delete with its field-level changes and host-group
+  add/remove lines.
+
+The detail log is capped (see `MAX_DETAIL_LINES`) so a very large change
+set cannot exceed GitLab's note size limit; truncated comments end with a
+pointer to the pipeline for the full diff. This is what makes the planned
+changes (and the ripple warning) visible directly on the merge request
+without opening the pipeline.
+
 ### `syslog` — RFC 5424 UDP syslog
 
 Sends RFC 5424-formatted datagrams over UDP to a remote syslog daemon.

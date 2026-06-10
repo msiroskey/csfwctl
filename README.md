@@ -122,6 +122,7 @@ Every change starts with a local validate + diff:
 csfwctl validate --repo .                    # schema + cross-ref + lint
 csfwctl validate --repo . --strict           # promote lint warnings to fatal
 csfwctl diff     --repo . --env test         # vs. live Test state
+csfwctl diff     --repo .                     # all envs + cross-env ripple check
 csfwctl status   --repo . --all-envs         # per-object version per env
 csfwctl precedence --repo . --env production # resolved policy order
 ```

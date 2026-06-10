@@ -3,6 +3,16 @@
 Kept separate from :mod:`csfwctl.cli` so the command body can be tested
 without the Typer runner. Follows the same pattern as
 ``validate_cmd`` and ``import_cmd``.
+
+Two modes:
+
+- **Single env** (``--env test``): compares the config repo against one
+  environment's live state and renders that change set.
+- **All envs** (``--env`` omitted): fetches live state once and diffs it
+  against all three environments (test/pilot/production), rendering a
+  combined view plus a cross-env ripple warning when a downstream env
+  (pilot/production) carries more pending changes than test. See
+  :class:`csfwctl.differ.MultiEnvDiff`.
 """
 
 from __future__ import annotations
@@ -22,29 +32,47 @@ from csfwctl.differ import (
     DiffOp,
     LiveState,
     ManagedStatus,
+    MultiEnvDiff,
     ObjectChange,
+    compute_all_envs_diff,
     compute_diff,
     fetch_live_state,
 )
 from csfwctl.falcon.client import FalconAPIError, FalconClient
-from csfwctl.loader import ConfigRepoError, load_config_repo
-from csfwctl.notifiers import emit, make_event, setup_notifiers
+from csfwctl.loader import ConfigRepo, ConfigRepoError, load_config_repo
+from csfwctl.notifiers import Notifier, emit, make_event, setup_notifiers
+
+ENV_DRIFT_EXIT_CODE = 2
+"""Exit code when ``--fail-on-env-drift`` is set and a ripple is detected.
+
+Distinct from ``1`` (config-repo load / live-fetch failure) so a pipeline
+can tell a successful-but-blocked run from an error. Parallels
+``drift-check --fail-on-drift``.
+"""
 
 
 def run_diff(
-    env: str,
+    env: str | None,
     repo: Path | None,
     output: Path | None,
     *,
     profile: str | None = None,
     credentials_file: Path | None = None,
     state_provider: Any = None,
+    fail_on_env_drift: bool = False,
 ) -> None:
-    """Compute a ``ConfigRepo``-vs-live diff for ``env`` and render it.
+    """Compute a ``ConfigRepo``-vs-live diff and render it.
 
-    ``state_provider`` is an optional callable ``(FalconClient) -> LiveState``
-    that tests can pass to bypass the real API. When ``None`` the real
+    When ``env`` is ``None`` the diff runs across all three environments
+    (all-envs mode); otherwise it runs for the single named env.
+
+    ``state_provider`` is an optional callable ``() -> LiveState`` that
+    tests can pass to bypass the real API. When ``None`` the real
     :func:`fetch_live_state` runs.
+
+    ``fail_on_env_drift`` only applies in all-envs mode: when set and a
+    downstream env exceeds test's change count, the command exits
+    :data:`ENV_DRIFT_EXIT_CODE`.
     """
     out = Console()
     err = Console(stderr=True)
@@ -65,35 +93,103 @@ def run_diff(
         err.print(f"[red]diff: failed to fetch live state: {exc}[/red]")
         raise typer.Exit(code=1) from exc
 
+    if env is None:
+        _run_all_envs(out, config, state, output, fail_on_env_drift)
+    else:
+        _run_single_env(out, config, env, state, output)
+
+
+def _run_single_env(
+    out: Console,
+    config: ConfigRepo,
+    env: str,
+    state: LiveState,
+    output: Path | None,
+) -> None:
+    """Single-env diff: compute, notify, optionally write JSON, render."""
     change_set = compute_diff(config, env, state)
 
     if change_set.has_changes:
         notifiers = setup_notifiers(config.tool_config)
-        emit(
-            make_event(
-                "diff.changes_detected",
-                severity="warn",
-                env=env,
-                summary=(
-                    f"diff: {len(change_set.creates)} create(s),"
-                    f" {len(change_set.updates)} update(s),"
-                    f" {len(change_set.deletes)} delete(s)"
-                ),
-                details={
-                    "env": env,
-                    "creates": len(change_set.creates),
-                    "updates": len(change_set.updates),
-                    "deletes": len(change_set.deletes),
-                },
-            ),
-            notifiers,
-        )
+        _emit_single_env(env, change_set, notifiers)
 
     if output is not None:
-        _write_json(output, change_set)
+        _write_json(output, change_set.to_json())
         out.print(f"[green]diff: JSON written to {output}[/green]")
 
     _render_text(out, change_set)
+
+
+def _run_all_envs(
+    out: Console,
+    config: ConfigRepo,
+    state: LiveState,
+    output: Path | None,
+    fail_on_env_drift: bool,
+) -> None:
+    """All-envs diff: one fetch, three passes, combined render + ripple check."""
+    multi = compute_all_envs_diff(config, state)
+
+    if multi.has_changes:
+        notifiers = setup_notifiers(config.tool_config)
+        _emit_all_envs(multi, notifiers)
+
+    if output is not None:
+        _write_json(output, multi.to_json())
+        out.print(f"[green]diff: JSON written to {output}[/green]")
+
+    _render_multi_env_text(out, multi)
+
+    if fail_on_env_drift and multi.has_env_drift:
+        raise typer.Exit(code=ENV_DRIFT_EXIT_CODE)
+
+
+def _emit_single_env(env: str, change_set: ChangeSet, notifiers: list[Notifier]) -> None:
+    """Emit ``diff.changes_detected`` carrying the full change set."""
+    emit(
+        make_event(
+            "diff.changes_detected",
+            severity="warn",
+            env=env,
+            summary=(
+                f"diff: {len(change_set.creates)} create(s),"
+                f" {len(change_set.updates)} update(s),"
+                f" {len(change_set.deletes)} delete(s)"
+            ),
+            details={
+                "env": env,
+                "creates": len(change_set.creates),
+                "updates": len(change_set.updates),
+                "deletes": len(change_set.deletes),
+                "change_set": change_set.to_json(),
+            },
+        ),
+        notifiers,
+    )
+
+
+def _emit_all_envs(multi: MultiEnvDiff, notifiers: list[Notifier]) -> None:
+    """Emit one consolidated ``diff.changes_detected`` for all envs.
+
+    A single event (and therefore a single MR comment) carries every
+    env's change set plus the cross-env ripple warnings, so the reviewer
+    sees the full picture without opening the pipeline. Severity escalates
+    to ``warn`` whenever a ripple is detected.
+    """
+    parts = [f"{env}: {cs.total_changes} change(s)" for env, cs in multi.change_sets.items()]
+    summary = "diff (all envs): " + ", ".join(parts)
+    if multi.has_env_drift:
+        summary += " — cross-env ripple detected"
+    emit(
+        make_event(
+            "diff.changes_detected",
+            severity="warn",
+            env=None,
+            summary=summary,
+            details=multi.to_json(),
+        ),
+        notifiers,
+    )
 
 
 def _default_state_provider(profile: str | None, credentials_file: Path | None) -> Any:
@@ -107,13 +203,11 @@ def _default_state_provider(profile: str | None, credentials_file: Path | None) 
     return _provider
 
 
-def _write_json(path: Path, change_set: ChangeSet) -> None:
-    """Serialise the change set as pretty JSON to ``path``."""
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Serialise ``payload`` as pretty JSON to ``path``."""
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(change_set.to_json(), indent=2, sort_keys=False) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8")
 
 
 def _render_text(console: Console, cs: ChangeSet) -> None:
@@ -152,6 +246,53 @@ def _render_text(console: Console, cs: ChangeSet) -> None:
         console.print("\n[yellow]warnings:[/yellow]")
         for warning in cs.warnings:
             console.print(f"  {warning}")
+
+
+def _render_multi_env_text(console: Console, multi: MultiEnvDiff) -> None:
+    """Combined summary table at the top, per-env detail logs below."""
+    table = Table(title="csfwctl diff (all environments)", title_justify="left")
+    table.add_column("Env", style="bold")
+    table.add_column("creates", justify="right")
+    table.add_column("updates", justify="right")
+    table.add_column("deletes", justify="right")
+    table.add_column("no-change", justify="right")
+    table.add_column("unmanaged", justify="right")
+    table.add_column("warnings", justify="right")
+    for env, cs in multi.change_sets.items():
+        table.add_row(
+            env,
+            str(len(cs.creates)),
+            str(len(cs.updates)),
+            str(len(cs.deletes)),
+            str(len(cs.no_changes)),
+            str(len(cs.unmanaged)),
+            str(len(cs.warnings)),
+        )
+    console.print(table)
+
+    if multi.has_env_drift:
+        console.print(
+            "\n[bold yellow]⚠ cross-env ripple detected "
+            "(downstream env has more pending changes than test):[/bold yellow]"
+        )
+        for warning in multi.env_drift_warnings:
+            console.print(f"  [yellow]{warning}[/yellow]")
+
+    for env, cs in multi.change_sets.items():
+        console.print(f"\n[bold underline]{env}[/bold underline]")
+        if not cs.has_changes:
+            console.print("  [green]no changes[/green]")
+            continue
+        for section, items in (
+            ("creates", cs.creates),
+            ("updates", cs.updates),
+            ("deletes", cs.deletes),
+        ):
+            if not items:
+                continue
+            console.print(f"  [bold]{section}[/bold]")
+            for item in _sorted_by_kind(items):
+                _render_change(console, item)
 
 
 def _sorted_by_kind(items: list[ObjectChange]) -> list[ObjectChange]:
