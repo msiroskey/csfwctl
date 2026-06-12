@@ -125,9 +125,11 @@ class Rule(BaseModel):
 
     ``file_path`` is an optional executable-filepath glob: the rule then
     only matches traffic originating from a process whose image path
-    matches the pattern (Windows-oriented; CrowdStrike's
-    application-aware firewall match). It rides in the API ``fields``
-    array alongside the connection-state qualifier.
+    matches the pattern (CrowdStrike's application-aware firewall match).
+    It is platform-agnostic — use the native path format for the target
+    platform (Windows ``C:\\...`` or macOS ``/Applications/...``). It
+    rides in the API ``fields`` array alongside the connection-state
+    qualifier.
     """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)

@@ -89,8 +89,10 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
 
 - [x] **`file_path` rule field (executable-filepath glob match).** `Rule`
       gained an optional `file_path: str` (≤999 chars) carrying a CrowdStrike
-      application-aware filepath glob (e.g. `C:\Program Files\app\*.exe`); the
-      rule then only matches traffic from a process whose image path matches.
+      application-aware filepath glob; the rule then only matches traffic from a
+      process whose image path matches. Platform-agnostic — use the native path
+      format for the platform (Windows `C:\Program Files\app\*.exe` or macOS
+      `/Applications/App.app/Contents/MacOS/*`).
       It rides in the API `fields` array alongside `tcp_state`:
       `_rule_to_api_shape` emits `{"name": "file_path", "value": <glob>}` and
       the new `exporter._filepath_from_fields` parses it back (tolerating a

@@ -62,6 +62,18 @@ def test_rule_accepts_file_path_glob() -> None:
     assert rule.file_path == r"C:\Program Files\app\*.exe"
 
 
+def test_rule_accepts_macos_file_path_glob() -> None:
+    """file_path is platform-agnostic: macOS path format is accepted too."""
+    rule = Rule(
+        name="updater",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+        file_path="/Applications/App.app/Contents/MacOS/*",
+    )
+    assert rule.file_path == "/Applications/App.app/Contents/MacOS/*"
+
+
 def test_rule_file_path_defaults_to_none() -> None:
     rule = Rule(name="x", action=Action.allow, direction=Direction.outbound, protocol=Protocol.tcp)
     assert rule.file_path is None
