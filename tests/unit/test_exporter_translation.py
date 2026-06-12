@@ -157,6 +157,63 @@ def test_rule_from_api_with_state_and_port_range() -> None:
     assert rule.remote.ports == ["1024-65535"]
 
 
+def test_rule_from_api_with_file_path() -> None:
+    record = {
+        "name": "Allow updater outbound",
+        "action": "ALLOW",
+        "direction": "OUT",
+        "protocol": "6",
+        "fields": [{"name": "file_path", "value": r"C:\Program Files\app\*.exe"}],
+        "remote": {"ports": [{"start": 443, "end": 0}]},
+    }
+    rule = rule_from_api(record)
+    assert rule.file_path == r"C:\Program Files\app\*.exe"
+
+
+def test_rule_from_api_file_path_tolerates_values_list() -> None:
+    """The importer accepts the unconfirmed ``values`` list wire shape too."""
+    record = {
+        "name": "Allow updater outbound",
+        "action": "ALLOW",
+        "direction": "OUT",
+        "protocol": "6",
+        "fields": [{"name": "file_path", "values": [r"C:\app\*.exe"]}],
+    }
+    rule = rule_from_api(record)
+    assert rule.file_path == r"C:\app\*.exe"
+
+
+def test_rule_from_api_no_file_path_is_none() -> None:
+    record = {"name": "x", "action": "ALLOW", "direction": "OUT", "protocol": "6"}
+    assert rule_from_api(record).file_path is None
+
+
+def test_rule_file_path_round_trips_through_api_shape() -> None:
+    """A file_path rule survives render -> import unchanged."""
+    rg = RuleGroup(
+        name="windows-baseline",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="Allow updater outbound",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.tcp,
+                file_path=r"C:\Program Files\app\*.exe",
+                remote=Endpoint(ports=[443]),
+            )
+        ],
+    )
+    shape = rule_group_to_api_shape(rg, "test")
+    # The filepath rides in the API ``fields`` array alongside tcp_state.
+    rule_shape = shape["rules"][0]
+    assert {"name": "file_path", "value": r"C:\Program Files\app\*.exe"} in rule_shape["fields"]
+
+    rules_by_id = {r["id"]: r for r in shape["rules"]}
+    restored = rule_group_from_api(shape, rules_by_id)
+    assert restored.rules[0].file_path == r"C:\Program Files\app\*.exe"
+
+
 def test_rule_from_api_negated_endpoint() -> None:
     record = {
         "name": "Block SMB inbound from non-corp",

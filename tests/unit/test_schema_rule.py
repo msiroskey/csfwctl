@@ -51,6 +51,44 @@ def test_rule_state_only_for_tcp_or_any() -> None:
         )
 
 
+def test_rule_accepts_file_path_glob() -> None:
+    rule = Rule(
+        name="updater",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+        file_path=r"C:\Program Files\app\*.exe",
+    )
+    assert rule.file_path == r"C:\Program Files\app\*.exe"
+
+
+def test_rule_file_path_defaults_to_none() -> None:
+    rule = Rule(name="x", action=Action.allow, direction=Direction.outbound, protocol=Protocol.tcp)
+    assert rule.file_path is None
+
+
+def test_rule_rejects_empty_file_path() -> None:
+    with pytest.raises(ValidationError):
+        Rule(
+            name="bad",
+            action=Action.allow,
+            direction=Direction.outbound,
+            protocol=Protocol.tcp,
+            file_path="   ",
+        )
+
+
+def test_rule_rejects_overlong_file_path() -> None:
+    with pytest.raises(ValidationError):
+        Rule(
+            name="bad",
+            action=Action.allow,
+            direction=Direction.outbound,
+            protocol=Protocol.tcp,
+            file_path="C:\\" + "a" * 1000,
+        )
+
+
 def test_endpoint_validates_addresses() -> None:
     ep = Endpoint(addresses=["10.0.0.1", "192.168.0.0/16"])
     assert ep.addresses == ["10.0.0.1", "192.168.0.0/16"]

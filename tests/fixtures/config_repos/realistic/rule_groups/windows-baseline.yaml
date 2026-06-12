@@ -23,3 +23,13 @@ rules:
       addresses_negated: true
       addresses: [10.0.0.0/8]
     locations: [any]
+
+  - name: Allow updater outbound
+    enabled: true
+    action: allow
+    direction: outbound
+    protocol: tcp
+    file_path: C:\Program Files\abc01-agent\*.exe
+    remote:
+      ports: [443]
+    locations: [any]
