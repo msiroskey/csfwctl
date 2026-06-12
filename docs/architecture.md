@@ -150,13 +150,14 @@ emits the lowercase form so it is correct for CREATE/UPDATE payloads.
   "protocol": "17",                    # "0"/"*" any, "1" icmp, "6" tcp, "17" udp
   "address_family": "IP4",             # required by CREATE: "IP4" | "IP6"
   "fields": [{"name": "tcp_state", "value": "established"}],   # optional state
-  # An optional executable-filepath glob also rides in `fields`:
-  #   {"name": "file_path", "value": "C:\\Program Files\\app\\*.exe"}
-  # UNCONFIRMED wire shape: scalar `value` vs `values` list, and whether a
-  # `type` token (e.g. "windows_path") is required on CREATE. csfwctl emits a
-  # scalar `value` (mirroring tcp_state); confirm against a recorded fixture
-  # before the first real apply of a file_path rule. Import tolerates both
-  # `value` and `values` (exporter._filepath_from_fields).
+  # The optional executable-filepath glob (Rule.file_path) rides in `fields`
+  # under the `image_name` name (NOT `file_path`), confirmed against a tenant
+  # export:
+  #   {"name": "image_name", "value": "/usr/libexec/sharingd", "type": "unix_path"}
+  # `type` is platform-derived: `windows_path` (Windows) / `unix_path` (mac).
+  # CrowdStrike also stamps an empty `image_name` (value "") plus a
+  # `network_location` field on every rule; the importer ignores both an empty
+  # image_name and the network_location entry. See exporter._filepath_from_fields.
   "local": {"addresses": [...], "ports": [{"start": N, "end": M}]},
   "remote": {...},
   "locations": [...],                  # slug list (csfwctl convention)

@@ -93,22 +93,21 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       process whose image path matches. Platform-agnostic — use the native path
       format for the platform (Windows `C:\Program Files\app\*.exe` or macOS
       `/Applications/App.app/Contents/MacOS/*`).
-      It rides in the API `fields` array alongside `tcp_state`:
-      `_rule_to_api_shape` emits `{"name": "file_path", "value": <glob>}` and
-      the new `exporter._filepath_from_fields` parses it back (tolerating a
-      `values` list shape as well). Schema validator does a local-only sanity
-      check (non-empty, no NUL) — no call to CrowdStrike's
-      `validate_filepath_pattern` endpoint (no test tenant). Updated
+      On the wire it rides in the rule's `fields` array under the **`image_name`**
+      name (confirmed against a tenant export — NOT `file_path`), carrying a
+      platform-derived `type` token: `_rule_to_api_shape` emits
+      `{"name": "image_name", "value": <glob>, "type": "windows_path"|"unix_path"}`
+      and `exporter._filepath_from_fields` reads `image_name` back (empty value
+      → None; the sibling `network_location` field is ignored). Schema validator
+      does a local-only sanity check (non-empty, no NUL). Updated
       `csfwctl/schema/rule.py`, `csfwctl/exporter.py`,
-      `docs/schema_reference.md`, the realistic `windows-baseline` fixture, and
-      tests (`test_schema_rule.py`, `test_exporter_translation.py`).
-      **UNCONFIRMED:** the exact wire shape — scalar `value` vs `values` list,
-      and whether a `type` token (e.g. `windows_path`) is required on create —
-      is not yet pinned against a recorded API response. The serializer mirrors
-      the `tcp_state` precedent (scalar `value`); confirm with a captured
-      fixture of a real rule that already carries a filepath match **before the
-      first real apply** of a `file_path` rule. See the code NOTE in
-      `_rule_to_api_shape`.
+      `docs/schema_reference.md`, `docs/architecture.md`, the realistic
+      `windows-baseline` + `mac-baseline` fixtures, and tests
+      (`test_schema_rule.py`, `test_exporter_translation.py`).
+      **First cut shipped the wrong field name** (`file_path` instead of
+      `image_name`, no `type`); CrowdStrike silently ignored it, so an applied
+      filepath never took effect. Fixed once a tenant export confirmed the
+      shape.
 - [x] **Per-action change detail in apply logs.** `AppliedAction` now
       carries the `field_changes` / `host_group_changes` /
       `managed_group_changes` tuples threaded off the originating

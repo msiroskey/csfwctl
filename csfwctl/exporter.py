@@ -172,6 +172,14 @@ _PLATFORM_TO_API_ID: dict[Platform, str] = {
     Platform.mac: "1",
 }
 
+# The ``type`` token CrowdStrike stamps on an ``image_name`` filepath field
+# entry. Confirmed against a tenant export: macOS rules carry ``unix_path``,
+# Windows rules ``windows_path``.
+_PATH_TYPE_TO_API: dict[Platform, str] = {
+    Platform.windows: "windows_path",
+    Platform.mac: "unix_path",
+}
+
 
 class ImporterError(Exception):
     """Raised when an importer lookup fails or an API record is malformed."""
@@ -456,25 +464,23 @@ def _state_from_fields(fields: Any) -> ConnectionState | None:
 def _filepath_from_fields(fields: Any) -> str | None:
     """Pluck an executable-filepath glob out of CrowdStrike's ``fields`` list.
 
-    Mirrors :func:`_state_from_fields`. The rule record carries a per-rule
-    filepath constraint as ``[{"name": "file_path", "value": "C:\\...\\*.exe"}]``.
-    To be tolerant of the unconfirmed wire shape we also accept a
-    ``values`` list (taking the first entry). Absent or empty returns
-    ``None``.
+    Mirrors :func:`_state_from_fields`. Confirmed against a tenant export, the
+    rule record carries the constraint under the ``image_name`` field:
+    ``[{"name": "image_name", "value": "/usr/libexec/sharingd", "type": "unix_path"}]``.
+    CrowdStrike stamps an empty ``image_name`` entry (``value: ""``) on rules
+    with no filepath constraint; that maps to ``None``. The sibling
+    ``network_location`` field is deliberately ignored here.
     """
     if not fields:
         return None
     for entry in fields:
         if not isinstance(entry, dict):
             continue
-        if entry.get("name") != "file_path":
+        if entry.get("name") != "image_name":
             continue
         value = entry.get("value")
         if value:
             return str(value)
-        values = entry.get("values")
-        if isinstance(values, list) and values and values[0]:
-            return str(values[0])
     return None
 
 
@@ -844,7 +850,8 @@ def rule_group_to_api_shape(rule_group: RuleGroup, env: str) -> dict[str, Any]:
     suffix = _env_suffix(env)
     display_name = f"{rule_group.display_name or rule_group.name}{suffix}"
     rule_records = [
-        _rule_to_api_shape(rule, display_name, index) for index, rule in enumerate(rule_group.rules)
+        _rule_to_api_shape(rule, display_name, index, rule_group.platform)
+        for index, rule in enumerate(rule_group.rules)
     ]
     return {
         "id": _fake_uuid("rule-group", display_name),
@@ -920,7 +927,9 @@ def _infer_address_family(rule: Rule) -> str:
     return "IP4"
 
 
-def _rule_to_api_shape(rule: Rule, parent_display_name: str, index: int) -> dict[str, Any]:
+def _rule_to_api_shape(
+    rule: Rule, parent_display_name: str, index: int, platform: Platform
+) -> dict[str, Any]:
     """Render a :class:`Rule` into API shape (used by the round-trip harness)."""
     proto_api = (
         str(rule.protocol) if isinstance(rule.protocol, int) else _PROTOCOL_TO_API[rule.protocol]
@@ -939,12 +948,16 @@ def _rule_to_api_shape(rule: Rule, parent_display_name: str, index: int) -> dict
     if rule.state is not None:
         record["fields"].append({"name": "tcp_state", "value": rule.state.value})
     if rule.file_path is not None:
-        # NOTE: the exact fields[] shape for file_path (scalar "value" vs
-        # "values" list, and whether a "type" token is required on create)
-        # is not yet confirmed against a recorded API response. We mirror
-        # the tcp_state precedent (scalar "value"); confirm with a captured
-        # fixture before the first real apply of a filepath rule.
-        record["fields"].append({"name": "file_path", "value": rule.file_path})
+        # Confirmed against a tenant export: the executable-path match is the
+        # ``image_name`` field (NOT ``file_path``), carrying a platform-specific
+        # ``type`` token (``windows_path`` / ``unix_path``).
+        record["fields"].append(
+            {
+                "name": "image_name",
+                "value": rule.file_path,
+                "type": _PATH_TYPE_TO_API[platform],
+            }
+        )
     if rule.local is not None:
         record["local_address"] = [_address_to_api_dict(a) for a in rule.local.addresses]
         if rule.local.addresses_negated:
