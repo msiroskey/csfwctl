@@ -122,6 +122,14 @@ class Rule(BaseModel):
     ``protocol`` accepts either a named :class:`Protocol` value (e.g.
     ``tcp``) or a raw IANA protocol number (0-255) for protocols not
     covered by the named enum ("Advanced" mode in the CrowdStrike UI).
+
+    ``file_path`` is an optional executable-filepath glob: the rule then
+    only matches traffic originating from a process whose image path
+    matches the pattern (CrowdStrike's application-aware firewall match).
+    It is platform-agnostic — use the native path format for the target
+    platform (Windows ``C:\\...`` or macOS ``/Applications/...``). It
+    rides in the API ``fields`` array alongside the connection-state
+    qualifier.
     """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -132,6 +140,7 @@ class Rule(BaseModel):
     direction: Direction
     protocol: Protocol | int
     state: ConnectionState | None = None
+    file_path: str | None = Field(default=None, max_length=999)
     locations: list[str] = Field(default_factory=lambda: [ANY_LOCATION])
     local: Endpoint | None = None
     remote: Endpoint | None = None
@@ -141,6 +150,25 @@ class Rule(BaseModel):
     def _check_protocol(cls, value: Protocol | int) -> Protocol | int:
         if isinstance(value, int) and not (0 <= value <= 255):
             raise ValueError(f"raw protocol number {value} out of range 0-255")
+        return value
+
+    @field_validator("file_path")
+    @classmethod
+    def _check_file_path(cls, value: str | None) -> str | None:
+        """Sanity-check the executable filepath glob (local check only).
+
+        CrowdStrike matches the rule against the originating executable's
+        path using a glob pattern (e.g. ``C:\\Program Files\\app\\*.exe``).
+        We do not call CrowdStrike's ``validate_filepath_pattern`` endpoint
+        here — there is no test tenant — so this is a structural check
+        only: non-empty after whitespace stripping and no embedded NUL.
+        """
+        if value is None:
+            return value
+        if not value:
+            raise ValueError("file_path must be a non-empty glob pattern (or omitted)")
+        if "\x00" in value:
+            raise ValueError("file_path must not contain a NUL character")
         return value
 
     @field_validator("locations")

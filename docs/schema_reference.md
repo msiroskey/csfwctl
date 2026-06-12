@@ -132,6 +132,7 @@ Restrictions:
 | `direction` | `inbound` \| `outbound` \| `both` | yes      | `both` matches traffic in either direction.        |
 | `protocol`  | named value or integer (0-255)    | yes      | Named: `any` `tcp` `udp` `icmp` `igmp` `ipip` `ipv6` `gre` `icmpv6`. Integer for unlisted protocols ("Advanced" mode). IPv6-family protocols (`ipv6`, `icmpv6`) emit `address_family: IP6` on apply regardless of whether explicit IPv6 addresses are configured (an ICMPv6 wildcard rule is valid and supported). |
 | `state`     | `new` \| `established` \| `related` | no    | Only valid when `protocol` is `tcp` or `any`.       |
+| `file_path` | string (glob, ≤999 chars)         | no       | Executable-filepath glob. Rule matches only traffic from a process whose image path matches (CrowdStrike's application-aware match). Platform-agnostic — use the native path format for the platform: Windows `C:\Program Files\app\*.exe` or macOS `/Applications/App.app/Contents/MacOS/*`. Rides in the API `fields` array. |
 | `locations` | list of slugs (or `any`)          | no       | Default `[any]`. Must be non-empty.                |
 | `local`     | `Endpoint`                        | no       |                                                    |
 | `remote`    | `Endpoint`                        | no       |                                                    |

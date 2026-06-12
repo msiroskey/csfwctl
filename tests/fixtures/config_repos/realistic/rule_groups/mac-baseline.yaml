@@ -11,3 +11,13 @@ rules:
     protocol: tcp
     state: established
     locations: [any]
+
+  - name: Allow updater outbound
+    enabled: true
+    action: allow
+    direction: outbound
+    protocol: tcp
+    file_path: /Applications/abc01-agent.app/Contents/MacOS/*
+    remote:
+      ports: [443]
+    locations: [any]

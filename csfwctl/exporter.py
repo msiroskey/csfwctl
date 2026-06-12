@@ -412,6 +412,7 @@ def rule_from_api(record: dict[str, Any]) -> Rule:
         protocol = proto_num
 
     state = _state_from_fields(record.get("fields"))
+    file_path = _filepath_from_fields(record.get("fields"))
     locations = _locations_from_api(record.get("locations"), record.get("network_locations"))
 
     local = _endpoint_from_api(record.get("local")) or _endpoint_from_api_flat(record, "local")
@@ -424,6 +425,7 @@ def rule_from_api(record: dict[str, Any]) -> Rule:
         direction=direction,
         protocol=protocol,
         state=state,
+        file_path=file_path,
         locations=locations,
         local=local,
         remote=remote,
@@ -448,6 +450,31 @@ def _state_from_fields(fields: Any) -> ConnectionState | None:
         value = str(entry.get("value", "")).lower()
         if value in {s.value for s in ConnectionState}:
             return ConnectionState(value)
+    return None
+
+
+def _filepath_from_fields(fields: Any) -> str | None:
+    """Pluck an executable-filepath glob out of CrowdStrike's ``fields`` list.
+
+    Mirrors :func:`_state_from_fields`. The rule record carries a per-rule
+    filepath constraint as ``[{"name": "file_path", "value": "C:\\...\\*.exe"}]``.
+    To be tolerant of the unconfirmed wire shape we also accept a
+    ``values`` list (taking the first entry). Absent or empty returns
+    ``None``.
+    """
+    if not fields:
+        return None
+    for entry in fields:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("name") != "file_path":
+            continue
+        value = entry.get("value")
+        if value:
+            return str(value)
+        values = entry.get("values")
+        if isinstance(values, list) and values and values[0]:
+            return str(values[0])
     return None
 
 
@@ -911,6 +938,13 @@ def _rule_to_api_shape(rule: Rule, parent_display_name: str, index: int) -> dict
     }
     if rule.state is not None:
         record["fields"].append({"name": "tcp_state", "value": rule.state.value})
+    if rule.file_path is not None:
+        # NOTE: the exact fields[] shape for file_path (scalar "value" vs
+        # "values" list, and whether a "type" token is required on create)
+        # is not yet confirmed against a recorded API response. We mirror
+        # the tcp_state precedent (scalar "value"); confirm with a captured
+        # fixture before the first real apply of a filepath rule.
+        record["fields"].append({"name": "file_path", "value": rule.file_path})
     if rule.local is not None:
         record["local_address"] = [_address_to_api_dict(a) for a in rule.local.addresses]
         if rule.local.addresses_negated:

@@ -87,6 +87,28 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
 
 ## Enhancements
 
+- [x] **`file_path` rule field (executable-filepath glob match).** `Rule`
+      gained an optional `file_path: str` (≤999 chars) carrying a CrowdStrike
+      application-aware filepath glob; the rule then only matches traffic from a
+      process whose image path matches. Platform-agnostic — use the native path
+      format for the platform (Windows `C:\Program Files\app\*.exe` or macOS
+      `/Applications/App.app/Contents/MacOS/*`).
+      It rides in the API `fields` array alongside `tcp_state`:
+      `_rule_to_api_shape` emits `{"name": "file_path", "value": <glob>}` and
+      the new `exporter._filepath_from_fields` parses it back (tolerating a
+      `values` list shape as well). Schema validator does a local-only sanity
+      check (non-empty, no NUL) — no call to CrowdStrike's
+      `validate_filepath_pattern` endpoint (no test tenant). Updated
+      `csfwctl/schema/rule.py`, `csfwctl/exporter.py`,
+      `docs/schema_reference.md`, the realistic `windows-baseline` fixture, and
+      tests (`test_schema_rule.py`, `test_exporter_translation.py`).
+      **UNCONFIRMED:** the exact wire shape — scalar `value` vs `values` list,
+      and whether a `type` token (e.g. `windows_path`) is required on create —
+      is not yet pinned against a recorded API response. The serializer mirrors
+      the `tcp_state` precedent (scalar `value`); confirm with a captured
+      fixture of a real rule that already carries a filepath match **before the
+      first real apply** of a `file_path` rule. See the code NOTE in
+      `_rule_to_api_shape`.
 - [x] **Per-action change detail in apply logs.** `AppliedAction` now
       carries the `field_changes` / `host_group_changes` /
       `managed_group_changes` tuples threaded off the originating
