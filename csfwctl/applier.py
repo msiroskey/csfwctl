@@ -51,6 +51,7 @@ from csfwctl.loader import ConfigRepo
 from csfwctl.observability import get_logger
 from csfwctl.safety import (
     MetadataSignature,
+    SafetyError,
     SafetyOptions,
     check_blast_radius,
     check_bootstrap,
@@ -336,23 +337,127 @@ def _build_rule_group_update_payload(
     live_id: str,
     live_description: str | None,
     live_record: dict[str, Any] | None,
+    change: ObjectChange | None = None,
 ) -> dict[str, Any]:
     """Build a diff-based rule-group PATCH payload.
 
     The rule-group update endpoint rejects any payload missing ``diff_type``,
-    ``tracking``, or ``rule_ids`` with HTTP 400.  Description is expressed as
-    a JSON Patch ``replace /description`` operation; ``tracking`` and
-    ``rule_ids`` are copied verbatim from the live record so the
-    optimistic-concurrency token and rule membership are preserved.
+    ``tracking``, or ``rule_ids`` with HTTP 400.  All changes are expressed as
+    JSON Patch operations against the rule group document:
 
-    Rule content changes (action, direction, protocol, endpoints) are not yet
-    expressed via ``diff_operations`` — the JSON Patch paths for ``/rules``
-    are unconfirmed against a real tenant.  Those changes remain visible in
-    the differ output but are deferred to a follow-up once the paths are
-    confirmed.
+    - the metadata trailer as ``replace /description``;
+    - rule content as ``add`` / ``remove`` / ``replace`` operations on the
+      ``/rules`` array (CrowdStrike's ``update_rule_group`` documents that it
+      "can create, edit, delete, or reorder rules" through ``diff_operations``).
+
+    ``tracking`` is copied verbatim from the live record for optimistic
+    concurrency.  ``rule_ids`` is the live list with removed entries dropped;
+    rules added via an ``add`` op are assigned ids server-side.
+
+    .. note::
+       The exact handling of ``rule_ids`` for *added* rules is the one part of
+       this payload not yet confirmed against a real tenant.  A wrong shape
+       surfaces loudly (HTTP 400) rather than as a silent no-op, which is the
+       deliberate trade vs. the previous description-only patch that dropped
+       rule changes while returning 200.
     """
     new_description, _ = _signature_for(live_description or rule_group.description, options)
-    return _rule_group_metadata_payload(live_id, new_description, live_record)
+    record = live_record or {}
+    live_rule_ids = [str(rid) for rid in (record.get("rule_ids") or [])]
+
+    operations: list[dict[str, Any]] = [
+        {"op": "replace", "path": "/description", "value": new_description}
+    ]
+    rule_ids = live_rule_ids
+
+    rules_change = _find_field_change(change, "rules")
+    if rules_change is not None:
+        rule_ops, rule_ids = _rule_content_diff_ops(
+            rule_group, options.env, rules_change, live_rule_ids
+        )
+        operations.extend(rule_ops)
+
+    payload: dict[str, Any] = {
+        "id": live_id,
+        "diff_type": _RULE_GROUP_DIFF_TYPE,
+        "diff_operations": operations,
+        "rule_ids": rule_ids,
+    }
+    tracking = record.get("tracking")
+    if tracking:
+        payload["tracking"] = tracking
+    return payload
+
+
+def _find_field_change(change: ObjectChange | None, path: str) -> FieldChange | None:
+    """Return the field change at ``path`` on ``change`` (or ``None``)."""
+    if change is None:
+        return None
+    for fc in change.field_changes:
+        if fc.path == path:
+            return fc
+    return None
+
+
+def _rule_content_diff_ops(
+    rule_group: RuleGroup,
+    env: str,
+    rules_change: FieldChange,
+    live_rule_ids: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Translate a ``rules`` list change into JSON-Patch ops on ``/rules``.
+
+    ``rules_change.before`` is the live rule list (parallel to
+    ``live_rule_ids``); ``rules_change.after`` is the desired list.  Rules are
+    matched by name — csfwctl's stable per-rule identity.  Returns
+    ``(operations, rule_ids)`` where ``rule_ids`` is the live list minus removed
+    entries.  Operations are emitted in an order that keeps array indices valid:
+    replaces (original indices) first, then removes (descending index), then
+    appends.
+    """
+    before = list(rules_change.before or [])
+    after = list(rules_change.after or [])
+
+    if len(before) != len(live_rule_ids):
+        raise SafetyError(
+            f"rule group {rule_group.name!r}: live rule count ({len(before)}) does "
+            f"not match rule_ids ({len(live_rule_ids)}); refusing to build an "
+            "ambiguous rule update"
+        )
+
+    desired_shapes = {s["name"]: s for s in rule_group_to_api_shape(rule_group, env)["rules"]}
+    before_by_name = {r.get("name"): (i, r) for i, r in enumerate(before)}
+    after_names = {r.get("name") for r in after}
+
+    operations: list[dict[str, Any]] = []
+
+    # Replaces: present on both sides, content differs. Keep index and live id.
+    for name, (i, live_rule) in before_by_name.items():
+        desired = next((r for r in after if r.get("name") == name), None)
+        if desired is not None and desired != live_rule:
+            shape = dict(desired_shapes[name])
+            shape["id"] = live_rule_ids[i]
+            operations.append({"op": "replace", "path": f"/rules/{i}", "value": shape})
+
+    # Removes: in live, gone from desired. Descending index; drop from rule_ids.
+    remove_indices = sorted(
+        (i for i, r in enumerate(before) if r.get("name") not in after_names),
+        reverse=True,
+    )
+    rule_ids = list(live_rule_ids)
+    for i in remove_indices:
+        operations.append({"op": "remove", "path": f"/rules/{i}"})
+        del rule_ids[i]
+
+    # Adds: new in desired. Append; the server assigns the id.
+    for rule in after:
+        name = rule.get("name")
+        if name not in before_by_name:
+            shape = dict(desired_shapes[name])
+            shape.pop("id", None)
+            operations.append({"op": "add", "path": "/rules/-", "value": shape})
+
+    return operations, rule_ids
 
 
 def _build_policy_payload(
@@ -951,6 +1056,7 @@ def apply_change_set(
             live_id=rg_live[0] if rg_live else "",
             live_description=rg_live[1] if rg_live else None,
             live_record=rg_live_record,
+            change=change,
         )
         _do_write(
             client,

@@ -142,11 +142,27 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       `replace /description` JSON Patch, copying `rule_ids`/`tracking`
       from the live record so rule content is preserved. Documented in
       `docs/architecture.md`.
-      - [ ] **Follow-up:** the *normal* (non-bootstrap) rule-group update
-        path (`_build_rule_group_payload`) still emits the full-content
-        create shape with a top-level `description`. It has never run
-        against a real tenant and almost certainly needs the same
-        diff-based treatment. Investigate when a real update is exercised.
+      - [x] **Follow-up done:** the *normal* (non-bootstrap) rule-group
+        update path silently dropped all rule add/remove/modify changes —
+        it sent only a `replace /description` patch and copied `rule_ids`
+        verbatim, so an applied rule change returned HTTP 200 while
+        persisting nothing (confirmed against a real tenant: a new rule
+        showed as "1 added" in the apply summary but never appeared in the
+        export). Fix: `_build_rule_group_update_payload` now builds real
+        JSON-Patch `diff_operations` on `/rules` from the change's
+        before/after rule lists — `replace /rules/<i>` (content change,
+        carrying the live rule id), `remove /rules/<i>` (descending index,
+        dropped from `rule_ids`), and `add /rules/-` (new rule, id assigned
+        server-side). Ops are ordered replaces → removes(desc) → adds so
+        array indices stay valid. `_rule_content_diff_ops` raises
+        `SafetyError` if the live rule count and `rule_ids` length disagree
+        (ambiguous mapping). Tests:
+        `test_apply_update_rule_group_{adds_new_rule,removes_rule,replaces_modified_rule}`.
+        **Still unverified against a tenant:** whether `rule_ids` should
+        omit (current behaviour) or placeholder the to-be-added rule id.
+        A wrong shape now surfaces as a loud HTTP 400 rather than a silent
+        no-op. **Also:** pure rule *reorders* (same names + content) emit no
+        ops and are not yet applied — documented limitation.
 - [x] **Import dropped host groups without an env suffix.**
       `policy_from_api` inferred a host group's env solely from its name
       suffix and silently skipped any group lacking one, so bootstrapping

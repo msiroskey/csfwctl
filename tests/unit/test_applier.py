@@ -723,6 +723,135 @@ def test_apply_update_rule_group_uses_diff_based_format() -> None:
     assert sig.git_sha == "sha999"
 
 
+def _rg_with_rules(rules: list[Rule]) -> RuleGroup:
+    return RuleGroup(
+        name="windows-baseline",
+        platform=Platform.windows,
+        description="Baseline rules for Windows endpoints.",
+        rules=rules,
+    )
+
+
+def _apply_rule_group_update(desired: RuleGroup, live: RuleGroup) -> dict[str, Any]:
+    """Drive an apply where the live rule group differs from desired; return the PATCH."""
+    repo = _repo_with(rule_groups=[desired])
+    state = _render_live_state(env="test", rule_groups=[live])
+    cs = compute_diff(repo, "test", state)
+    assert cs.updates
+    client = FakeFalconClient()
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    assert client.rule_groups.updated
+    return client.rule_groups.updated[0]
+
+
+def test_apply_update_rule_group_adds_new_rule_via_diff_op() -> None:
+    """A desired rule absent from live becomes an `add` op on /rules/-."""
+    kept = Rule(
+        name="Allow established inbound",
+        action=Action.allow,
+        direction=Direction.inbound,
+        protocol=Protocol.tcp,
+    )
+    added = Rule(
+        name="Allow updater outbound",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+        file_path=r"C:\Program Files\app\*.exe",
+    )
+    payload = _apply_rule_group_update(_rg_with_rules([kept, added]), _rg_with_rules([kept]))
+
+    adds = [op for op in payload["diff_operations"] if op["op"] == "add"]
+    assert len(adds) == 1
+    assert adds[0]["path"] == "/rules/-"
+    value = adds[0]["value"]
+    assert value["name"] == "Allow updater outbound"
+    assert "id" not in value  # server assigns the id for a new rule
+    assert {
+        "name": "image_name",
+        "value": r"C:\Program Files\app\*.exe",
+        "type": "windows_path",
+    } in value["fields"]
+    # rule_ids preserves the single existing rule (the add is server-assigned).
+    assert len(payload["rule_ids"]) == 1
+
+
+def test_apply_update_rule_group_removes_rule_via_diff_op() -> None:
+    """A live rule gone from desired becomes a `remove` op and drops from rule_ids."""
+    kept = Rule(
+        name="Allow established inbound",
+        action=Action.allow,
+        direction=Direction.inbound,
+        protocol=Protocol.tcp,
+    )
+    removed = Rule(
+        name="Allow updater outbound",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+    )
+    payload = _apply_rule_group_update(_rg_with_rules([kept]), _rg_with_rules([kept, removed]))
+
+    removes = [op for op in payload["diff_operations"] if op["op"] == "remove"]
+    assert len(removes) == 1
+    assert removes[0]["path"] == "/rules/1"  # the second (removed) live rule
+    assert len(payload["rule_ids"]) == 1  # dropped from two to one
+
+
+def test_apply_update_rule_group_replaces_modified_rule_with_live_id() -> None:
+    """A content change on an existing rule becomes a `replace` op carrying its live id."""
+    live = _rg_with_rules(
+        [
+            Rule(
+                name="Allow established inbound",
+                action=Action.allow,
+                direction=Direction.inbound,
+                protocol=Protocol.tcp,
+            )
+        ]
+    )
+    desired = _rg_with_rules(
+        [
+            Rule(
+                name="Allow established inbound",
+                action=Action.block,  # changed action
+                direction=Direction.inbound,
+                protocol=Protocol.tcp,
+            )
+        ]
+    )
+    repo = _repo_with(rule_groups=[desired])
+    state = _render_live_state(env="test", rule_groups=[live])
+    live_rule_id = state.rule_groups[0]["rule_ids"][0]
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    payload = client.rule_groups.updated[0]
+    replaces = [
+        op
+        for op in payload["diff_operations"]
+        if op["op"] == "replace" and op["path"].startswith("/rules/")
+    ]
+    assert len(replaces) == 1
+    assert replaces[0]["path"] == "/rules/0"
+    assert replaces[0]["value"]["id"] == live_rule_id
+    assert replaces[0]["value"]["action"] == "DENY"
+
+
 # ---- bootstrap mode ------------------------------------------------------
 
 
