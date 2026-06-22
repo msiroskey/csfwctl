@@ -18,11 +18,25 @@ for the full design.
 
 ## Operating constraint
 
-**There is no test tenant.** All testing happens against mocked or
-recorded API responses. The safety rails in `csfwctl/safety.py` exist
-because the first apply against real infrastructure has to be correct.
-Do not suggest "let's just try it against the tenant" — that option does
-not exist.
+**The default test suite is hermetic.** All unit/integration tests run
+against mocked or recorded API responses, and that is the bar every PR
+must meet. The safety rails in `csfwctl/safety.py` exist because the
+first apply against real infrastructure has to be correct.
+
+A **gated live-validation path now exists** for the narrow set of
+wire-contract questions mocks cannot answer (e.g. the diff-based
+`update_rule_group` payload). It is opt-in and isolated, not a license to
+"just try it against the tenant":
+
+- `tests/integration/test_live_rule_group.py` — marked `live`, skipped
+  unless `CSFWCTL_LIVE_TEST=1` + credentials. Provisions a throwaway
+  `csfwctl-live-*` rule group and deletes it in `finally`.
+- `.github/workflows/live-validation.yml` — manual (`workflow_dispatch`)
+  or `live-validation` PR label only; reads creds from the `test-tenant`
+  GitHub environment.
+
+Do not add live tenant calls to the default suite, and do not widen the
+live test's blast radius beyond its own throwaway objects.
 
 ## Where to start each session
 

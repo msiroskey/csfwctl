@@ -87,6 +87,23 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
 
 ## Enhancements
 
+- [x] **Gated live tenant validation.** A real test environment is now
+      available for the wire-contract questions mocks can't answer (the
+      diff-based `update_rule_group` payload; the `image_name` filepath
+      shape). Added `tests/integration/test_live_rule_group.py` (marked
+      `live`, skipped unless `CSFWCTL_LIVE_TEST=1` + creds): provisions a
+      throwaway `csfwctl-live-*` rule group, drives create → update
+      (add/modify/remove) → re-fetch → assert → delete (cleanup in
+      `finally`). New `.github/workflows/live-validation.yml` runs it
+      only on `workflow_dispatch` or a `live-validation` PR label, reading
+      creds from a `test-tenant` GitHub environment; serialised via
+      `concurrency`. Default CI stays hermetic. `live` marker registered in
+      `pyproject.toml`. Docs: `docs/operations.md` § "Live tenant
+      validation"; `CLAUDE.md` operating-constraint section updated to
+      reflect the gated path (still: no live calls in the default suite).
+      **Next:** run it against the tenant to confirm the `update_rule_group`
+      add payload (`rule_ids` handling for new rules) — the one part still
+      flagged unverified in `_build_rule_group_update_payload`.
 - [x] **`file_path` rule field (executable-filepath glob match).** `Rule`
       gained an optional `file_path: str` (≤999 chars) carrying a CrowdStrike
       application-aware filepath glob; the rule then only matches traffic from a

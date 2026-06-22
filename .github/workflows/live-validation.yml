@@ -1,0 +1,55 @@
+name: live-validation
+
+# Opt-in validation against a real CrowdStrike test tenant.
+#
+# This workflow is deliberately NOT part of the default CI gate: it uses real
+# credentials and performs scoped WRITES (create/update/delete of a throwaway
+# `csfwctl-live-*` rule group) against the test tenant. It runs only when:
+#   - manually dispatched (Actions tab -> "Run workflow"), or
+#   - a pull request is labelled `live-validation`.
+#
+# Secrets are read from the `test-tenant` environment so you can attach
+# required-reviewer protection to gate who can trigger a live run.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  # Serialise live runs so two PRs can't mutate the tenant at once.
+  group: live-validation
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: live rule-group round-trip
+    # Only fire on label events for the specific label; always allow manual runs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'live-validation'
+    runs-on: ubuntu-latest
+    environment: test-tenant
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run live tenant validation
+        env:
+          CSFWCTL_LIVE_TEST: "1"
+          CSFWCTL_CLIENT_ID: ${{ secrets.CSFWCTL_CLIENT_ID }}
+          CSFWCTL_CLIENT_SECRET: ${{ secrets.CSFWCTL_CLIENT_SECRET }}
+          CSFWCTL_BASE_URL: ${{ secrets.CSFWCTL_BASE_URL }}
+          # Platform of the throwaway rule group (mac | windows).
+          CSFWCTL_LIVE_PLATFORM: ${{ vars.CSFWCTL_LIVE_PLATFORM || 'mac' }}
+        run: pytest -m live -v tests/integration/test_live_rule_group.py

@@ -561,3 +561,47 @@ review every changed file before committing:
 
 If anything slips through, scrub it manually before `git add`. The
 fixtures are committed to a **public** repository.
+
+## Live tenant validation (gated)
+
+Most of the suite is hermetic (mocks + recorded fixtures). A small set of
+wire-contract questions cannot be answered that way — chiefly the
+diff-based `update_rule_group` payload (add/remove/modify rules) and the
+`image_name` filepath field shape. For those, an **opt-in** live test runs
+against a real test tenant.
+
+**What it does.** `tests/integration/test_live_rule_group.py` provisions a
+throwaway `csfwctl-live-<rand>` rule group, drives create → update (add,
+modify, remove rules) → re-fetch → assert, and deletes the group in a
+`finally` block. It never touches existing managed config and is namespaced
+so a failure cannot collide with real objects.
+
+**Run it locally:**
+
+```bash
+export CSFWCTL_CLIENT_ID=...        # test-tenant API client
+export CSFWCTL_CLIENT_SECRET=...
+export CSFWCTL_LIVE_TEST=1          # required opt-in flag
+# export CSFWCTL_LIVE_PLATFORM=mac  # mac (default) | windows
+pytest -m live -v tests/integration/test_live_rule_group.py
+```
+
+Without `CSFWCTL_LIVE_TEST=1` the test is skipped, so the normal suite
+stays hermetic.
+
+**Run it in CI.** The `live-validation` workflow
+(`.github/workflows/live-validation.yml`) runs the live test only when
+manually dispatched (Actions → *live-validation* → *Run workflow*) or when a
+PR is labelled `live-validation`. One-time setup:
+
+1. Create a GitHub **environment** named `test-tenant` (Settings →
+   Environments). Add required reviewers if you want a human gate before any
+   live run.
+2. Add environment secrets `CSFWCTL_CLIENT_ID`, `CSFWCTL_CLIENT_SECRET`,
+   and (if not the default) `CSFWCTL_BASE_URL`. Use a **least-privilege**
+   test-tenant API client — Firewall Management read/write only.
+3. Optionally set the `CSFWCTL_LIVE_PLATFORM` environment variable
+   (`mac` / `windows`).
+
+The job is serialised (`concurrency: live-validation`) so two runs can't
+mutate the tenant simultaneously.

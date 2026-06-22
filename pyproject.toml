@@ -112,6 +112,7 @@ addopts = [
 testpaths = ["tests"]
 markers = [
     "integration: tests that replay recorded API fixtures",
+    "live: tests that hit a real test tenant (opt-in; require CSFWCTL_LIVE_TEST=1 + credentials)",
 ]
 
 [tool.coverage.run]
