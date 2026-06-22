@@ -383,7 +383,9 @@ def _diff_dict_keys(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
     out: list[str] = []
     for key in sorted(set(before) | set(after)):
         if before.get(key) != after.get(key):
-            out.append(f"{key}: {_render_value(before.get(key))} -> {_render_value(after.get(key))}")
+            out.append(
+                f"{key}: {_render_value(before.get(key))} -> {_render_value(after.get(key))}"
+            )
     return out
 
 
