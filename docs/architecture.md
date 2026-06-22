@@ -337,7 +337,13 @@ lists (``_rule_content_diff_ops``), one or two ops per rule delta:
 
 - ``remove /rules/<i>`` for a deletion, emitted in **descending** index
   order and dropped from the returned ``rule_ids``;
-- ``add /rules/-`` for a new rule, whose id is assigned server-side;
+- ``add /rules/-`` for a new rule. The added rule object **must** carry a
+  non-empty client-supplied ``temp_id`` and that same token **must** appear
+  in ``rule_ids`` at the rule's final position, or the endpoint rejects the
+  payload with HTTP 400 ``"Rule 'temp_id' cannot be empty."`` (confirmed
+  against a real tenant, 2026-06-22). The server maps each ``temp_id`` to
+  the real id it assigns. csfwctl uses ``temp_1``, ``temp_2``, … and appends
+  them to ``rule_ids``;
 - a **content change** to an existing rule is a ``remove /rules/<i>`` +
   ``add /rules/-`` pair (not a ``replace``). Rules are matched by name, so
   the re-added rule taking a fresh server id is harmless.
@@ -345,8 +351,7 @@ lists (``_rule_content_diff_ops``), one or two ops per rule delta:
 Ops are ordered removes(desc) → adds so array indices stay valid through
 the patch.  ``tracking`` is copied from the live record.
 
-*Caveats, unverified against a tenant:* (1) whether ``rule_ids`` should omit
-(current) or carry a placeholder for an added rule's id; (2) pure rule
+*Caveat, unverified against a tenant:* pure rule
 *reorders* (identical names + content) emit no ops and are not yet applied.
 
 The *response* shape also differs from create-style endpoints: rule-group

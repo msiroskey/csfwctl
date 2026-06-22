@@ -185,6 +185,15 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
         `add`/`remove` on `/rules`. `_rule_content_diff_ops` rewritten;
         ops ordered removes(desc) → adds. `docs/architecture.md` updated
         with the confirmed contract.
+      - [x] **Second tenant follow-up (2026-06-22):** with the remove+add
+        fix the `add` op then failed with HTTP 400 `"Rule 'temp_id' cannot
+        be empty."`. An added rule must carry a non-empty client-supplied
+        `temp_id`, and the same token must appear in `rule_ids` at the
+        rule's final position; the server maps each `temp_id` to the real id
+        it assigns. Fix: `_rule_content_diff_ops` sets `temp_id` (`temp_1`,
+        `temp_2`, …) on each added rule and appends it to `rule_ids`. This
+        also resolves the previously-unverified `rule_ids` placeholder
+        question — it carries the temp_id, not an omission.
 - [x] **Import dropped host groups without an env suffix.**
       `policy_from_api` inferred a host group's env solely from its name
       suffix and silently skipped any group lacking one, so bootstrapping

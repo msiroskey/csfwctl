@@ -774,13 +774,15 @@ def test_apply_update_rule_group_adds_new_rule_via_diff_op() -> None:
     value = adds[0]["value"]
     assert value["name"] == "Allow updater outbound"
     assert "id" not in value  # server assigns the id for a new rule
+    assert value["temp_id"]  # non-empty placeholder the server maps to a real id
     assert {
         "name": "image_name",
         "value": r"C:\Program Files\app\*.exe",
         "type": "windows_path",
     } in value["fields"]
-    # rule_ids preserves the single existing rule (the add is server-assigned).
-    assert len(payload["rule_ids"]) == 1
+    # rule_ids keeps the existing rule and appends the added rule's temp_id.
+    assert len(payload["rule_ids"]) == 2
+    assert value["temp_id"] in payload["rule_ids"]
 
 
 def test_apply_update_rule_group_removes_rule_via_diff_op() -> None:
@@ -857,12 +859,16 @@ def test_apply_update_rule_group_modified_rule_becomes_remove_add() -> None:
     assert [op["path"] for op in removes] == ["/rules/0"]
     # ...and the live id is dropped from rule_ids (server assigns a new one).
     assert live_rule_id not in payload["rule_ids"]
-    # ...and the desired content is appended.
+    # ...and the desired content is appended with a temp_id the server maps...
     adds = [op for op in payload["diff_operations"] if op["op"] == "add"]
     assert len(adds) == 1
     assert adds[0]["path"] == "/rules/-"
     assert adds[0]["value"]["action"] == "DENY"
     assert "id" not in adds[0]["value"]
+    temp_id = adds[0]["value"]["temp_id"]
+    assert temp_id
+    # ...and that temp_id replaces the dropped live id in rule_ids.
+    assert payload["rule_ids"] == [temp_id]
 
 
 # ---- bootstrap mode ------------------------------------------------------
