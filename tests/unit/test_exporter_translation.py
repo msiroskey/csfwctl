@@ -194,6 +194,46 @@ def test_rule_from_api_no_file_path_is_none() -> None:
     assert rule_from_api(record).file_path is None
 
 
+def test_rule_from_api_with_service_name() -> None:
+    # Confirmed tenant shape: a Windows service qualifier rides under the
+    # ``service_name`` field with a ``string`` type, typically paired with an
+    # ``image_name`` of svchost.exe.
+    record = {
+        "name": "Allow DHCP",
+        "action": "ALLOW",
+        "direction": "OUT",
+        "protocol": "17",
+        "fields": [
+            {
+                "name": "image_name",
+                "value": "%SystemRoot%\\System32\\svchost.exe",
+                "type": "windows_path",
+            },
+            {"name": "service_name", "value": "Dhcp", "type": "string"},
+            {"name": "network_location", "value": "", "type": "set", "values": [{"value": "ANY"}]},
+        ],
+    }
+    rule = rule_from_api(record)
+    assert rule.service_name == "Dhcp"
+    assert rule.file_path == "%SystemRoot%\\System32\\svchost.exe"
+
+
+def test_rule_from_api_empty_service_name_is_none() -> None:
+    record = {
+        "name": "x",
+        "action": "ALLOW",
+        "direction": "OUT",
+        "protocol": "6",
+        "fields": [{"name": "service_name", "value": "", "type": "string"}],
+    }
+    assert rule_from_api(record).service_name is None
+
+
+def test_rule_from_api_no_service_name_is_none() -> None:
+    record = {"name": "x", "action": "ALLOW", "direction": "OUT", "protocol": "6"}
+    assert rule_from_api(record).service_name is None
+
+
 def test_rule_file_path_round_trips_through_api_shape_windows() -> None:
     """A Windows file_path rule survives render -> import as image_name/windows_path."""
     rg = RuleGroup(
@@ -248,6 +288,56 @@ def test_rule_file_path_round_trips_through_api_shape_macos() -> None:
     rules_by_id = {r["id"]: r for r in shape["rules"]}
     restored = rule_group_from_api(shape, rules_by_id)
     assert restored.rules[0].file_path == "/usr/libexec/rapportd"
+
+
+def test_rule_service_name_round_trips_through_api_shape() -> None:
+    """A Windows service_name rule renders as a string-typed service_name field."""
+    rg = RuleGroup(
+        name="windows-baseline",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="Allow DHCP service outbound",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.udp,
+                file_path=r"%SystemRoot%\System32\svchost.exe",
+                service_name="Dhcp",
+                remote=Endpoint(ports=[67]),
+            )
+        ],
+    )
+    shape = rule_group_to_api_shape(rg, "test")
+    fields = shape["rules"][0]["fields"]
+    assert {"name": "service_name", "value": "Dhcp", "type": "string"} in fields
+    assert {
+        "name": "image_name",
+        "value": r"%SystemRoot%\System32\svchost.exe",
+        "type": "windows_path",
+    } in fields
+
+    rules_by_id = {r["id"]: r for r in shape["rules"]}
+    restored = rule_group_from_api(shape, rules_by_id)
+    assert restored.rules[0].service_name == "Dhcp"
+    assert restored.rules[0].file_path == r"%SystemRoot%\System32\svchost.exe"
+
+
+def test_rule_without_service_name_emits_no_service_name_field() -> None:
+    """Rules without a service_name must not emit a service_name field entry."""
+    rg = RuleGroup(
+        name="windows-baseline",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="plain",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.tcp,
+            )
+        ],
+    )
+    shape = rule_group_to_api_shape(rg, "test")
+    assert all(f.get("name") != "service_name" for f in shape["rules"][0]["fields"])
 
 
 def test_rule_from_api_negated_endpoint() -> None:

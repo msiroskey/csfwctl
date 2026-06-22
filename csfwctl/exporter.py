@@ -421,6 +421,7 @@ def rule_from_api(record: dict[str, Any]) -> Rule:
 
     state = _state_from_fields(record.get("fields"))
     file_path = _filepath_from_fields(record.get("fields"))
+    service_name = _service_name_from_fields(record.get("fields"))
     locations = _locations_from_api(record.get("locations"), record.get("network_locations"))
 
     local = _endpoint_from_api(record.get("local")) or _endpoint_from_api_flat(record, "local")
@@ -434,6 +435,7 @@ def rule_from_api(record: dict[str, Any]) -> Rule:
         protocol=protocol,
         state=state,
         file_path=file_path,
+        service_name=service_name,
         locations=locations,
         local=local,
         remote=remote,
@@ -477,6 +479,27 @@ def _filepath_from_fields(fields: Any) -> str | None:
         if not isinstance(entry, dict):
             continue
         if entry.get("name") != "image_name":
+            continue
+        value = entry.get("value")
+        if value:
+            return str(value)
+    return None
+
+
+def _service_name_from_fields(fields: Any) -> str | None:
+    """Pluck a Windows service-name qualifier out of CrowdStrike's ``fields`` list.
+
+    Mirrors :func:`_filepath_from_fields`. Confirmed against a tenant export,
+    the constraint rides under the ``service_name`` field with a ``string``
+    type: ``[{"name": "service_name", "value": "Dhcp", "type": "string"}]``.
+    An absent or empty ``service_name`` entry maps to ``None``.
+    """
+    if not fields:
+        return None
+    for entry in fields:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("name") != "service_name":
             continue
         value = entry.get("value")
         if value:
@@ -956,6 +979,19 @@ def _rule_to_api_shape(
                 "name": "image_name",
                 "value": rule.file_path,
                 "type": _PATH_TYPE_TO_API[platform],
+            }
+        )
+    if rule.service_name is not None:
+        # Confirmed against a tenant export: the Windows service qualifier is
+        # the ``service_name`` field, carrying a plain ``string`` type token.
+        # Windows-only on the wire; emitted whenever set (the rule does not
+        # know its platform, so platform appropriateness is the caller's
+        # concern — see Rule.service_name).
+        record["fields"].append(
+            {
+                "name": "service_name",
+                "value": rule.service_name,
+                "type": "string",
             }
         )
     if rule.local is not None:
@@ -1467,6 +1503,10 @@ def _trim_rule(rule: dict[str, Any]) -> dict[str, Any]:
     }
     if rule.get("state"):
         out["state"] = rule["state"]
+    if rule.get("file_path"):
+        out["file_path"] = rule["file_path"]
+    if rule.get("service_name"):
+        out["service_name"] = rule["service_name"]
     locations = rule.get("locations") or [ANY_LOCATION_NAME]
     out["locations"] = list(locations)
     if rule.get("local"):

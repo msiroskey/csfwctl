@@ -359,6 +359,31 @@ def test_dump_yaml_writes_locations_only_when_non_any() -> None:
     assert "locations:" in yaml_text  # default [any] is still emitted; loader expects it
 
 
+def test_dump_yaml_emits_file_path_and_service_name() -> None:
+    """Regression: the importer's YAML dump must preserve file_path/service_name.
+
+    ``_trim_rule`` previously dropped both, so ``import`` silently lost the
+    application-aware match (and re-importing could not backfill it).
+    """
+    rg = RuleGroup(
+        name="windows-baseline",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="dhcp",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.udp,
+                file_path=r"%SystemRoot%\System32\svchost.exe",
+                service_name="Dhcp",
+            )
+        ],
+    )
+    yaml_text = dump_yaml(rg)
+    assert r"file_path: '%SystemRoot%\System32\svchost.exe'" in yaml_text
+    assert "service_name: Dhcp" in yaml_text
+
+
 def test_round_trip_realistic_repo(tmp_path: Path) -> None:
     """Round-trip the realistic fixture repo through the importer."""
     from tests.conftest import FIXTURES_ROOT

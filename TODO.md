@@ -125,6 +125,27 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       `image_name`, no `type`); CrowdStrike silently ignored it, so an applied
       filepath never took effect. Fixed once a tenant export confirmed the
       shape.
+- [x] **`service_name` rule field (Windows service qualifier).** `Rule`
+      gained an optional `service_name: str` (≤256 chars) carrying the
+      CrowdStrike Windows service-name match (e.g. `Dhcp`), typically paired
+      with a `file_path` of `%SystemRoot%\System32\svchost.exe`. Windows-only
+      on the wire; the rule is platform-agnostic so platform appropriateness is
+      left to the containing rule group / policy (mirrors `file_path`). It rides
+      in the rule's `fields` array as
+      `{"name": "service_name", "value": <name>, "type": "string"}` (confirmed
+      against a tenant export). `exporter._rule_to_api_shape` emits it,
+      `exporter._service_name_from_fields` reads it back (empty value → None),
+      and the schema validator does a local-only check (non-empty, no NUL).
+      Updated `csfwctl/schema/rule.py`, `csfwctl/exporter.py`,
+      `docs/schema_reference.md`, `docs/architecture.md`, the realistic
+      `windows-baseline` fixture, and tests (`test_schema_rule.py`,
+      `test_exporter_translation.py`, `test_exporter.py`).
+      **Also fixed a latent bug:** `exporter._trim_rule` (the importer's YAML
+      writer) silently dropped both `file_path` and `service_name`, so
+      `import` lost the application-aware match and the Bug-fixes-section advice
+      to "re-import to backfill `file_path`" could not actually work. `_trim_rule`
+      now emits both. Confirmed `type: windows_path` is already set for Windows
+      `image_name` rules (it was — no change needed there).
 - [x] **Per-action change detail in apply logs.** `AppliedAction` now
       carries the `field_changes` / `host_group_changes` /
       `managed_group_changes` tuples threaded off the originating

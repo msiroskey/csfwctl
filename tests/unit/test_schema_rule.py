@@ -139,6 +139,45 @@ def test_rule_rejects_overlong_file_path() -> None:
         )
 
 
+def test_rule_accepts_service_name() -> None:
+    rule = Rule(
+        name="dhcp service",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.udp,
+        file_path=r"%SystemRoot%\System32\svchost.exe",
+        service_name="Dhcp",
+    )
+    assert rule.service_name == "Dhcp"
+
+
+def test_rule_service_name_defaults_to_none() -> None:
+    rule = Rule(name="x", action=Action.allow, direction=Direction.outbound, protocol=Protocol.tcp)
+    assert rule.service_name is None
+
+
+def test_rule_rejects_empty_service_name() -> None:
+    with pytest.raises(ValidationError):
+        Rule(
+            name="bad",
+            action=Action.allow,
+            direction=Direction.outbound,
+            protocol=Protocol.tcp,
+            service_name="   ",
+        )
+
+
+def test_rule_rejects_overlong_service_name() -> None:
+    with pytest.raises(ValidationError):
+        Rule(
+            name="bad",
+            action=Action.allow,
+            direction=Direction.outbound,
+            protocol=Protocol.tcp,
+            service_name="a" * 257,
+        )
+
+
 def test_endpoint_validates_addresses() -> None:
     ep = Endpoint(addresses=["10.0.0.1", "192.168.0.0/16"])
     assert ep.addresses == ["10.0.0.1", "192.168.0.0/16"]
