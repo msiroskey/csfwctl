@@ -167,19 +167,24 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
         showed as "1 added" in the apply summary but never appeared in the
         export). Fix: `_build_rule_group_update_payload` now builds real
         JSON-Patch `diff_operations` on `/rules` from the change's
-        before/after rule lists — `replace /rules/<i>` (content change,
-        carrying the live rule id), `remove /rules/<i>` (descending index,
-        dropped from `rule_ids`), and `add /rules/-` (new rule, id assigned
-        server-side). Ops are ordered replaces → removes(desc) → adds so
-        array indices stay valid. `_rule_content_diff_ops` raises
-        `SafetyError` if the live rule count and `rule_ids` length disagree
-        (ambiguous mapping). Tests:
-        `test_apply_update_rule_group_{adds_new_rule,removes_rule,replaces_modified_rule}`.
-        **Still unverified against a tenant:** whether `rule_ids` should
-        omit (current behaviour) or placeholder the to-be-added rule id.
-        A wrong shape now surfaces as a loud HTTP 400 rather than a silent
-        no-op. **Also:** pure rule *reorders* (same names + content) emit no
+        before/after rule lists — `remove /rules/<i>` (descending index,
+        dropped from `rule_ids`) and `add /rules/-` (new rule, id assigned
+        server-side). `_rule_content_diff_ops` raises `SafetyError` if the
+        live rule count and `rule_ids` length disagree (ambiguous mapping).
+        Tests: `test_apply_update_rule_group_{adds_new_rule,removes_rule,
+        modified_rule_becomes_remove_add}`.
+        **Also:** pure rule *reorders* (same names + content) emit no
         ops and are not yet applied — documented limitation.
+      - [x] **Follow-up confirmed against tenant (2026-06-22):** a content
+        change to an existing rule was emitted as `replace /rules/<i>`,
+        which the API rejects with HTTP 400 `"error updating rule group:
+        unhandled replace operation in payload"` — only the scalar
+        `replace /description` is a handled `replace`. Fix: a modified rule
+        is now a **remove + add** pair (rules are matched by name, so the
+        re-added rule taking a fresh server id is harmless), leaving only
+        `add`/`remove` on `/rules`. `_rule_content_diff_ops` rewritten;
+        ops ordered removes(desc) → adds. `docs/architecture.md` updated
+        with the confirmed contract.
 - [x] **Import dropped host groups without an env suffix.**
       `policy_from_api` inferred a host group's env solely from its name
       suffix and silently skipped any group lacking one, so bootstrapping
