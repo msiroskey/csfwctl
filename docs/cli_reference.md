@@ -353,6 +353,12 @@ Each action is also emitted as one structured `INFO` log record on the
 `csfwctl.applier` logger, so `--log-format json` produces one JSON line
 per action carrying the same fields, correlated by the request ID.
 
+Field values in the change detail are rendered **in full** — never
+truncated. The change detail is an audit record, and a clipped executable
+path or address list cannot be reconstructed after the fact. Strings are
+shown via `repr` (quoted, with backslashes escaped) so an empty string is
+visible and `None` is distinguishable from the literal `"None"`.
+
 ### Initial bootstrap
 
 First-ever apply against a tenant uses `--initial-bootstrap`. In this
