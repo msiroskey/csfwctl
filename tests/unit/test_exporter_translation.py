@@ -158,29 +158,35 @@ def test_rule_from_api_with_state_and_port_range() -> None:
 
 
 def test_rule_from_api_with_file_path() -> None:
+    # Confirmed tenant shape: the filepath lives under the ``image_name`` field
+    # with a platform ``type`` token, and a sibling ``network_location`` entry.
     record = {
-        "name": "Allow updater outbound",
+        "name": "Airdrop: Any Inbound",
         "action": "ALLOW",
-        "direction": "OUT",
-        "protocol": "6",
-        "fields": [{"name": "file_path", "value": r"C:\Program Files\app\*.exe"}],
-        "remote": {"ports": [{"start": 443, "end": 0}]},
+        "direction": "IN",
+        "protocol": "17",
+        "fields": [
+            {"name": "image_name", "value": "/usr/libexec/sharingd", "type": "unix_path"},
+            {"name": "network_location", "value": "", "type": "set", "values": [{"value": "ANY"}]},
+        ],
     }
     rule = rule_from_api(record)
-    assert rule.file_path == r"C:\Program Files\app\*.exe"
+    assert rule.file_path == "/usr/libexec/sharingd"
 
 
-def test_rule_from_api_file_path_tolerates_values_list() -> None:
-    """The importer accepts the unconfirmed ``values`` list wire shape too."""
+def test_rule_from_api_empty_image_name_is_none() -> None:
+    """CrowdStrike stamps an empty image_name on rules with no filepath match."""
     record = {
-        "name": "Allow updater outbound",
+        "name": "SSH",
         "action": "ALLOW",
-        "direction": "OUT",
+        "direction": "IN",
         "protocol": "6",
-        "fields": [{"name": "file_path", "values": [r"C:\app\*.exe"]}],
+        "fields": [
+            {"name": "image_name", "value": "", "type": "unix_path"},
+            {"name": "network_location", "value": "", "type": "set", "values": [{"value": "ANY"}]},
+        ],
     }
-    rule = rule_from_api(record)
-    assert rule.file_path == r"C:\app\*.exe"
+    assert rule_from_api(record).file_path is None
 
 
 def test_rule_from_api_no_file_path_is_none() -> None:
@@ -188,8 +194,8 @@ def test_rule_from_api_no_file_path_is_none() -> None:
     assert rule_from_api(record).file_path is None
 
 
-def test_rule_file_path_round_trips_through_api_shape() -> None:
-    """A file_path rule survives render -> import unchanged."""
+def test_rule_file_path_round_trips_through_api_shape_windows() -> None:
+    """A Windows file_path rule survives render -> import as image_name/windows_path."""
     rg = RuleGroup(
         name="windows-baseline",
         platform=Platform.windows,
@@ -205,13 +211,43 @@ def test_rule_file_path_round_trips_through_api_shape() -> None:
         ],
     )
     shape = rule_group_to_api_shape(rg, "test")
-    # The filepath rides in the API ``fields`` array alongside tcp_state.
     rule_shape = shape["rules"][0]
-    assert {"name": "file_path", "value": r"C:\Program Files\app\*.exe"} in rule_shape["fields"]
+    assert {
+        "name": "image_name",
+        "value": r"C:\Program Files\app\*.exe",
+        "type": "windows_path",
+    } in rule_shape["fields"]
 
     rules_by_id = {r["id"]: r for r in shape["rules"]}
     restored = rule_group_from_api(shape, rules_by_id)
     assert restored.rules[0].file_path == r"C:\Program Files\app\*.exe"
+
+
+def test_rule_file_path_round_trips_through_api_shape_macos() -> None:
+    """A macOS file_path rule renders with the unix_path type token."""
+    rg = RuleGroup(
+        name="mac-baseline",
+        platform=Platform.mac,
+        rules=[
+            Rule(
+                name="Allow rapportd inbound",
+                action=Action.allow,
+                direction=Direction.inbound,
+                protocol=Protocol.any,
+                file_path="/usr/libexec/rapportd",
+            )
+        ],
+    )
+    shape = rule_group_to_api_shape(rg, "test")
+    assert {
+        "name": "image_name",
+        "value": "/usr/libexec/rapportd",
+        "type": "unix_path",
+    } in shape["rules"][0]["fields"]
+
+    rules_by_id = {r["id"]: r for r in shape["rules"]}
+    restored = rule_group_from_api(shape, rules_by_id)
+    assert restored.rules[0].file_path == "/usr/libexec/rapportd"
 
 
 def test_rule_from_api_negated_endpoint() -> None:

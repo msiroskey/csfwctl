@@ -87,28 +87,44 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
 
 ## Enhancements
 
+- [x] **Gated live tenant validation.** A real test environment is now
+      available for the wire-contract questions mocks can't answer (the
+      diff-based `update_rule_group` payload; the `image_name` filepath
+      shape). Added `tests/integration/test_live_rule_group.py` (marked
+      `live`, skipped unless `CSFWCTL_LIVE_TEST=1` + creds): provisions a
+      throwaway `csfwctl-live-*` rule group, drives create → update
+      (add/modify/remove) → re-fetch → assert → delete (cleanup in
+      `finally`). New `.github/workflows/live-validation.yml` runs it
+      only on `workflow_dispatch` or a `live-validation` PR label, reading
+      creds from a `test-tenant` GitHub environment; serialised via
+      `concurrency`. Default CI stays hermetic. `live` marker registered in
+      `pyproject.toml`. Docs: `docs/operations.md` § "Live tenant
+      validation"; `CLAUDE.md` operating-constraint section updated to
+      reflect the gated path (still: no live calls in the default suite).
+      **Next:** run it against the tenant to confirm the `update_rule_group`
+      add payload (`rule_ids` handling for new rules) — the one part still
+      flagged unverified in `_build_rule_group_update_payload`.
 - [x] **`file_path` rule field (executable-filepath glob match).** `Rule`
       gained an optional `file_path: str` (≤999 chars) carrying a CrowdStrike
       application-aware filepath glob; the rule then only matches traffic from a
       process whose image path matches. Platform-agnostic — use the native path
       format for the platform (Windows `C:\Program Files\app\*.exe` or macOS
       `/Applications/App.app/Contents/MacOS/*`).
-      It rides in the API `fields` array alongside `tcp_state`:
-      `_rule_to_api_shape` emits `{"name": "file_path", "value": <glob>}` and
-      the new `exporter._filepath_from_fields` parses it back (tolerating a
-      `values` list shape as well). Schema validator does a local-only sanity
-      check (non-empty, no NUL) — no call to CrowdStrike's
-      `validate_filepath_pattern` endpoint (no test tenant). Updated
+      On the wire it rides in the rule's `fields` array under the **`image_name`**
+      name (confirmed against a tenant export — NOT `file_path`), carrying a
+      platform-derived `type` token: `_rule_to_api_shape` emits
+      `{"name": "image_name", "value": <glob>, "type": "windows_path"|"unix_path"}`
+      and `exporter._filepath_from_fields` reads `image_name` back (empty value
+      → None; the sibling `network_location` field is ignored). Schema validator
+      does a local-only sanity check (non-empty, no NUL). Updated
       `csfwctl/schema/rule.py`, `csfwctl/exporter.py`,
-      `docs/schema_reference.md`, the realistic `windows-baseline` fixture, and
-      tests (`test_schema_rule.py`, `test_exporter_translation.py`).
-      **UNCONFIRMED:** the exact wire shape — scalar `value` vs `values` list,
-      and whether a `type` token (e.g. `windows_path`) is required on create —
-      is not yet pinned against a recorded API response. The serializer mirrors
-      the `tcp_state` precedent (scalar `value`); confirm with a captured
-      fixture of a real rule that already carries a filepath match **before the
-      first real apply** of a `file_path` rule. See the code NOTE in
-      `_rule_to_api_shape`.
+      `docs/schema_reference.md`, `docs/architecture.md`, the realistic
+      `windows-baseline` + `mac-baseline` fixtures, and tests
+      (`test_schema_rule.py`, `test_exporter_translation.py`).
+      **First cut shipped the wrong field name** (`file_path` instead of
+      `image_name`, no `type`); CrowdStrike silently ignored it, so an applied
+      filepath never took effect. Fixed once a tenant export confirmed the
+      shape.
 - [x] **Per-action change detail in apply logs.** `AppliedAction` now
       carries the `field_changes` / `host_group_changes` /
       `managed_group_changes` tuples threaded off the originating
@@ -143,11 +159,27 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       `replace /description` JSON Patch, copying `rule_ids`/`tracking`
       from the live record so rule content is preserved. Documented in
       `docs/architecture.md`.
-      - [ ] **Follow-up:** the *normal* (non-bootstrap) rule-group update
-        path (`_build_rule_group_payload`) still emits the full-content
-        create shape with a top-level `description`. It has never run
-        against a real tenant and almost certainly needs the same
-        diff-based treatment. Investigate when a real update is exercised.
+      - [x] **Follow-up done:** the *normal* (non-bootstrap) rule-group
+        update path silently dropped all rule add/remove/modify changes —
+        it sent only a `replace /description` patch and copied `rule_ids`
+        verbatim, so an applied rule change returned HTTP 200 while
+        persisting nothing (confirmed against a real tenant: a new rule
+        showed as "1 added" in the apply summary but never appeared in the
+        export). Fix: `_build_rule_group_update_payload` now builds real
+        JSON-Patch `diff_operations` on `/rules` from the change's
+        before/after rule lists — `replace /rules/<i>` (content change,
+        carrying the live rule id), `remove /rules/<i>` (descending index,
+        dropped from `rule_ids`), and `add /rules/-` (new rule, id assigned
+        server-side). Ops are ordered replaces → removes(desc) → adds so
+        array indices stay valid. `_rule_content_diff_ops` raises
+        `SafetyError` if the live rule count and `rule_ids` length disagree
+        (ambiguous mapping). Tests:
+        `test_apply_update_rule_group_{adds_new_rule,removes_rule,replaces_modified_rule}`.
+        **Still unverified against a tenant:** whether `rule_ids` should
+        omit (current behaviour) or placeholder the to-be-added rule id.
+        A wrong shape now surfaces as a loud HTTP 400 rather than a silent
+        no-op. **Also:** pure rule *reorders* (same names + content) emit no
+        ops and are not yet applied — documented limitation.
 - [x] **Import dropped host groups without an env suffix.**
       `policy_from_api` inferred a host group's env solely from its name
       suffix and silently skipped any group lacking one, so bootstrapping

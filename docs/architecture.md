@@ -150,13 +150,14 @@ emits the lowercase form so it is correct for CREATE/UPDATE payloads.
   "protocol": "17",                    # "0"/"*" any, "1" icmp, "6" tcp, "17" udp
   "address_family": "IP4",             # required by CREATE: "IP4" | "IP6"
   "fields": [{"name": "tcp_state", "value": "established"}],   # optional state
-  # An optional executable-filepath glob also rides in `fields`:
-  #   {"name": "file_path", "value": "C:\\Program Files\\app\\*.exe"}
-  # UNCONFIRMED wire shape: scalar `value` vs `values` list, and whether a
-  # `type` token (e.g. "windows_path") is required on CREATE. csfwctl emits a
-  # scalar `value` (mirroring tcp_state); confirm against a recorded fixture
-  # before the first real apply of a file_path rule. Import tolerates both
-  # `value` and `values` (exporter._filepath_from_fields).
+  # The optional executable-filepath glob (Rule.file_path) rides in `fields`
+  # under the `image_name` name (NOT `file_path`), confirmed against a tenant
+  # export:
+  #   {"name": "image_name", "value": "/usr/libexec/sharingd", "type": "unix_path"}
+  # `type` is platform-derived: `windows_path` (Windows) / `unix_path` (mac).
+  # CrowdStrike also stamps an empty `image_name` (value "") plus a
+  # `network_location` field on every rule; the importer ignores both an empty
+  # image_name and the network_location entry. See exporter._filepath_from_fields.
   "local": {"addresses": [...], "ports": [{"start": N, "end": M}]},
   "remote": {...},
   "locations": [...],                  # slug list (csfwctl convention)
@@ -321,20 +322,30 @@ zero writes). To change any field you submit a JSON Patch op in
 omit ``tracking`` or ``rule_ids`` with HTTP 400 (``"cannot be empty"`` /
 ``"array must be provided"``). Both **bootstrap** and **normal** rule-group
 updates use the diff-based format.  Bootstrap calls
-``applier._rule_group_metadata_payload`` directly; normal updates call
-``applier._build_rule_group_update_payload``, which computes the new
-description trailer (incrementing the version counter) then delegates to
-``_rule_group_metadata_payload``.  In both cases ``rule_ids`` and
-``tracking`` are copied verbatim from the live record.  Locations and
-policies still take the simple ``{id, description}`` update.
+``applier._rule_group_metadata_payload`` directly (metadata trailer only).
+Locations and policies still take the simple ``{id, description}`` update.
 
-**Rule content changes are deferred.** The JSON Patch paths for individual
-rule fields (``/rules/N/action`` etc.) are unconfirmed against a real
-tenant.  The differ correctly detects rule content drift and reports it;
-the applier currently preserves ``rule_ids`` from the live record (keeping
-existing rules intact) and does not yet propagate content changes via
-``diff_operations``.  This is tracked as a follow-up once the correct
-paths are confirmed.
+**Rule content changes go through ``diff_operations`` on ``/rules``.**
+``applier._build_rule_group_update_payload`` emits the description trailer
+as ``replace /description`` and then, from the change's before/after rule
+lists (``_rule_content_diff_ops``), one op per rule delta:
+
+- ``replace /rules/<i>`` for a content change, with the live rule id in the
+  value so identity is preserved (``<i>`` is the rule's position in the live
+  ``rule_ids`` order);
+- ``remove /rules/<i>`` for a deletion, emitted in **descending** index
+  order and dropped from the returned ``rule_ids``;
+- ``add /rules/-`` for a new rule, whose id is assigned server-side.
+
+Ops are ordered replaces → removes(desc) → adds so array indices stay valid
+through the patch.  ``tracking`` is copied from the live record.
+
+*Caveats, unverified against a tenant:* (1) whether ``rule_ids`` should omit
+(current) or carry a placeholder for an added rule's id; (2) pure rule
+*reorders* (identical names + content) emit no ops and are not yet applied.
+A wrong ``add`` shape now surfaces as a loud HTTP 400 rather than the
+previous silent no-op (description-only patch that returned 200 while
+dropping rule changes).
 
 The *response* shape also differs from create-style endpoints: rule-group
 create and update return ``resources`` as a list of bare **ID strings**,
