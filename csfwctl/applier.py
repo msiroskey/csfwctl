@@ -352,15 +352,10 @@ def _build_rule_group_update_payload(
       as a remove + add pair (see ``_rule_content_diff_ops``).
 
     ``tracking`` is copied verbatim from the live record for optimistic
-    concurrency.  ``rule_ids`` is the live list with removed entries dropped;
-    rules added via an ``add`` op are assigned ids server-side.
-
-    .. note::
-       The exact handling of ``rule_ids`` for *added* rules is the one part of
-       this payload not yet confirmed against a real tenant.  A wrong shape
-       surfaces loudly (HTTP 400) rather than as a silent no-op, which is the
-       deliberate trade vs. the previous description-only patch that dropped
-       rule changes while returning 200.
+    concurrency.  ``rule_ids`` is the live list with removed entries dropped and
+    a ``temp_id`` placeholder appended for each added rule; the server maps each
+    ``temp_id`` to the real id it assigns (confirmed against a real tenant —
+    the endpoint rejects an added rule without a non-empty ``temp_id``).
     """
     new_description, _ = _signature_for(live_description or rule_group.description, options)
     record = live_record or {}
@@ -465,13 +460,21 @@ def _rule_content_diff_ops(
         del rule_ids[i]
 
     # Adds: new in desired, plus modified rules re-added. Append; the server
-    # assigns the id.
+    # assigns the real id, mapping it from the client-supplied ``temp_id``. The
+    # endpoint requires a non-empty ``temp_id`` on each added rule and the same
+    # token in ``rule_ids`` at the rule's final position ("Rule 'temp_id' cannot
+    # be empty." otherwise).
+    temp_counter = 0
     for rule in after:
         name = rule.get("name")
         if name not in before_by_name or name in modified_names:
+            temp_counter += 1
+            temp_id = f"temp_{temp_counter}"
             shape = dict(desired_shapes[name])
             shape.pop("id", None)
+            shape["temp_id"] = temp_id
             operations.append({"op": "add", "path": "/rules/-", "value": shape})
+            rule_ids.append(temp_id)
 
     return operations, rule_ids
 
