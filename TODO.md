@@ -194,6 +194,16 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
         `temp_2`, …) on each added rule and appends it to `rule_ids`. This
         also resolves the previously-unverified `rule_ids` placeholder
         question — it carries the temp_id, not an omission.
+      - [x] **Third tenant follow-up (2026-06-22):** with the rule create
+        path working, the apply then failed with HTTP 400 `"Ports not
+        allowed without a specific Protocol"` — a config rule carried ports
+        with `protocol: any` (CrowdStrike only allows ports on tcp/udp).
+        This is a config-validity issue, not a wire-shape one. Fix: new
+        `Rule._ports_require_tcp_or_udp` model validator rejects ports
+        unless the protocol is tcp or udp (raw-int "Advanced" protocols
+        left to the user, matching `_state_only_for_tcp`), so `validate`
+        and the apply load step fail with an actionable message before
+        reaching the tenant. `docs/schema_reference.md` updated.
 - [x] **Import dropped host groups without an env suffix.**
       `policy_from_api` inferred a host group's env solely from its name
       suffix and silently skipped any group lacking one, so bootstrapping
