@@ -130,6 +130,15 @@ class Rule(BaseModel):
     platform (Windows ``C:\\...`` or macOS ``/Applications/...``). It
     rides in the API ``fields`` array alongside the connection-state
     qualifier.
+
+    ``service_name`` is an optional Windows service-name qualifier: the
+    rule then only matches traffic originating from the named Windows
+    service (e.g. ``Dhcp`` for ``svchost.exe``). It is **Windows-only** —
+    macOS has no equivalent concept — and rides in the API ``fields``
+    array as ``{"name": "service_name", ..., "type": "string"}``. The
+    rule itself is platform-agnostic, so platform enforcement is left to
+    the rule group / policy that contains it; setting it on a macOS rule
+    has no effect on the wire.
     """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -141,6 +150,7 @@ class Rule(BaseModel):
     protocol: Protocol | int
     state: ConnectionState | None = None
     file_path: str | None = Field(default=None, max_length=999)
+    service_name: str | None = Field(default=None, max_length=256)
     locations: list[str] = Field(default_factory=lambda: [ANY_LOCATION])
     local: Endpoint | None = None
     remote: Endpoint | None = None
@@ -169,6 +179,26 @@ class Rule(BaseModel):
             raise ValueError("file_path must be a non-empty glob pattern (or omitted)")
         if "\x00" in value:
             raise ValueError("file_path must not contain a NUL character")
+        return value
+
+    @field_validator("service_name")
+    @classmethod
+    def _check_service_name(cls, value: str | None) -> str | None:
+        """Sanity-check the Windows service-name qualifier (local check only).
+
+        CrowdStrike matches the rule against the originating Windows
+        service's short name (e.g. ``Dhcp``). This is a structural check
+        only — non-empty after whitespace stripping and no embedded NUL —
+        mirroring :meth:`_check_file_path`. Platform appropriateness
+        (Windows-only) is not enforced here because a :class:`Rule` does
+        not know its platform; the containing rule group / policy does.
+        """
+        if value is None:
+            return value
+        if not value:
+            raise ValueError("service_name must be a non-empty string (or omitted)")
+        if "\x00" in value:
+            raise ValueError("service_name must not contain a NUL character")
         return value
 
     @field_validator("locations")

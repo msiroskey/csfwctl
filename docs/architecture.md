@@ -158,6 +158,11 @@ emits the lowercase form so it is correct for CREATE/UPDATE payloads.
   # CrowdStrike also stamps an empty `image_name` (value "") plus a
   # `network_location` field on every rule; the importer ignores both an empty
   # image_name and the network_location entry. See exporter._filepath_from_fields.
+  # The optional Windows-only service qualifier (Rule.service_name) rides in the
+  # same `fields` array, confirmed against a tenant export:
+  #   {"name": "service_name", "value": "Dhcp", "type": "string"}
+  # — typically paired with an `image_name` of svchost.exe. Read back by
+  # exporter._service_name_from_fields (empty value → None).
   "local": {"addresses": [...], "ports": [{"start": N, "end": M}]},
   "remote": {...},
   "locations": [...],                  # slug list (csfwctl convention)

@@ -33,3 +33,14 @@ rules:
     remote:
       ports: [443]
     locations: [any]
+
+  - name: Allow DHCP service outbound
+    enabled: true
+    action: allow
+    direction: outbound
+    protocol: udp
+    file_path: '%SystemRoot%\System32\svchost.exe'
+    service_name: Dhcp
+    remote:
+      ports: [67]
+    locations: [any]
