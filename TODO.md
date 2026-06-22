@@ -214,15 +214,22 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       (quoted, backslashes escaped) so `None` ≠ `"None"` and empties are
       visible. `docs/cli_reference.md` notes the no-truncation guarantee.
       Tests assert a long path renders in full with no `…`.
-- [ ] **Investigate: created rules missing `file_path` on the tenant.**
-      Operator reports rules csfwctl created lack the executable-path match,
-      and a re-apply diff shows `file_path: '<live path>' -> None` on a
-      pre-existing rule (live has it, desired/YAML does not). Likely the
-      config YAML for these rules has no `file_path` (e.g. generated before
-      the feature, or hand-authored without it) rather than a serialiser
-      bug — `_rule_to_api_shape` emits `image_name` whenever `rule.file_path`
-      is set and that path is covered by tests. Confirm against the
-      untruncated diff + the rule group's YAML before changing code.
+- [x] **Not a bug: created/edited rules "missing" `file_path`.** Operator
+      saw a re-apply diff show `file_path: '<live path>' -> None` and rules
+      created without the executable-path match. Root cause: the config YAML
+      was imported by a csfwctl predating the `file_path` feature, so it
+      never captured the live `image_name` field — the YAML has no
+      `file_path`, and apply correctly treats that as "remove it". The
+      *current* importer does capture it (`_rule_from_api` →
+      `_filepath_from_fields`, exporter.py), so the fix is to **re-import the
+      affected rule groups to backfill `file_path` into the YAML** before the
+      next apply.
+      **⚠ Footgun:** until the YAML is backfilled, applying the stale config
+      will strip the live `file_path` from every rule that has one (the apply
+      summary shows them as modified `… -> None`). Re-import (or hand-add the
+      paths) first. Consider an operations.md note + possibly a lint/diff
+      warning when an apply would clear a live `file_path` — surfaced for a
+      future session, not done here.
 - [x] **Import dropped host groups without an env suffix.**
       `policy_from_api` inferred a host group's env solely from its name
       suffix and silently skipped any group lacking one, so bootstrapping
