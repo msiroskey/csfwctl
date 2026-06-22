@@ -326,26 +326,28 @@ updates use the diff-based format.  Bootstrap calls
 Locations and policies still take the simple ``{id, description}`` update.
 
 **Rule content changes go through ``diff_operations`` on ``/rules``.**
+The endpoint only handles ``add`` and ``remove`` ops on the ``/rules``
+array. A ``replace`` targeting a whole ``/rules/<i>`` object is rejected
+with HTTP 400 ``"error updating rule group: unhandled replace operation
+in payload"`` — only the scalar ``replace /description`` is accepted
+(confirmed against a real tenant, 2026-06-22).
 ``applier._build_rule_group_update_payload`` emits the description trailer
 as ``replace /description`` and then, from the change's before/after rule
-lists (``_rule_content_diff_ops``), one op per rule delta:
+lists (``_rule_content_diff_ops``), one or two ops per rule delta:
 
-- ``replace /rules/<i>`` for a content change, with the live rule id in the
-  value so identity is preserved (``<i>`` is the rule's position in the live
-  ``rule_ids`` order);
 - ``remove /rules/<i>`` for a deletion, emitted in **descending** index
   order and dropped from the returned ``rule_ids``;
-- ``add /rules/-`` for a new rule, whose id is assigned server-side.
+- ``add /rules/-`` for a new rule, whose id is assigned server-side;
+- a **content change** to an existing rule is a ``remove /rules/<i>`` +
+  ``add /rules/-`` pair (not a ``replace``). Rules are matched by name, so
+  the re-added rule taking a fresh server id is harmless.
 
-Ops are ordered replaces → removes(desc) → adds so array indices stay valid
-through the patch.  ``tracking`` is copied from the live record.
+Ops are ordered removes(desc) → adds so array indices stay valid through
+the patch.  ``tracking`` is copied from the live record.
 
 *Caveats, unverified against a tenant:* (1) whether ``rule_ids`` should omit
 (current) or carry a placeholder for an added rule's id; (2) pure rule
 *reorders* (identical names + content) emit no ops and are not yet applied.
-A wrong ``add`` shape now surfaces as a loud HTTP 400 rather than the
-previous silent no-op (description-only patch that returned 200 while
-dropping rule changes).
 
 The *response* shape also differs from create-style endpoints: rule-group
 create and update return ``resources`` as a list of bare **ID strings**,

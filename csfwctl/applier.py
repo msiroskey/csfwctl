@@ -346,9 +346,10 @@ def _build_rule_group_update_payload(
     JSON Patch operations against the rule group document:
 
     - the metadata trailer as ``replace /description``;
-    - rule content as ``add`` / ``remove`` / ``replace`` operations on the
-      ``/rules`` array (CrowdStrike's ``update_rule_group`` documents that it
-      "can create, edit, delete, or reorder rules" through ``diff_operations``).
+    - rule content as ``add`` / ``remove`` operations on the ``/rules`` array.
+      The endpoint rejects a ``replace`` targeting a whole ``/rules/<i>`` object
+      ("unhandled replace operation in payload"), so a modified rule is emitted
+      as a remove + add pair (see ``_rule_content_diff_ops``).
 
     ``tracking`` is copied verbatim from the live record for optimistic
     concurrency.  ``rule_ids`` is the live list with removed entries dropped;
@@ -411,9 +412,18 @@ def _rule_content_diff_ops(
     ``live_rule_ids``); ``rules_change.after`` is the desired list.  Rules are
     matched by name — csfwctl's stable per-rule identity.  Returns
     ``(operations, rule_ids)`` where ``rule_ids`` is the live list minus removed
-    entries.  Operations are emitted in an order that keeps array indices valid:
-    replaces (original indices) first, then removes (descending index), then
-    appends.
+    entries.
+
+    The rule-group update endpoint only handles ``add`` / ``remove`` ops on the
+    ``/rules`` array — a ``replace`` targeting a whole ``/rules/<i>`` object is
+    rejected with HTTP 400 ``"unhandled replace operation in payload"`` (only the
+    scalar ``replace /description`` is accepted).  A content change to an
+    existing rule is therefore expressed as a **remove + add** pair, not a
+    replace.  Because csfwctl matches rules by name rather than server id, the
+    re-added rule taking a fresh server-assigned id is harmless.
+
+    Operations are emitted in an order that keeps array indices valid: removes
+    (descending index) first, then appends.
     """
     before = list(rules_change.before or [])
     after = list(rules_change.after or [])
@@ -427,21 +437,26 @@ def _rule_content_diff_ops(
 
     desired_shapes = {s["name"]: s for s in rule_group_to_api_shape(rule_group, env)["rules"]}
     before_by_name = {r.get("name"): (i, r) for i, r in enumerate(before)}
-    after_names = {r.get("name") for r in after}
+    after_by_name = {r.get("name"): r for r in after}
+
+    # A rule present on both sides whose content differs is "modified": removed
+    # at its live index and re-added with the desired content below.
+    modified_names = {
+        name
+        for name, (_i, live_rule) in before_by_name.items()
+        if name in after_by_name and after_by_name[name] != live_rule
+    }
 
     operations: list[dict[str, Any]] = []
 
-    # Replaces: present on both sides, content differs. Keep index and live id.
-    for name, (i, live_rule) in before_by_name.items():
-        desired = next((r for r in after if r.get("name") == name), None)
-        if desired is not None and desired != live_rule:
-            shape = dict(desired_shapes[name])
-            shape["id"] = live_rule_ids[i]
-            operations.append({"op": "replace", "path": f"/rules/{i}", "value": shape})
-
-    # Removes: in live, gone from desired. Descending index; drop from rule_ids.
+    # Removes: gone from desired, or modified (re-added below). Descending index
+    # so earlier indices stay valid; drop the entry from rule_ids.
     remove_indices = sorted(
-        (i for i, r in enumerate(before) if r.get("name") not in after_names),
+        (
+            i
+            for i, r in enumerate(before)
+            if r.get("name") not in after_by_name or r.get("name") in modified_names
+        ),
         reverse=True,
     )
     rule_ids = list(live_rule_ids)
@@ -449,10 +464,11 @@ def _rule_content_diff_ops(
         operations.append({"op": "remove", "path": f"/rules/{i}"})
         del rule_ids[i]
 
-    # Adds: new in desired. Append; the server assigns the id.
+    # Adds: new in desired, plus modified rules re-added. Append; the server
+    # assigns the id.
     for rule in after:
         name = rule.get("name")
-        if name not in before_by_name:
+        if name not in before_by_name or name in modified_names:
             shape = dict(desired_shapes[name])
             shape.pop("id", None)
             operations.append({"op": "add", "path": "/rules/-", "value": shape})

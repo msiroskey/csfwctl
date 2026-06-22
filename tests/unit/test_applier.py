@@ -805,8 +805,13 @@ def test_apply_update_rule_group_removes_rule_via_diff_op() -> None:
     assert len(payload["rule_ids"]) == 1  # dropped from two to one
 
 
-def test_apply_update_rule_group_replaces_modified_rule_with_live_id() -> None:
-    """A content change on an existing rule becomes a `replace` op carrying its live id."""
+def test_apply_update_rule_group_modified_rule_becomes_remove_add() -> None:
+    """A content change on an existing rule becomes a remove + add pair.
+
+    The endpoint rejects a ``replace`` on a whole ``/rules/<i>`` object, so a
+    modification is expressed as removing the live rule by index and appending
+    the desired content.
+    """
     live = _rg_with_rules(
         [
             Rule(
@@ -841,15 +846,23 @@ def test_apply_update_rule_group_replaces_modified_rule_with_live_id() -> None:
         safety_options=_safety(),
     )
     payload = client.rule_groups.updated[0]
-    replaces = [
+    # No `replace` op targets a /rules/<i> object — those are rejected by the API.
+    assert not [
         op
         for op in payload["diff_operations"]
         if op["op"] == "replace" and op["path"].startswith("/rules/")
     ]
-    assert len(replaces) == 1
-    assert replaces[0]["path"] == "/rules/0"
-    assert replaces[0]["value"]["id"] == live_rule_id
-    assert replaces[0]["value"]["action"] == "DENY"
+    # The live rule is removed by index...
+    removes = [op for op in payload["diff_operations"] if op["op"] == "remove"]
+    assert [op["path"] for op in removes] == ["/rules/0"]
+    # ...and the live id is dropped from rule_ids (server assigns a new one).
+    assert live_rule_id not in payload["rule_ids"]
+    # ...and the desired content is appended.
+    adds = [op for op in payload["diff_operations"] if op["op"] == "add"]
+    assert len(adds) == 1
+    assert adds[0]["path"] == "/rules/-"
+    assert adds[0]["value"]["action"] == "DENY"
+    assert "id" not in adds[0]["value"]
 
 
 # ---- bootstrap mode ------------------------------------------------------
