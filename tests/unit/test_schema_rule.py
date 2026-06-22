@@ -51,6 +51,44 @@ def test_rule_state_only_for_tcp_or_any() -> None:
         )
 
 
+@pytest.mark.parametrize("proto", [Protocol.any, Protocol.icmp, Protocol.gre])
+def test_rule_rejects_ports_without_tcp_or_udp(proto: Protocol) -> None:
+    """CrowdStrike rejects ports unless the protocol is tcp or udp."""
+    with pytest.raises(ValidationError, match="ports require protocol tcp or udp"):
+        Rule(
+            name="bad",
+            action=Action.allow,
+            direction=Direction.outbound,
+            protocol=proto,
+            remote=Endpoint(ports=[443]),
+        )
+
+
+@pytest.mark.parametrize("proto", [Protocol.tcp, Protocol.udp])
+def test_rule_allows_ports_for_tcp_and_udp(proto: Protocol) -> None:
+    rule = Rule(
+        name="ok",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=proto,
+        remote=Endpoint(ports=[443, "8000-8100"]),
+    )
+    assert rule.remote is not None
+    assert rule.remote.ports == [443, "8000-8100"]
+
+
+def test_rule_allows_ports_with_raw_protocol_number() -> None:
+    """Raw-integer 'Advanced' protocols are left to the user (no port check)."""
+    rule = Rule(
+        name="advanced",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=6,  # raw TCP, Advanced mode
+        remote=Endpoint(ports=[443]),
+    )
+    assert rule.remote is not None and rule.remote.ports == [443]
+
+
 def test_rule_accepts_file_path_glob() -> None:
     rule = Rule(
         name="updater",

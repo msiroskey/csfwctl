@@ -200,6 +200,32 @@ class Rule(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _ports_require_tcp_or_udp(self) -> Rule:
+        """Ports are only meaningful for TCP/UDP; reject them otherwise.
+
+        CrowdStrike returns HTTP 400 ``"Ports not allowed without a specific
+        Protocol"`` if a rule carries local/remote ports with any protocol
+        other than TCP or UDP (the ``any`` wildcard included). Enforce locally
+        so ``validate`` and the apply load step catch it with an actionable
+        message before reaching the tenant. Raw-integer ("Advanced") protocols
+        are left to the user, matching ``_state_only_for_tcp``.
+        """
+        has_ports = bool(
+            (self.local is not None and self.local.ports)
+            or (self.remote is not None and self.remote.ports)
+        )
+        if (
+            has_ports
+            and isinstance(self.protocol, Protocol)
+            and self.protocol not in (Protocol.tcp, Protocol.udp)
+        ):
+            raise ValueError(
+                f"ports require protocol tcp or udp, not {self.protocol.value}; "
+                "remove the ports or set a specific protocol"
+            )
+        return self
+
     def referenced_locations(self) -> set[str]:
         """Return the set of non-``any`` location slugs this rule references."""
         return {loc for loc in self.locations if loc != ANY_LOCATION}

@@ -143,7 +143,7 @@ Restrictions:
 |----------------------|---------------------|---------------------------------------------|
 | `addresses`          | list of IP, CIDR, or range | IPv4 or IPv6. Range forms: `10.0.0.1-10.0.0.254` (full) or `10.0.0.1-254` (last-octet shorthand). |
 | `addresses_negated`  | bool                | Requires non-empty `addresses`.             |
-| `ports`              | list of `int` or `"N-M"` | 1-65535. Range strings inclusive.       |
+| `ports`              | list of `int` or `"N-M"` | 1-65535. Range strings inclusive. Only allowed when the rule's `protocol` is `tcp` or `udp` (CrowdStrike rejects ports on any other protocol, including `any`). |
 | `ports_negated`      | bool                | Requires non-empty `ports`.                 |
 
 ## Location (`locations/<slug>.yaml`)
