@@ -204,6 +204,25 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
         left to the user, matching `_state_only_for_tcp`), so `validate`
         and the apply load step fail with an actionable message before
         reaching the tenant. `docs/schema_reference.md` updated.
+- [x] **Apply change detail truncated field values (broke auditability).**
+      The operator-facing per-action render clipped every before/after
+      value to 60 chars with an ellipsis (`_short`), so a long executable
+      path showed as `'C:\Program Files (x86)\…' -> None` and could not be
+      reconstructed from the log. Fix: `_render_value` renders values in
+      full (no cap); the structured-log / `--output` JSON path was already
+      full-fidelity via `FieldChange.to_json`. Strings still use `repr`
+      (quoted, backslashes escaped) so `None` ≠ `"None"` and empties are
+      visible. `docs/cli_reference.md` notes the no-truncation guarantee.
+      Tests assert a long path renders in full with no `…`.
+- [ ] **Investigate: created rules missing `file_path` on the tenant.**
+      Operator reports rules csfwctl created lack the executable-path match,
+      and a re-apply diff shows `file_path: '<live path>' -> None` on a
+      pre-existing rule (live has it, desired/YAML does not). Likely the
+      config YAML for these rules has no `file_path` (e.g. generated before
+      the feature, or hand-authored without it) rather than a serialiser
+      bug — `_rule_to_api_shape` emits `image_name` whenever `rule.file_path`
+      is set and that path is covered by tests. Confirm against the
+      untruncated diff + the rule group's YAML before changing code.
 - [x] **Import dropped host groups without an env suffix.**
       `policy_from_api` inferred a host group's env solely from its name
       suffix and silently skipped any group lacking one, so bootstrapping

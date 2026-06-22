@@ -342,7 +342,7 @@ def _summarise_field_change(fc: FieldChange) -> list[str]:
     before, after = fc.before, fc.after
     if isinstance(before, list) and isinstance(after, list):
         return _summarise_list_change(fc.path, before, after)
-    return [f"{fc.path}: {_short(before)} -> {_short(after)}"]
+    return [f"{fc.path}: {_render_value(before)} -> {_render_value(after)}"]
 
 
 def _summarise_list_change(path: str, before: list[Any], after: list[Any]) -> list[str]:
@@ -383,14 +383,19 @@ def _diff_dict_keys(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
     out: list[str] = []
     for key in sorted(set(before) | set(after)):
         if before.get(key) != after.get(key):
-            out.append(f"{key}: {_short(before.get(key))} -> {_short(after.get(key))}")
+            out.append(f"{key}: {_render_value(before.get(key))} -> {_render_value(after.get(key))}")
     return out
 
 
-def _short(value: Any, *, max_len: int = 60) -> str:
-    """Truncate a repr to keep console lines readable."""
-    text = repr(value)
-    return text if len(text) <= max_len else text[: max_len - 1] + "…"
+def _render_value(value: Any) -> str:
+    """Render a field value for the change detail at full fidelity.
+
+    Values are never truncated: the apply change detail is an audit record,
+    and a clipped executable path or address list cannot be reconstructed
+    after the fact. ``repr`` is used so strings are quoted and ``None`` is
+    distinguishable from the literal string ``"None"``.
+    """
+    return repr(value)
 
 
 __all__ = ["run_apply"]

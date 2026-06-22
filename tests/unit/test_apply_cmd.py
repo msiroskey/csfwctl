@@ -227,3 +227,36 @@ def test_apply_cli_dispatch_runs_to_completion(
     # Rich wraps the title across lines depending on terminal width.
     assert "csfwctl apply" in result.output
     assert "dry-run" in result.output
+
+
+def test_change_detail_does_not_truncate_long_paths() -> None:
+    """The apply change detail is an audit record — values render in full.
+
+    A clipped executable path cannot be reconstructed after the fact, so the
+    render must not truncate (regression for the old 60-char ``_short`` cap).
+    """
+    from csfwctl.apply_cmd import _summarise_field_change
+    from csfwctl.differ import FieldChange
+
+    long_path = r"C:\Program Files (x86)\Microsoft Office\root\Office16\lync.exe"
+    assert len(long_path) > 60
+    lines = _summarise_field_change(FieldChange(path="file_path", before=long_path, after=None))
+    rendered = "\n".join(lines)
+    assert repr(long_path) in rendered  # full value present
+    assert "lync.exe" in rendered  # the tail survives — not clipped
+    assert "…" not in rendered  # nothing truncated
+
+
+def test_change_detail_does_not_truncate_nested_rule_field() -> None:
+    """Modified-rule key deltas (the ``~ name: file_path: ...`` lines) are full too."""
+    from csfwctl.apply_cmd import _summarise_field_change
+    from csfwctl.differ import FieldChange
+
+    long_path = r"C:\Program Files (x86)\Microsoft Office\root\Office16\lync.exe"
+    before = [{"name": "Skype for Business", "file_path": long_path}]
+    after = [{"name": "Skype for Business", "file_path": None}]
+    lines = _summarise_field_change(FieldChange(path="rules", before=before, after=after))
+    rendered = "\n".join(lines)
+    assert repr(long_path) in rendered
+    assert "lync.exe" in rendered
+    assert "…" not in rendered
