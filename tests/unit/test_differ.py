@@ -321,8 +321,92 @@ def test_compute_diff_update_detects_rule_changes() -> None:
     update = cs.updates[0]
     assert update.kind == "rule-group"
     assert update.slug == "windows-baseline"
-    # The field diff lands somewhere under rules.
+    # The structured change keeps the whole ``rules`` list intact — the
+    # applier consumes it to build the JSON-Patch payload.
     assert any("rules" in fc.path for fc in update.field_changes)
+
+
+# ---- list-level diff granularity (display expansion) --------------------
+#
+# The structured ChangeSet keeps list values opaque (so the applier can
+# turn the whole ``rules`` change into JSON-Patch ops). ``expand_field_change``
+# is the display-time projection that breaks an opaque list change down
+# into per-element / per-leaf entries for the human-readable diff output.
+
+
+def test_expand_field_change_reports_only_changed_rule_field() -> None:
+    """Adding a field to one rule reports just that leaf, not the whole list.
+
+    Mirrors the real-world report where a single rule gained a
+    ``file_path`` and the old opaque-list diff dumped every rule twice.
+    """
+    from csfwctl.differ import FieldChange, expand_field_change
+
+    before = [
+        {"name": "SSH", "action": "allow", "protocol": "tcp"},
+        {"name": "Airdrop", "action": "allow", "protocol": "udp"},
+        {"name": "Rapport", "action": "allow", "protocol": "tcp"},
+    ]
+    after = [
+        {"name": "SSH", "action": "allow", "protocol": "tcp"},
+        {
+            "name": "Airdrop",
+            "action": "allow",
+            "protocol": "udp",
+            "file_path": "/usr/libexec/sharingd",
+        },
+        {"name": "Rapport", "action": "allow", "protocol": "tcp"},
+    ]
+    leaves = expand_field_change(FieldChange(path="rules", before=before, after=after))
+    assert [(c.path, c.before, c.after) for c in leaves] == [
+        ("rules[Airdrop].file_path", None, "/usr/libexec/sharingd"),
+    ]
+
+
+def test_expand_field_change_reports_add_and_remove() -> None:
+    """A removed rule and an added rule are reported as whole items by key."""
+    from csfwctl.differ import FieldChange, expand_field_change
+
+    before = [{"name": "Keep"}, {"name": "Drop"}]
+    after = [{"name": "Keep"}, {"name": "New"}]
+    leaves = expand_field_change(FieldChange(path="rules", before=before, after=after))
+    by_path = {c.path: (c.before, c.after) for c in leaves}
+    assert by_path == {
+        "rules[Drop]": ({"name": "Drop"}, None),
+        "rules[New]": (None, {"name": "New"}),
+    }
+
+
+def test_expand_field_change_reports_reorder_compactly() -> None:
+    """A pure reorder surfaces as a single compact (order) entry."""
+    from csfwctl.differ import FieldChange, expand_field_change
+
+    before = [{"name": "A"}, {"name": "B"}, {"name": "C"}]
+    after = [{"name": "B"}, {"name": "A"}, {"name": "C"}]
+    leaves = expand_field_change(FieldChange(path="rules", before=before, after=after))
+    assert [c.path for c in leaves] == ["rules (order)"]
+    assert leaves[0].before == ["A", "B", "C"]
+    assert leaves[0].after == ["B", "A", "C"]
+
+
+def test_expand_field_change_scalar_list_uses_positional_paths() -> None:
+    """Scalar lists (e.g. ports) diff positionally, surfacing the index."""
+    from csfwctl.differ import FieldChange, expand_field_change
+
+    leaves = expand_field_change(
+        FieldChange(path="local.ports", before=[22, 80], after=[22, 80, 443])
+    )
+    assert [(c.path, c.before, c.after) for c in leaves] == [
+        ("local.ports[2]", None, 443),
+    ]
+
+
+def test_expand_field_change_passthrough_for_scalars() -> None:
+    """A non-list change is returned unchanged."""
+    from csfwctl.differ import FieldChange, expand_field_change
+
+    fc = FieldChange(path="status", before="enabled", after="disabled")
+    assert expand_field_change(fc) == [fc]
 
 
 def test_compute_diff_update_detects_host_group_change() -> None:
