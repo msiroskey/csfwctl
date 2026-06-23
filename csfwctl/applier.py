@@ -433,6 +433,7 @@ def _rule_content_diff_ops(
     desired_shapes = {s["name"]: s for s in rule_group_to_api_shape(rule_group, env)["rules"]}
     before_by_name = {r.get("name"): (i, r) for i, r in enumerate(before)}
     after_by_name = {r.get("name"): r for r in after}
+    live_id_by_name = {r.get("name"): live_rule_ids[i] for i, r in enumerate(before)}
 
     # A rule present on both sides whose content differs is "modified": removed
     # at its live index and re-added with the desired content below.
@@ -445,7 +446,7 @@ def _rule_content_diff_ops(
     operations: list[dict[str, Any]] = []
 
     # Removes: gone from desired, or modified (re-added below). Descending index
-    # so earlier indices stay valid; drop the entry from rule_ids.
+    # so earlier indices stay valid.
     remove_indices = sorted(
         (
             i
@@ -454,27 +455,38 @@ def _rule_content_diff_ops(
         ),
         reverse=True,
     )
-    rule_ids = list(live_rule_ids)
     for i in remove_indices:
         operations.append({"op": "remove", "path": f"/rules/{i}"})
-        del rule_ids[i]
 
     # Adds: new in desired, plus modified rules re-added. Append; the server
     # assigns the real id, mapping it from the client-supplied ``temp_id``. The
     # endpoint requires a non-empty ``temp_id`` on each added rule and the same
     # token in ``rule_ids`` at the rule's final position ("Rule 'temp_id' cannot
     # be empty." otherwise).
+    temp_id_by_name: dict[str, str] = {}
     temp_counter = 0
     for rule in after:
         name = rule.get("name")
         if name not in before_by_name or name in modified_names:
             temp_counter += 1
             temp_id = f"temp_{temp_counter}"
+            temp_id_by_name[name] = temp_id
             shape = dict(desired_shapes[name])
             shape.pop("id", None)
             shape["temp_id"] = temp_id
             operations.append({"op": "add", "path": "/rules/-", "value": shape})
-            rule_ids.append(temp_id)
+
+    # Build ``rule_ids`` in the *desired* order rather than appending adds onto
+    # the surviving live order. ``rule_ids`` is the authoritative final ordering
+    # the server applies, so emitting it in desired order is what lets a pure
+    # reorder (or a reorder combined with adds/removes) actually land — without
+    # this, reordering rules in YAML produced an update that changed nothing on
+    # the wire. Retained rules keep their live id; new/modified rules use their
+    # ``temp_id``.
+    rule_ids: list[str] = []
+    for rule in after:
+        name = rule.get("name")
+        rule_ids.append(temp_id_by_name.get(name) or live_id_by_name[name])
 
     return operations, rule_ids
 

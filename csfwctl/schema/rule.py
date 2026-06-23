@@ -119,6 +119,12 @@ class Rule(BaseModel):
     anonymous per-policy override group at apply time) or part of a
     rule group's ``rules:`` list.
 
+    ``description`` is an optional free-form note round-tripped to and from
+    the CrowdStrike rule ``description`` field. Unlike the managed-object
+    descriptions on policies / rule groups / locations, a rule's description
+    carries no metadata trailer and is compared by the differ as ordinary
+    rule content.
+
     ``protocol`` accepts either a named :class:`Protocol` value (e.g.
     ``tcp``) or a raw IANA protocol number (0-255) for protocols not
     covered by the named enum ("Advanced" mode in the CrowdStrike UI).
@@ -144,6 +150,7 @@ class Rule(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
     enabled: bool = True
     action: Action
     direction: Direction

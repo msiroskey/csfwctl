@@ -8,6 +8,28 @@ Project plan: ./csfwctl-project-plan.md
 Sprint 12: Cross-env diff + richer MR comments — complete.
 Sprint 11: Policy inheritance, policy settings, and managed host groups — complete.
 
+## Diff-format follow-up fixes (post Sprint 12)
+
+Three bugs surfaced by the per-leaf diff output:
+
+- [x] **Live policy settings polled as `None`.** Enforcement mode,
+      local-logging, and default inbound/outbound live on the policy
+      *container*, not the `get_policies` record.
+      `exporter._enrich_policy_records_with_containers` now lifts them onto the
+      record's `settings` (remapping `default_inbound`/`default_outbound` →
+      `inbound`/`outbound`) so the differ/importer see live settings instead of
+      a spurious `settings: None -> {...}` update every run.
+- [x] **Rule reorder not applied.** `applier._rule_content_diff_ops` matched
+      rules by name and only emitted add/remove/modify ops, leaving `rule_ids`
+      in live order — a pure reorder changed nothing on the wire. `rule_ids` is
+      now emitted in the *desired* order (the authoritative final ordering),
+      so reorders (alone or combined with adds/removes) land.
+- [x] **Rule had no `description` field.** Added `Rule.description`
+      (round-tripped to/from the CrowdStrike rule `description`); wired through
+      `rule_from_api`, `_rule_to_api_shape`, `_trim_rule`. Updated
+      `docs/schema_reference.md`, `docs/architecture.md`, and the realistic
+      config-repo fixture.
+
 ## Sprint 12 tasks
 
 - [x] **All-envs `diff` mode.** `--env` is now optional on `csfwctl diff`;

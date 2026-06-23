@@ -142,6 +142,50 @@ def test_rule_from_api_minimal() -> None:
     assert rule.local is None
 
 
+def test_rule_from_api_reads_description() -> None:
+    record = {
+        "name": "Allow corp DNS outbound",
+        "description": "Corp resolvers only",
+        "action": "ALLOW",
+        "direction": "OUT",
+        "protocol": "17",
+    }
+    rule = rule_from_api(record)
+    assert rule.description == "Corp resolvers only"
+
+
+def test_rule_from_api_missing_description_defaults_empty() -> None:
+    record = {
+        "name": "Allow corp DNS outbound",
+        "action": "ALLOW",
+        "direction": "OUT",
+        "protocol": "17",
+    }
+    rule = rule_from_api(record)
+    assert rule.description == ""
+
+
+def test_rule_description_round_trips_through_api_shape() -> None:
+    rg = RuleGroup(
+        name="windows-baseline",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="Allow corp DNS outbound",
+                description="Corp resolvers only",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.udp,
+            )
+        ],
+    )
+    shape = rule_group_to_api_shape(rg, "test")
+    assert shape["rules"][0]["description"] == "Corp resolvers only"
+    rules_by_id = {str(r["id"]): r for r in shape["rules"]}
+    restored = rule_group_from_api(shape, rules_by_id, strip_suffix=True)
+    assert restored.rules[0].description == "Corp resolvers only"
+
+
 def test_rule_from_api_with_state_and_port_range() -> None:
     record = {
         "name": "Allow inbound established",

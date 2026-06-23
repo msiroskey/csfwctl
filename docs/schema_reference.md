@@ -127,6 +127,7 @@ Restrictions:
 | Field       | Type                              | Required | Notes                                              |
 |-------------|-----------------------------------|----------|----------------------------------------------------|
 | `name`      | string (1-120)                    | yes      | Free-form; shown in CrowdStrike.                   |
+| `description` | string (≤ 2000)                 | no       | Free-form rule description, round-tripped to/from the CrowdStrike rule `description` field. |
 | `enabled`   | bool                              | no       | Default `true`.                                    |
 | `action`    | `allow` \| `block` \| `monitor`   | yes      |                                                    |
 | `direction` | `inbound` \| `outbound` \| `both` | yes      | `both` matches traffic in either direction.        |

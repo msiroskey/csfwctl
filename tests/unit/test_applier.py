@@ -871,6 +871,93 @@ def test_apply_update_rule_group_modified_rule_becomes_remove_add() -> None:
     assert payload["rule_ids"] == [temp_id]
 
 
+def test_apply_update_rule_group_pure_reorder_rewrites_rule_ids() -> None:
+    """Reordering rules (no content change) reorders rule_ids without add/remove ops.
+
+    A pure reorder previously produced no diff operations and left ``rule_ids``
+    in the live order, so the new ordering never landed on the wire. ``rule_ids``
+    is the authoritative final ordering, so it must be emitted in desired order.
+    """
+    rule_a = Rule(
+        name="Allow A",
+        action=Action.allow,
+        direction=Direction.inbound,
+        protocol=Protocol.tcp,
+    )
+    rule_b = Rule(
+        name="Allow B",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+    )
+    live = _rg_with_rules([rule_a, rule_b])
+    desired = _rg_with_rules([rule_b, rule_a])
+
+    repo = _repo_with(rule_groups=[desired])
+    state = _render_live_state(env="test", rule_groups=[live])
+    live_rule_ids = list(state.rule_groups[0]["rule_ids"])
+    cs = compute_diff(repo, "test", state)
+    assert cs.updates
+    client = FakeFalconClient()
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    payload = client.rule_groups.updated[0]
+    # No content churn: the only diff op is the description trailer.
+    content_ops = [op for op in payload["diff_operations"] if op["path"].startswith("/rules")]
+    assert content_ops == []
+    # rule_ids is rewritten into the desired (reversed) order.
+    assert payload["rule_ids"] == list(reversed(live_rule_ids))
+
+
+def test_apply_update_rule_group_reorder_with_add_keeps_desired_order() -> None:
+    """A reorder combined with an add lands all rules in desired order.
+
+    The retained rule keeps its live id; the added rule rides on its temp_id,
+    and the final ``rule_ids`` follows the desired sequence.
+    """
+    rule_a = Rule(
+        name="Allow A",
+        action=Action.allow,
+        direction=Direction.inbound,
+        protocol=Protocol.tcp,
+    )
+    rule_b = Rule(
+        name="Allow B",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+    )
+    live = _rg_with_rules([rule_a])
+    # Desired: the new rule first, the existing rule second (a reorder + add).
+    desired = _rg_with_rules([rule_b, rule_a])
+
+    repo = _repo_with(rule_groups=[desired])
+    state = _render_live_state(env="test", rule_groups=[live])
+    live_a_id = state.rule_groups[0]["rule_ids"][0]
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    payload = client.rule_groups.updated[0]
+    adds = [op for op in payload["diff_operations"] if op["op"] == "add"]
+    assert len(adds) == 1
+    temp_id = adds[0]["value"]["temp_id"]
+    # Desired order is [B (new), A (existing)] → [temp_id, live_a_id].
+    assert payload["rule_ids"] == [temp_id, live_a_id]
+
+
 # ---- bootstrap mode ------------------------------------------------------
 
 

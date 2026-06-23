@@ -429,6 +429,7 @@ def rule_from_api(record: dict[str, Any]) -> Rule:
 
     return Rule(
         name=str(name),
+        description=str(record.get("description") or ""),
         enabled=bool(record.get("enabled", True)),
         action=action,
         direction=direction,
@@ -960,6 +961,7 @@ def _rule_to_api_shape(
     record: dict[str, Any] = {
         "id": _fake_uuid("rule", f"{parent_display_name}#{index}:{rule.name}"),
         "name": rule.name,
+        "description": rule.description,
         "enabled": rule.enabled,
         "action": _ACTION_TO_API[rule.action],
         "direction": _DIRECTION_TO_API[rule.direction],
@@ -1164,7 +1166,31 @@ def _enrich_policy_records_with_containers(
         if container is None:
             continue
         rg_ids = list(container.get("rule_group_ids") or [])
-        record.setdefault("settings", {})["rule_group_ids"] = rg_ids
+        settings = record.setdefault("settings", {})
+        settings["rule_group_ids"] = rg_ids
+        # The getFirewallPolicies response carries no enforcement mode,
+        # local-logging flag, or default inbound/outbound actions — those live
+        # on the policy container alongside the rule-group assignments. Copy
+        # them into the record's ``settings`` (under the keys
+        # :func:`policy_from_api` reads) so the differ and importer see the live
+        # settings instead of ``None``. The container names the default-traffic
+        # actions ``default_inbound`` / ``default_outbound``; they are remapped
+        # onto the ``inbound`` / ``outbound`` keys here.
+        for container_key, settings_key in _CONTAINER_SETTING_KEYS:
+            value = container.get(container_key)
+            if value is not None:
+                settings[settings_key] = value
+
+
+_CONTAINER_SETTING_KEYS: tuple[tuple[str, str], ...] = (
+    ("enforce", "enforce"),
+    ("test_mode", "test_mode"),
+    ("local_logging", "local_logging"),
+    ("default_inbound", "inbound"),
+    ("default_outbound", "outbound"),
+)
+"""Container field → policy ``settings`` key map used when enriching live
+policy records (see :func:`_enrich_policy_records_with_containers`)."""
 
 
 _RULE_FETCH_BATCH_SIZE = 100
@@ -1496,11 +1522,17 @@ def _trim_location(data: dict[str, Any]) -> dict[str, Any]:
 def _trim_rule(rule: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {
         "name": rule["name"],
-        "enabled": rule.get("enabled", True),
-        "action": rule["action"],
-        "direction": rule["direction"],
-        "protocol": rule["protocol"],
     }
+    if rule.get("description"):
+        out["description"] = rule["description"]
+    out.update(
+        {
+            "enabled": rule.get("enabled", True),
+            "action": rule["action"],
+            "direction": rule["direction"],
+            "protocol": rule["protocol"],
+        }
+    )
     if rule.get("state"):
         out["state"] = rule["state"]
     if rule.get("file_path"):

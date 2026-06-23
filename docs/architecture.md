@@ -112,11 +112,32 @@ discrepancies are localised to the translation helpers.
   "groups": [{"id": "<uuid>", "name": "ABC01-Endpoints-Windows-Test"}],
   "settings": {
     "rule_group_ids": ["<uuid>", "<uuid>"],
-    # default_inbound/default_outbound surfaces on the apply side; the
-    # importer ignores them in v1.
   },
 }
 ```
+
+**Policy container (FirewallManagement.get_policy_containers):** rule-group
+assignments *and* the enforcement / default-traffic settings live here, not on
+the `get_policies` record above:
+
+```python
+{
+  "policy_id": "<uuid>",
+  "rule_group_ids": ["<uuid>", "<uuid>"],
+  "enforce": True,                 # enforcement_mode
+  "test_mode": False,              # enforcement_mode (monitor when enforce+test_mode)
+  "local_logging": True,
+  "default_inbound": "DENY",       # mapped onto settings["inbound"]
+  "default_outbound": "ALLOW",     # mapped onto settings["outbound"]
+  "tracking": "...",               # optimistic-concurrency token
+}
+```
+
+`exporter._enrich_policy_records_with_containers` lifts these onto the policy
+record's `settings` (remapping `default_inbound`/`default_outbound` onto the
+`inbound`/`outbound` keys `policy_from_api` reads) before the importer and the
+differ translate the record. Without that copy the differ sees `settings: None`
+for every live policy and reports a spurious update on each run.
 
 **Rule group (FirewallManagement.get_rule_groups):**
 
@@ -144,6 +165,7 @@ emits the lowercase form so it is correct for CREATE/UPDATE payloads.
 {
   "id": "<uuid>",
   "name": "Allow corp DNS outbound",
+  "description": "...",                # optional; round-tripped to Rule.description
   "enabled": True,
   "action": "ALLOW",                   # "ALLOW" | "DENY" | "MONITOR"
   "direction": "OUT",                  # "IN" | "OUT"

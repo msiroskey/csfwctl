@@ -13,6 +13,7 @@ rules:
     locations: [any]
 
   - name: Block SMB inbound from non-corp
+    description: Prevent lateral SMB from outside the corp ranges.
     enabled: true
     action: block
     direction: inbound
