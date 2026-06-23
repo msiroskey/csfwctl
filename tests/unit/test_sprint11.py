@@ -551,6 +551,70 @@ def test_policy_from_api_no_settings_when_absent() -> None:
     assert p.settings is None
 
 
+class _ContainerClient:
+    """Minimal client exposing only ``policies.get_policy_containers``."""
+
+    def __init__(self, containers: list[dict[str, Any]]) -> None:
+        self._containers = containers
+        self.policies = self
+
+    def get_policy_containers(self, ids: list[str]) -> list[dict[str, Any]]:
+        return [c for c in self._containers if str(c.get("policy_id")) in set(ids)]
+
+
+def test_enrich_copies_container_settings_into_record() -> None:
+    # The enforcement / default-traffic settings live on the policy container,
+    # not on the get_policies record. Enrichment must lift them onto the
+    # record's ``settings`` so policy_from_api reads live state instead of None.
+    from csfwctl.exporter import _enrich_policy_records_with_containers
+
+    record = _base_policy_api_record()
+    record["settings"] = {}  # getFirewallPolicies returns no enforcement state
+    client = _ContainerClient(
+        [
+            {
+                "policy_id": "policy-uuid",
+                "rule_group_ids": [],
+                "enforce": True,
+                "test_mode": False,
+                "local_logging": True,
+                "default_inbound": "DENY",
+                "default_outbound": "ALLOW",
+            }
+        ]
+    )
+    _enrich_policy_records_with_containers(client, [record])
+
+    settings = record["settings"]
+    assert settings["rule_group_ids"] == []
+    assert settings["enforce"] is True
+    assert settings["local_logging"] is True
+    # default_inbound/default_outbound are remapped onto the keys policy_from_api reads.
+    assert settings["inbound"] == "DENY"
+    assert settings["outbound"] == "ALLOW"
+
+    p = policy_from_api(record, rule_groups_by_id={})
+    assert p.settings is not None
+    assert p.settings.enforcement_mode is EnforcementMode.enforce
+    assert p.settings.local_logging is True
+    assert p.settings.default_inbound is DefaultTrafficAction.deny
+    assert p.settings.default_outbound is DefaultTrafficAction.allow
+
+
+def test_enrich_without_container_settings_leaves_settings_none() -> None:
+    # A container that only carries rule-group assignments (no enforcement
+    # state) must not invent a settings block.
+    from csfwctl.exporter import _enrich_policy_records_with_containers
+
+    record = _base_policy_api_record()
+    record["settings"] = {}
+    client = _ContainerClient([{"policy_id": "policy-uuid", "rule_group_ids": []}])
+    _enrich_policy_records_with_containers(client, [record])
+
+    p = policy_from_api(record, rule_groups_by_id={})
+    assert p.settings is None
+
+
 # ---- project_policy_for_env with managed_host_groups -----------------------
 
 
