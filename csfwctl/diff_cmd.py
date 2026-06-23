@@ -36,6 +36,7 @@ from csfwctl.differ import (
     ObjectChange,
     compute_all_envs_diff,
     compute_diff,
+    expand_field_change,
     fetch_live_state,
 )
 from csfwctl.falcon.client import FalconAPIError, FalconClient
@@ -312,7 +313,8 @@ def _render_change(console: Console, change: ObjectChange) -> None:
         header += f"  ({change.reason})"
     console.print(header)
     for fc in change.field_changes:
-        console.print(f"      {fc.path}: {fc.before!r} -> {fc.after!r}")
+        for leaf in expand_field_change(fc):
+            console.print(f"      {leaf.path}: {leaf.before!r} -> {leaf.after!r}")
     for hg in change.host_group_changes:
         console.print(f"      host_group:{hg.op} {hg.group_name}")
 

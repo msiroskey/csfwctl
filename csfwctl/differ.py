@@ -523,16 +523,32 @@ def _translate_live_state(state: LiveState, env: str, cs: ChangeSet | None = Non
 # ---- comparison primitives ------------------------------------------------
 
 
-def _diff_dicts(before: Any, after: Any, prefix: str = "") -> list[FieldChange]:
-    """Walk two ``model_dump`` dicts and emit one entry per leaf difference.
+_MISSING = object()
+"""Sentinel for "this list index has no counterpart on the other side"."""
 
-    Lists are treated as opaque scalars: when they differ at all, a
-    single :class:`FieldChange` records the full before/after. The
-    operator-facing summary stays terse and the JSON payload stays
-    machine-parseable.
+
+def _diff_dicts(
+    before: Any, after: Any, prefix: str = "", *, recurse_lists: bool = False
+) -> list[FieldChange]:
+    """Walk two ``model_dump`` structures and emit one entry per leaf difference.
+
+    Dicts always recurse key-by-key. Lists are treated as **opaque
+    scalars by default** (``recurse_lists=False``): when they differ at
+    all, a single :class:`FieldChange` records the full before/after.
+    This is the contract the applier relies on — ``_rule_content_diff_ops``
+    consumes the whole-list ``rules`` change to build the JSON-Patch
+    payload, so the structured change set must keep lists intact.
+
+    Pass ``recurse_lists=True`` for the *display* path (see
+    :func:`expand_field_change`), which walks list elements so a single
+    changed rule or field renders as a targeted ``path``
+    (e.g. ``rules[Airdrop: Any Inbound].file_path``) instead of dumping
+    the entire before/after list.
     """
     if before == after:
         return []
+    if recurse_lists and isinstance(before, list) and isinstance(after, list):
+        return _diff_list(before, after, prefix or ".")
     if not isinstance(before, dict) or not isinstance(after, dict):
         return [FieldChange(path=prefix or ".", before=before, after=after)]
     out: list[FieldChange] = []
@@ -543,7 +559,102 @@ def _diff_dicts(before: Any, after: Any, prefix: str = "") -> list[FieldChange]:
         elif key not in after:
             out.append(FieldChange(path=path, before=before[key], after=None))
         else:
-            out.extend(_diff_dicts(before[key], after[key], path))
+            out.extend(_diff_dicts(before[key], after[key], path, recurse_lists=recurse_lists))
+    return out
+
+
+def expand_field_change(fc: FieldChange) -> list[FieldChange]:
+    """Expand one structured change into granular leaf changes for display.
+
+    The structured :class:`FieldChange` keeps list values intact (the
+    applier needs the whole ``rules`` list). For human-readable rendering
+    we want the opposite: just the leaves that actually moved. When both
+    sides are lists, walk them (matching list-of-dicts by ``name``) and
+    return one entry per changed element/field; otherwise return the
+    change unchanged.
+    """
+    if isinstance(fc.before, list) and isinstance(fc.after, list):
+        expanded = _diff_list(fc.before, fc.after, fc.path)
+        return expanded or [fc]
+    return [fc]
+
+
+def _list_match_key(before: list[Any], after: list[Any]) -> str | None:
+    """Return a field name usable to match list items by identity, else ``None``.
+
+    A list of dicts (e.g. ``rules``) is matched by a stable key so that
+    inserting, removing, or reordering one element does not cascade into
+    spurious diffs on every later element. ``name`` is the only key we
+    trust; it must be present and unique on both sides for the match to
+    be safe. Scalar lists and dict lists without a clean ``name`` fall
+    back to positional comparison.
+    """
+    if not before or not after:
+        return None
+    key = "name"
+    for side in (before, after):
+        names = [item.get(key) for item in side if isinstance(item, dict)]
+        if len(names) != len(side):
+            return None  # not every element is a dict with the key
+        if any(n is None for n in names) or len(set(names)) != len(names):
+            return None  # missing or duplicate keys — not safe to match on
+    return key
+
+
+def _diff_keyed_list(
+    before: list[Any], after: list[Any], prefix: str, key: str
+) -> list[FieldChange]:
+    """Diff two lists of dicts matched by ``key``; report adds/removes/changes.
+
+    Order is reported separately and compactly (just the key sequence)
+    so a pure reorder stays visible without dumping full item bodies.
+    """
+    before_by = {item[key]: item for item in before}
+    after_by = {item[key]: item for item in after}
+    out: list[FieldChange] = []
+
+    before_order = [item[key] for item in before]
+    after_order = [item[key] for item in after]
+    if before_order != after_order and set(before_order) == set(after_order):
+        out.append(FieldChange(path=f"{prefix} (order)", before=before_order, after=after_order))
+
+    # Walk before-order first, then any items that only exist in after.
+    ordered_keys = before_order + [name for name in after_order if name not in before_by]
+    for name in ordered_keys:
+        path = f"{prefix}[{name}]"
+        if name not in before_by:
+            out.append(FieldChange(path=path, before=None, after=after_by[name]))
+        elif name not in after_by:
+            out.append(FieldChange(path=path, before=before_by[name], after=None))
+        else:
+            out.extend(_diff_dicts(before_by[name], after_by[name], path, recurse_lists=True))
+    return out
+
+
+def _diff_list(before: list[Any], after: list[Any], prefix: str) -> list[FieldChange]:
+    """Element-wise list diff, matching by identity key when one exists.
+
+    - Lists of dicts with a stable ``name`` are matched by that key so a
+      single changed rule reports only its changed field.
+    - Otherwise items are compared positionally (``prefix[i]``); a length
+      mismatch surfaces the extra/missing index rather than the whole list.
+    """
+    if before == after:
+        return []
+    key = _list_match_key(before, after)
+    if key is not None:
+        return _diff_keyed_list(before, after, prefix, key)
+    out: list[FieldChange] = []
+    for i in range(max(len(before), len(after))):
+        b = before[i] if i < len(before) else _MISSING
+        a = after[i] if i < len(after) else _MISSING
+        path = f"{prefix}[{i}]"
+        if b is _MISSING:
+            out.append(FieldChange(path=path, before=None, after=a))
+        elif a is _MISSING:
+            out.append(FieldChange(path=path, before=b, after=None))
+        else:
+            out.extend(_diff_dicts(b, a, path, recurse_lists=True))
     return out
 
 
@@ -1077,6 +1188,7 @@ __all__ = [
     "compute_diff",
     "env_suffix",
     "env_to_host_group_env",
+    "expand_field_change",
     "fetch_live_state",
     "is_managed_description",
     "project_policy_for_env",

@@ -156,6 +156,24 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       just *which object* changed. Rule-list edits show a per-rule
       add/remove/modify summary with key-level deltas on modified rules.
       See `docs/cli_reference.md` § "Per-action change detail".
+- [x] **Readable `diff` output for list-valued fields.** The `diff`
+      renderer printed a rule-group `rules` change as the entire
+      before/after list on one line (`rules: [..] -> [..]`), so an
+      operator could not see *what* changed. The structured `ChangeSet`
+      must keep the whole list intact (the applier consumes it to build
+      the JSON-Patch payload — the live-tested `update_rule_group`
+      contract), so the fix is display-only: new
+      `differ.expand_field_change` projects an opaque list change into
+      per-element / per-leaf entries at render time. Lists of dicts are
+      matched by `name` (rules' stable identity), so a changed field
+      shows as `rules[<name>].<field>: before -> after`, an added/removed
+      rule as one `rules[<name>]` entry, and a pure reorder as one
+      compact `rules (order)` line; scalar lists fall back to positional
+      `[i]` paths. `_diff_dicts` gained a `recurse_lists` flag (default
+      `False` preserves the structured/JSON/applier contract; the display
+      path passes `True`). Wired into `diff_cmd._render_change`. Updated
+      `docs/cli_reference.md`; tests in `test_differ.py`
+      (`test_expand_field_change_*`).
 
 ## Bug fixes
 

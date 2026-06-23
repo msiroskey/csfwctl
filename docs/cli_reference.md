@@ -120,7 +120,13 @@ What it produces (single env):
   warnings.
 - Per-change detail blocks for each create / update / delete, with
   field-level diffs (`path: before -> after`) and host-group add/remove
-  lines for policies.
+  lines for policies. List-valued fields (notably a rule group's
+  `rules`) are expanded down to the individual element and leaf that
+  changed — e.g. `rules[Airdrop: Any Inbound].file_path: None ->
+  '/usr/libexec/sharingd'` — rather than printing the whole before/after
+  list. Rules are matched by name, so an added/removed rule shows as a
+  single `rules[<name>]` entry and a pure reorder as one compact
+  `rules (order)` line.
 - A "no changes" line when desired and live converge.
 - The same change set as JSON written to ``--output PATH`` if given,
   ready for MR comments and the applier to consume.
