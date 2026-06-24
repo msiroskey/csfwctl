@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from csfwctl.schema._common import (
     Action,
+    AddressFamily,
     ConnectionState,
     Direction,
     Protocol,
@@ -145,6 +146,28 @@ class Rule(BaseModel):
     rule itself is platform-agnostic, so platform enforcement is left to
     the rule group / policy that contains it; setting it on a macOS rule
     has no effect on the wire.
+
+    ``address_family`` is an optional override for the CrowdStrike rule
+    ``address_family`` wire field. When omitted the exporter derives it
+    from the protocol and configured addresses (IPv6-family protocol or
+    any IPv6 address → ``ip6``; any IPv4 address → ``ip4``; otherwise —
+    e.g. an application-based rule matching no address — ``any``). Set it
+    explicitly only to override that inference; an explicit ``ip4`` paired
+    with an IPv6-family protocol is rejected locally, mirroring the
+    CrowdStrike error ``Address family IPv4 is not allowed with protocol
+    ICMPv6``.
+
+    ``address_type`` is an optional top-level rule qualifier passed through
+    verbatim to the CrowdStrike ``address_type`` wire field. Its value
+    domain is not enforced locally (there is no test tenant to validate
+    against — see :meth:`_check_file_path`); the field is only emitted on
+    the wire when set, and read back by the importer.
+
+    ``watch_mode`` toggles the rule's top-level ``watch_mode`` wire flag.
+    It is distinct from the ``monitor`` action: a rule keeps its
+    allow/block action and, with ``watch_mode`` enabled, is additionally
+    observed. Defaults to ``False`` and is only emitted on the wire when
+    enabled.
     """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -158,6 +181,9 @@ class Rule(BaseModel):
     state: ConnectionState | None = None
     file_path: str | None = Field(default=None, max_length=999)
     service_name: str | None = Field(default=None, max_length=256)
+    address_family: AddressFamily | None = None
+    address_type: str | None = Field(default=None, max_length=256)
+    watch_mode: bool = False
     locations: list[str] = Field(default_factory=lambda: [ANY_LOCATION])
     local: Endpoint | None = None
     remote: Endpoint | None = None
@@ -207,6 +233,46 @@ class Rule(BaseModel):
         if "\x00" in value:
             raise ValueError("service_name must not contain a NUL character")
         return value
+
+    @field_validator("address_type")
+    @classmethod
+    def _check_address_type(cls, value: str | None) -> str | None:
+        """Sanity-check the address_type qualifier (local check only).
+
+        CrowdStrike's ``address_type`` value domain is not validated here —
+        there is no test tenant to confirm the accepted tokens against — so
+        this mirrors :meth:`_check_service_name`: non-empty after whitespace
+        stripping and no embedded NUL. The value is passed through verbatim.
+        """
+        if value is None:
+            return value
+        if not value:
+            raise ValueError("address_type must be a non-empty string (or omitted)")
+        if "\x00" in value:
+            raise ValueError("address_type must not contain a NUL character")
+        return value
+
+    @model_validator(mode="after")
+    def _address_family_matches_protocol(self) -> Rule:
+        """Reject an explicit IPv4 family on an IPv6-only protocol.
+
+        CrowdStrike returns HTTP 400 ``Address family IPv4 is not allowed
+        with protocol ICMPv6`` (and the IPv6 analogue) when the declared
+        family contradicts the protocol. Only the unambiguous IPv4-vs-IPv6
+        case is enforced here; ``any`` is always permitted and raw-integer
+        ("Advanced") protocols are left to the user, matching
+        :meth:`_state_only_for_tcp`.
+        """
+        if (
+            self.address_family is AddressFamily.ip4
+            and isinstance(self.protocol, Protocol)
+            and self.protocol in (Protocol.ipv6, Protocol.icmpv6)
+        ):
+            raise ValueError(
+                f"address_family ip4 is not allowed with protocol {self.protocol.value}; "
+                "use ip6 or omit address_family to let it be inferred"
+            )
+        return self
 
     @field_validator("locations")
     @classmethod

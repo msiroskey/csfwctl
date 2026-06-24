@@ -5,7 +5,15 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from csfwctl.schema import Action, ConnectionState, Direction, Endpoint, Protocol, Rule
+from csfwctl.schema import (
+    Action,
+    AddressFamily,
+    ConnectionState,
+    Direction,
+    Endpoint,
+    Protocol,
+    Rule,
+)
 
 
 def test_rule_minimum_fields() -> None:
@@ -175,6 +183,84 @@ def test_rule_rejects_overlong_service_name() -> None:
             direction=Direction.outbound,
             protocol=Protocol.tcp,
             service_name="a" * 257,
+        )
+
+
+def test_rule_address_family_defaults_to_none() -> None:
+    """Omitted address_family stays implicit so the exporter can infer it."""
+    rule = Rule(name="x", action=Action.allow, direction=Direction.outbound, protocol=Protocol.tcp)
+    assert rule.address_family is None
+
+
+def test_rule_accepts_explicit_address_family() -> None:
+    rule = Rule(
+        name="x",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+        address_family=AddressFamily.ip6,
+    )
+    assert rule.address_family is AddressFamily.ip6
+
+
+def test_rule_rejects_ip4_family_with_ipv6_protocol() -> None:
+    """An explicit IPv4 family contradicts an IPv6-only protocol."""
+    with pytest.raises(ValidationError, match="address_family ip4 is not allowed"):
+        Rule(
+            name="bad",
+            action=Action.allow,
+            direction=Direction.inbound,
+            protocol=Protocol.icmpv6,
+            address_family=AddressFamily.ip4,
+        )
+
+
+def test_rule_allows_any_family_with_ipv6_protocol() -> None:
+    """``any`` never contradicts a protocol; the IPv4-only check must not fire."""
+    rule = Rule(
+        name="ok",
+        action=Action.allow,
+        direction=Direction.inbound,
+        protocol=Protocol.icmpv6,
+        address_family=AddressFamily.any,
+    )
+    assert rule.address_family is AddressFamily.any
+
+
+def test_rule_watch_mode_defaults_false_and_accepts_true() -> None:
+    rule = Rule(
+        name="x",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+    )
+    assert rule.watch_mode is False
+    watched = Rule(
+        name="x",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+        watch_mode=True,
+    )
+    assert watched.watch_mode is True
+
+
+def test_rule_accepts_address_type_and_rejects_empty() -> None:
+    rule = Rule(
+        name="x",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+        address_type="NetworkAddressIPv4",
+    )
+    assert rule.address_type == "NetworkAddressIPv4"
+    with pytest.raises(ValidationError):
+        Rule(
+            name="bad",
+            action=Action.allow,
+            direction=Direction.outbound,
+            protocol=Protocol.tcp,
+            address_type="   ",
         )
 
 

@@ -8,6 +8,7 @@ from csfwctl.schema._common import (
     DISPLAY_NAME_RE,
     SLUG_RE,
     Action,
+    AddressFamily,
     ConnectionState,
     CrowdStrikeName,
     Direction,
@@ -37,6 +38,7 @@ from csfwctl.schema.tool_config import (
 __all__ = [
     "ANY_LOCATION",
     "Action",
+    "AddressFamily",
     "ConnectionState",
     "CrowdStrikeName",
     "DISPLAY_NAME_RE",

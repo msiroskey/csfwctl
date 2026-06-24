@@ -185,6 +185,10 @@ emits the lowercase form so it is correct for CREATE/UPDATE payloads.
   #   {"name": "service_name", "value": "Dhcp", "type": "string"}
   # — typically paired with an `image_name` of svchost.exe. Read back by
   # exporter._service_name_from_fields (empty value → None).
+  "address_type": "NetworkAddressIPv4", # optional top-level qualifier (Rule.address_type);
+                                         # value domain not validated locally, emitted only when set.
+  "watch_mode": True,                  # optional top-level flag (Rule.watch_mode); observe matching
+                                         # traffic in addition to the action. Emitted only when true.
   "local": {"addresses": [...], "ports": [{"start": N, "end": M}]},
   "remote": {...},
   "locations": [...],                  # slug list (csfwctl convention)
@@ -193,9 +197,17 @@ emits the lowercase form so it is correct for CREATE/UPDATE payloads.
 
 **Important — two CREATE-specific requirements:**
 
-1. `address_family` must be non-empty. csfwctl derives it at apply time via
-   `_infer_address_family`: `"IP6"` when any endpoint address contains `":"` (IPv6
-   CIDR), `"IP4"` otherwise. Not stored in YAML; fully recoverable from address data.
+1. `address_family` must be non-empty. csfwctl resolves it at apply time via
+   `_resolve_address_family`: an explicit `Rule.address_family` override wins
+   (`ip4`→`IP4`, `ip6`→`IP6`, `any`→`NONE`); otherwise `_infer_address_family`
+   derives it — `"IP6"` for an IPv6-family protocol or any address containing
+   `":"`, `"IP4"` when any IPv4 address is configured, and `"NONE"` when no
+   address is configured at all (e.g. an application-based rule). The override
+   is normally omitted from YAML and recovered from address data; the importer
+   pins it explicitly only when the tenant's wire value diverges from inference,
+   so a hand-omitted family round-trips clean while a genuine override survives.
+   (Behaviour change: address-less rules now resolve to `NONE` rather than the
+   old unconditional `IP4` fallback.)
 
 2. Endpoint fields use flat keys (`local_address` / `local_port` / `remote_address` /
    `remote_port` with `{"address": ip, "netmask": prefix}` dicts) rather than the

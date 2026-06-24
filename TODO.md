@@ -8,6 +8,32 @@ Project plan: ./csfwctl-project-plan.md
 Sprint 12: Cross-env diff + richer MR comments — complete.
 Sprint 11: Policy inheritance, policy settings, and managed host groups — complete.
 
+## Rule schema extension: address family / address type / watch mode (post Sprint 12)
+
+- [x] **`Rule.address_family` (override, infer when omitted).** New optional
+      `AddressFamily` enum (`ip4`/`ip6`/`any`). `exporter._resolve_address_family`
+      honours an explicit value (`ip4`→`IP4`, `ip6`→`IP6`, `any`→`NONE`) and
+      otherwise falls back to `_infer_address_family`. **Behaviour change:**
+      address-less rules now infer `NONE` (was unconditional `IP4`). A
+      `model_validator` rejects explicit `ip4` with an IPv6-family protocol.
+      The importer pins it explicitly only when the wire value diverges from
+      inference, so omitted families round-trip clean.
+- [x] **`Rule.address_type` (top-level passthrough).** Optional string emitted
+      as the top-level `address_type` wire field only when set; read back by
+      `rule_from_api`. Value domain not validated locally (no test tenant) —
+      structural check only, mirroring `file_path`/`service_name`.
+- [x] **`Rule.watch_mode` (top-level flag).** Bool, default `false`; emitted as
+      top-level `watch_mode` only when `true`. Distinct from the `monitor`
+      action. Round-tripped by the importer.
+- [x] Updated `docs/schema_reference.md`, `docs/architecture.md`, the realistic
+      config-repo fixture (`windows-baseline.yaml`), and added unit tests in
+      `test_schema_rule.py` / `test_exporter_translation.py`.
+- [ ] **Wire-contract confirmation (deferred — needs tenant).** The exact
+      `address_type` value domain and the `watch_mode` field name/semantics are
+      modelled from intent, not confirmed against a tenant. Emit-when-set keeps
+      the blast radius to rules that opt in. Confirm via the gated
+      live-validation path before relying on them in production config.
+
 ## Diff-format follow-up fixes (post Sprint 12)
 
 Three bugs surfaced by the per-leaf diff output:

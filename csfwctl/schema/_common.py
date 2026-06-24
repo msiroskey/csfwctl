@@ -133,6 +133,23 @@ class Protocol(StrEnum):
     icmpv6 = "icmpv6"
 
 
+class AddressFamily(StrEnum):
+    """Explicit IP address family override for a rule.
+
+    Maps to the CrowdStrike rule ``address_family`` wire field: ``ip4`` →
+    ``IP4``, ``ip6`` → ``IP6``, ``any`` → ``NONE`` (the family-agnostic
+    value CrowdStrike uses for application-based rules that match no
+    address). The field is optional in YAML: when omitted the exporter
+    derives the family from the protocol and configured addresses, falling
+    back to ``any`` when it cannot determine one. Set it explicitly only to
+    override that inference.
+    """
+
+    any = "any"
+    ip4 = "ip4"
+    ip6 = "ip6"
+
+
 class ConnectionState(StrEnum):
     """Optional TCP connection-state qualifier on a rule."""
 
@@ -161,6 +178,7 @@ __all__ = [
     "Action",
     "Direction",
     "Protocol",
+    "AddressFamily",
     "ConnectionState",
     "HostGroupEnv",
 ]

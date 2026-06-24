@@ -33,6 +33,7 @@ from csfwctl.exporter import (
 from csfwctl.loader import load_config_repo
 from csfwctl.schema import (
     Action,
+    AddressFamily,
     ConnectionState,
     Direction,
     Endpoint,
@@ -384,6 +385,54 @@ def test_dump_yaml_emits_file_path_and_service_name() -> None:
     assert "service_name: Dhcp" in yaml_text
 
 
+def test_dump_yaml_emits_address_family_type_and_watch_mode() -> None:
+    """The importer's YAML dump must preserve the new top-level rule qualifiers.
+
+    ``_trim_rule`` is an allowlist; an omitted field is silently dropped, so a
+    regression here would make ``import`` lose an explicit address_family
+    override, address_type, or watch_mode flag.
+    """
+    rg = RuleGroup(
+        name="windows-baseline",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="app-rule",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.tcp,
+                address_family=AddressFamily.ip4,
+                address_type="NetworkAddressIPv4",
+                watch_mode=True,
+            )
+        ],
+    )
+    yaml_text = dump_yaml(rg)
+    assert "address_family: ip4" in yaml_text
+    assert "address_type: NetworkAddressIPv4" in yaml_text
+    assert "watch_mode: true" in yaml_text
+
+
+def test_dump_yaml_omits_unset_watch_mode_and_inferred_family() -> None:
+    """watch_mode=false and an omitted address_family stay out of the YAML."""
+    rg = RuleGroup(
+        name="windows-baseline",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="plain",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.tcp,
+            )
+        ],
+    )
+    yaml_text = dump_yaml(rg)
+    assert "watch_mode" not in yaml_text
+    assert "address_family" not in yaml_text
+    assert "address_type" not in yaml_text
+
+
 def test_round_trip_realistic_repo(tmp_path: Path) -> None:
     """Round-trip the realistic fixture repo through the importer."""
     from tests.conftest import FIXTURES_ROOT
@@ -413,6 +462,11 @@ def test_round_trip_realistic_repo(tmp_path: Path) -> None:
     abc = imported.policies["abc01-endpoints-windows"]
     assert [r.name for r in abc.rules] == ["Allow corp DNS outbound"]
     assert abc.rule_groups == ["windows-baseline", "windows-remote-access"]
+
+    # The new top-level rule qualifiers survive import -> YAML -> reload.
+    baseline = {r.name: r for r in imported.rule_groups["windows-baseline"].rules}
+    assert baseline["Allow updater outbound"].address_family is AddressFamily.ip4
+    assert baseline["Block SMB inbound from non-corp"].watch_mode is True
 
 
 def test_import_all_idempotent_when_rerun(tmp_path: Path) -> None:
