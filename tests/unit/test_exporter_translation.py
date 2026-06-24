@@ -27,6 +27,7 @@ from csfwctl.exporter import (
 )
 from csfwctl.schema import (
     Action,
+    AddressFamily,
     ConnectionState,
     Direction,
     Endpoint,
@@ -745,8 +746,10 @@ def test_rule_group_to_api_shape_emits_rule_ids_and_inline_rules() -> None:
     assert shape["platform"] == "windows"
     assert len(shape["rule_ids"]) == 2
     assert {r["name"] for r in shape["rules"]} == {"r1", "r2"}
-    # Every rule must carry address_family for the CREATE endpoint.
-    assert all(r["address_family"] == "IP4" for r in shape["rules"])
+    # Every rule must carry address_family for the CREATE endpoint. These rules
+    # configure no addresses, so inference cannot pin a family and falls back to
+    # the family-agnostic NONE value.
+    assert all(r["address_family"] == "NONE" for r in shape["rules"])
 
 
 def test_rule_group_to_api_shape_ipv6_address_family() -> None:
@@ -796,6 +799,113 @@ def test_rule_group_to_api_shape_icmpv6_forces_ip6_without_addresses() -> None:
     )
     shape = rule_group_to_api_shape(rg, "test")
     assert all(r["address_family"] == "IP6" for r in shape["rules"])
+
+
+def _make_rule(**overrides: object) -> Rule:
+    """Build a minimal valid :class:`Rule`, overriding fields per test."""
+    base: dict[str, object] = {
+        "name": "r",
+        "action": Action.allow,
+        "direction": Direction.outbound,
+        "protocol": Protocol.tcp,
+    }
+    base.update(overrides)
+    return Rule(**base)  # type: ignore[arg-type]
+
+
+def test_address_family_override_wins_over_inference() -> None:
+    """An explicit address_family is emitted verbatim, ignoring address-based inference."""
+    rg = RuleGroup(
+        name="af-override",
+        platform=Platform.windows,
+        rules=[
+            # IPv4 address would infer IP4, but the override forces IP6.
+            _make_rule(
+                address_family=AddressFamily.ip6,
+                remote=Endpoint(addresses=["10.0.0.0/8"]),
+            ),
+            # No addresses would infer NONE, but the override forces IP4.
+            _make_rule(name="r2", address_family=AddressFamily.ip4),
+            # Explicit any maps to the wire NONE value.
+            _make_rule(name="r3", address_family=AddressFamily.any),
+        ],
+    )
+    shape = rule_group_to_api_shape(rg, "test")
+    families = {r["name"]: r["address_family"] for r in shape["rules"]}
+    assert families == {"r": "IP6", "r2": "IP4", "r3": "NONE"}
+
+
+def test_address_type_and_watch_mode_emitted_only_when_set() -> None:
+    """address_type/watch_mode ride top-level and are omitted unless set."""
+    rg = RuleGroup(
+        name="qualifiers",
+        platform=Platform.windows,
+        rules=[
+            _make_rule(name="plain"),
+            _make_rule(name="qualified", address_type="NetworkAddressIPv4", watch_mode=True),
+        ],
+    )
+    shape = {r["name"]: r for r in rule_group_to_api_shape(rg, "test")["rules"]}
+    assert "address_type" not in shape["plain"]
+    assert "watch_mode" not in shape["plain"]
+    assert shape["qualified"]["address_type"] == "NetworkAddressIPv4"
+    assert shape["qualified"]["watch_mode"] is True
+
+
+def test_rule_from_api_reads_back_address_type_and_watch_mode() -> None:
+    """The importer round-trips the new top-level qualifiers."""
+    rule = rule_from_api(
+        {
+            "name": "watched",
+            "action": "ALLOW",
+            "direction": "OUT",
+            "protocol": "6",
+            "address_family": "IP4",
+            "address_type": "NetworkAddressIPv4",
+            "watch_mode": True,
+            "remote": {"addresses": [{"address": "10.0.0.0", "netmask": 8}]},
+        }
+    )
+    assert rule.address_type == "NetworkAddressIPv4"
+    assert rule.watch_mode is True
+    # Wire family matches inference (IPv4 address) -> stays implicit.
+    assert rule.address_family is None
+
+
+def test_rule_from_api_pins_address_family_only_on_divergence() -> None:
+    """address_family is pinned explicitly only when the wire value diverges."""
+    # Address-less rule: inference yields NONE, wire says IP4 -> pin ip4.
+    diverged = rule_from_api(
+        {
+            "name": "app-rule",
+            "action": "ALLOW",
+            "direction": "OUT",
+            "protocol": "6",
+            "address_family": "IP4",
+        }
+    )
+    assert diverged.address_family is AddressFamily.ip4
+
+    # Matching case: address-less rule with wire NONE -> stays implicit.
+    matched = rule_from_api(
+        {
+            "name": "app-rule",
+            "action": "ALLOW",
+            "direction": "OUT",
+            "protocol": "6",
+            "address_family": "NONE",
+        }
+    )
+    assert matched.address_family is None
+
+
+def test_rule_round_trips_address_family_override() -> None:
+    """An explicit override survives model -> API shape -> model."""
+    original = _make_rule(name="r2", address_family=AddressFamily.ip4)
+    rg = RuleGroup(name="rt", platform=Platform.windows, rules=[original])
+    shape = rule_group_to_api_shape(rg, "test")
+    restored = rule_from_api(shape["rules"][0])
+    assert restored.address_family is AddressFamily.ip4
 
 
 def test_rule_group_to_api_shape_single_port_uses_end_zero_sentinel() -> None:

@@ -18,6 +18,7 @@ rules:
     action: block
     direction: inbound
     protocol: tcp
+    watch_mode: true
     local:
       ports: [445]
     remote:
@@ -30,6 +31,9 @@ rules:
     action: allow
     direction: outbound
     protocol: tcp
+    # Application-based rule with no addresses: inference yields `any` (NONE),
+    # overridden here to pin the IPv4 family explicitly.
+    address_family: ip4
     file_path: C:\Program Files\abc01-agent\*.exe
     remote:
       ports: [443]

@@ -29,6 +29,7 @@ from csfwctl.falcon.client import FalconClient
 from csfwctl.falcon.locations import ANY_LOCATION_NAME
 from csfwctl.schema import (
     Action,
+    AddressFamily,
     ConnectionState,
     Direction,
     Endpoint,
@@ -178,6 +179,22 @@ _PLATFORM_TO_API_ID: dict[Platform, str] = {
 _PATH_TYPE_TO_API: dict[Platform, str] = {
     Platform.windows: "windows_path",
     Platform.mac: "unix_path",
+}
+
+# CrowdStrike rule ``address_family`` wire values. ``any`` maps to the
+# family-agnostic ``NONE`` value (application-based rules matching no address).
+_ADDRESS_FAMILY_TO_API: dict[AddressFamily, str] = {
+    AddressFamily.ip4: "IP4",
+    AddressFamily.ip6: "IP6",
+    AddressFamily.any: "NONE",
+}
+
+_ADDRESS_FAMILY_FROM_API: dict[str, AddressFamily] = {
+    "IP4": AddressFamily.ip4,
+    "IP6": AddressFamily.ip6,
+    "NONE": AddressFamily.any,
+    "ANY": AddressFamily.any,
+    "": AddressFamily.any,
 }
 
 
@@ -427,7 +444,10 @@ def rule_from_api(record: dict[str, Any]) -> Rule:
     local = _endpoint_from_api(record.get("local")) or _endpoint_from_api_flat(record, "local")
     remote = _endpoint_from_api(record.get("remote")) or _endpoint_from_api_flat(record, "remote")
 
-    return Rule(
+    address_type_raw = record.get("address_type")
+    address_type = str(address_type_raw) if address_type_raw else None
+
+    rule = Rule(
         name=str(name),
         description=str(record.get("description") or ""),
         enabled=bool(record.get("enabled", True)),
@@ -437,10 +457,24 @@ def rule_from_api(record: dict[str, Any]) -> Rule:
         state=state,
         file_path=file_path,
         service_name=service_name,
+        address_type=address_type,
+        watch_mode=bool(record.get("watch_mode", False)),
         locations=locations,
         local=local,
         remote=remote,
     )
+
+    # ``address_family`` stays implicit (inferred) when the wire value matches
+    # what inference reproduces, keeping round-tripped YAML clean. Pin it
+    # explicitly only when the tenant's value diverges from inference, so the
+    # override survives the round trip and the diff converges.
+    wire_af = str(record.get("address_family") or "").upper()
+    if wire_af and wire_af != _infer_address_family(rule):
+        explicit = _ADDRESS_FAMILY_FROM_API.get(wire_af)
+        if explicit is not None:
+            rule = rule.model_copy(update={"address_family": explicit})
+
+    return rule
 
 
 def _state_from_fields(fields: Any) -> ConnectionState | None:
@@ -920,7 +954,7 @@ def _address_to_api_dict(addr: str) -> dict[str, Any]:
 
 
 def _infer_address_family(rule: Rule) -> str:
-    """Return ``"IP6"`` for IPv6-family rules, else ``"IP4"``.
+    """Derive the rule's ``address_family`` wire value from protocol + addresses.
 
     CrowdStrike's rule CREATE/UPDATE endpoint requires a non-empty
     ``address_family`` field and rejects mismatches with
@@ -933,10 +967,15 @@ def _infer_address_family(rule: Rule) -> str:
        rule for neighbor discovery).
     2. Otherwise, if any local/remote address contains ``":"`` it is an
        IPv6 CIDR and the family is ``"IP6"``.
-    3. Otherwise ``"IP4"``.
+    3. Otherwise, if any local/remote address is configured, ``"IP4"``.
+    4. Otherwise the family cannot be determined (an application-based rule
+       matching no address): ``"NONE"`` — CrowdStrike's family-agnostic
+       value, surfaced in YAML as :attr:`AddressFamily.any`.
 
     Raw-integer ("Advanced") protocols bypass the named-enum check; the
-    user is expected to supply matching addresses in that case.
+    user is expected to supply matching addresses in that case. An explicit
+    :attr:`Rule.address_family` override is honoured upstream by
+    :func:`_resolve_address_family`; this helper is pure inference.
     """
     if rule.protocol in (Protocol.ipv6, Protocol.icmpv6):
         return "IP6"
@@ -945,10 +984,23 @@ def _infer_address_family(rule: Rule) -> str:
         all_addresses.extend(rule.local.addresses)
     if rule.remote:
         all_addresses.extend(rule.remote.addresses)
+    if not all_addresses:
+        return "NONE"
     for addr in all_addresses:
         if ":" in addr:
             return "IP6"
     return "IP4"
+
+
+def _resolve_address_family(rule: Rule) -> str:
+    """Return the rule's ``address_family`` wire value, honouring the override.
+
+    An explicit :attr:`Rule.address_family` wins; otherwise the value is
+    inferred via :func:`_infer_address_family`.
+    """
+    if rule.address_family is not None:
+        return _ADDRESS_FAMILY_TO_API[rule.address_family]
+    return _infer_address_family(rule)
 
 
 def _rule_to_api_shape(
@@ -966,10 +1018,16 @@ def _rule_to_api_shape(
         "action": _ACTION_TO_API[rule.action],
         "direction": _DIRECTION_TO_API[rule.direction],
         "protocol": proto_api,
-        "address_family": _infer_address_family(rule),
+        "address_family": _resolve_address_family(rule),
         "fields": [],
         "locations": list(rule.locations),
     }
+    # Top-level qualifiers, emitted only when set so unaffected rules keep an
+    # identical payload (mirrors the emit-when-set treatment of state/file_path).
+    if rule.address_type is not None:
+        record["address_type"] = rule.address_type
+    if rule.watch_mode:
+        record["watch_mode"] = True
     if rule.state is not None:
         record["fields"].append({"name": "tcp_state", "value": rule.state.value})
     if rule.file_path is not None:
@@ -1539,6 +1597,12 @@ def _trim_rule(rule: dict[str, Any]) -> dict[str, Any]:
         out["file_path"] = rule["file_path"]
     if rule.get("service_name"):
         out["service_name"] = rule["service_name"]
+    if rule.get("address_family"):
+        out["address_family"] = rule["address_family"]
+    if rule.get("address_type"):
+        out["address_type"] = rule["address_type"]
+    if rule.get("watch_mode"):
+        out["watch_mode"] = True
     locations = rule.get("locations") or [ANY_LOCATION_NAME]
     out["locations"] = list(locations)
     if rule.get("local"):
