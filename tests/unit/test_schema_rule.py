@@ -203,6 +203,39 @@ def test_rule_accepts_explicit_address_family() -> None:
     assert rule.address_family is AddressFamily.ip6
 
 
+@pytest.mark.parametrize(
+    ("alias", "expected"),
+    [
+        ("ipv4", AddressFamily.ip4),
+        ("IPv4", AddressFamily.ip4),
+        ("ipv6", AddressFamily.ip6),
+        ("IPV6", AddressFamily.ip6),
+    ],
+)
+def test_rule_normalizes_address_family_aliases(alias: str, expected: AddressFamily) -> None:
+    """``ipv4``/``ipv6`` (any case) are accepted and folded to ``ip4``/``ip6``."""
+    rule = Rule(
+        name="x",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+        address_family=alias,  # type: ignore[arg-type]
+    )
+    assert rule.address_family is expected
+
+
+def test_rule_ipv4_alias_rejected_with_ipv6_protocol() -> None:
+    """The alias normalizes before the protocol check, so it is rejected too."""
+    with pytest.raises(ValidationError, match="address_family ip4 is not allowed"):
+        Rule(
+            name="bad",
+            action=Action.allow,
+            direction=Direction.inbound,
+            protocol=Protocol.icmpv6,
+            address_family="ipv4",  # type: ignore[arg-type]
+        )
+
+
 def test_rule_rejects_ip4_family_with_ipv6_protocol() -> None:
     """An explicit IPv4 family contradicts an IPv6-only protocol."""
     with pytest.raises(ValidationError, match="address_family ip4 is not allowed"):
