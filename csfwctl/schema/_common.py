@@ -142,7 +142,9 @@ class AddressFamily(StrEnum):
     address). The field is optional in YAML: when omitted the exporter
     derives the family from the protocol and configured addresses, falling
     back to ``any`` when it cannot determine one. Set it explicitly only to
-    override that inference.
+    override that inference. In YAML the ``ipv4``/``ipv6`` spellings are
+    accepted as input aliases and normalized to ``ip4``/``ip6`` (see
+    :meth:`csfwctl.schema.rule.Rule._normalize_address_family`).
     """
 
     any = "any"

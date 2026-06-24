@@ -155,7 +155,8 @@ class Rule(BaseModel):
     explicitly only to override that inference; an explicit ``ip4`` paired
     with an IPv6-family protocol is rejected locally, mirroring the
     CrowdStrike error ``Address family IPv4 is not allowed with protocol
-    ICMPv6``.
+    ICMPv6``. The ``ipv4``/``ipv6`` spellings are accepted as input
+    aliases and normalized to ``ip4``/``ip6``.
 
     ``address_type`` is an optional top-level rule qualifier passed through
     verbatim to the CrowdStrike ``address_type`` wire field. Its value
@@ -250,6 +251,22 @@ class Rule(BaseModel):
             raise ValueError("address_type must be a non-empty string (or omitted)")
         if "\x00" in value:
             raise ValueError("address_type must not contain a NUL character")
+        return value
+
+    @field_validator("address_family", mode="before")
+    @classmethod
+    def _normalize_address_family(cls, value: object) -> object:
+        """Accept the ``ipv4``/``ipv6`` aliases for ``ip4``/``ip6``.
+
+        CrowdStrike's wire field uses the ``IP4``/``IP6`` tokens, surfaced
+        in YAML as :attr:`AddressFamily.ip4` / :attr:`AddressFamily.ip6`.
+        The ``ipv4``/``ipv6`` spellings read more naturally to operators, so
+        they are accepted as input aliases and folded to the canonical
+        values before enum coercion. Any other value is passed through
+        untouched for the enum to validate (or reject).
+        """
+        if isinstance(value, str):
+            return {"ipv4": "ip4", "ipv6": "ip6"}.get(value.strip().lower(), value)
         return value
 
     @model_validator(mode="after")
