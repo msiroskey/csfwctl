@@ -389,3 +389,41 @@ def test_env_matrix_shows_one_row_per_field_path_with_before_after(
     # Pilot has no change to this object — its cell for both field rows is the
     # empty-cell sentinel.
     assert "—" in out
+
+
+# ---- matrix width sizing ------------------------------------------------
+
+
+def test_optimal_matrix_width_returns_natural_when_narrow() -> None:
+    """Small data → table sizes to its natural width, not the 140 cap."""
+    from csfwctl.diff_cmd import _MATRIX_MAX_WIDTH, _optimal_matrix_width
+
+    header = ["Type", "Name", "Change on", "Test", "Pilot", "Production"]
+    body = [
+        ["policy", "abc", "(new)", "create", "—", "—"],
+        ["policy", "abc", "enabled", "False -> True", "—", "—"],
+    ]
+    width = _optimal_matrix_width(header, body)
+    assert width < _MATRIX_MAX_WIDTH
+    # Sanity: at least wide enough for the header cells plus overhead.
+    assert width >= sum(len(h) for h in header)
+
+
+def test_optimal_matrix_width_caps_at_140() -> None:
+    """A very long cell forces the cap so the table stays reviewable."""
+    from csfwctl.diff_cmd import _MATRIX_MAX_WIDTH, _optimal_matrix_width
+
+    header = ["Type", "Name", "Change on", "Test", "Pilot", "Production"]
+    huge = "x" * 500
+    body = [["policy", "abc", "description", huge, "—", "—"]]
+    assert _optimal_matrix_width(header, body) == _MATRIX_MAX_WIDTH
+
+
+def test_optimal_matrix_width_ignores_rich_markup() -> None:
+    """``[green]create[/green]`` counts as 6 visible chars, not 21."""
+    from csfwctl.diff_cmd import _optimal_matrix_width
+
+    header = ["A", "B"]
+    plain = [["A", "create"]]
+    marked = [["A", "[green]create[/green]"]]
+    assert _optimal_matrix_width(header, plain) == _optimal_matrix_width(header, marked)
