@@ -407,7 +407,11 @@ def _render_env_matrix_table(console: Console, multi: MultiEnvDiff) -> None:
     for row in body:
         table.add_row(*row)
 
-    console.print(table)
+    # ``crop=False`` keeps the matrix at its intended width even when
+    # Rich can't detect a real terminal (CI logs, piped capture, Docker
+    # exec) — otherwise Rich falls back to an 80-column console and
+    # silently clips the Pilot / Production columns off the right edge.
+    console.print(table, crop=False)
 
 
 def _cell_visible_width(cell: str) -> int:

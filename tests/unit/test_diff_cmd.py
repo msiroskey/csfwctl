@@ -427,3 +427,58 @@ def test_optimal_matrix_width_ignores_rich_markup() -> None:
     plain = [["A", "create"]]
     marked = [["A", "[green]create[/green]"]]
     assert _optimal_matrix_width(header, plain) == _optimal_matrix_width(header, marked)
+
+
+def test_env_matrix_not_cropped_in_non_tty_output() -> None:
+    """Non-TTY consumers (CI logs, piped capture) must not lose right-side columns.
+
+    Rich falls back to an 80-column console when it can't detect a real
+    terminal. Without ``crop=False`` on the matrix print the Pilot and
+    Production columns get silently clipped off the right edge — the
+    exact symptom observed in the PR #69 log capture.
+    """
+    import io
+
+    from rich.console import Console
+
+    from csfwctl import diff_cmd
+    from csfwctl.differ import (
+        KIND_POLICY,
+        ChangeSet,
+        DiffOp,
+        ManagedStatus,
+        MultiEnvDiff,
+        ObjectChange,
+    )
+
+    test = ChangeSet(env="test")
+    test.creates.append(
+        ObjectChange(
+            kind=KIND_POLICY,
+            op=DiffOp.create,
+            slug="abc",
+            display_name="ABC",
+            managed=ManagedStatus.new,
+        )
+    )
+    multi = MultiEnvDiff(
+        change_sets={
+            "test": test,
+            "pilot": ChangeSet(env="pilot"),
+            "production": ChangeSet(env="production"),
+        }
+    )
+
+    buf = io.StringIO()
+    console = Console(file=buf)
+    assert not console.is_terminal, "test precondition: StringIO capture is non-tty"
+    assert console.width < diff_cmd._MATRIX_MAX_WIDTH, "test precondition: width < cap"
+
+    diff_cmd._render_env_matrix_table(console, multi)
+
+    rendered = buf.getvalue()
+    # All three env column headers must survive — a clipped table drops
+    # Pilot / Production off the right side.
+    assert "Test" in rendered
+    assert "Pilot" in rendered
+    assert "Production" in rendered
