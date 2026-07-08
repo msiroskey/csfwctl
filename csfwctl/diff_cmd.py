@@ -273,7 +273,7 @@ def _render_multi_env_text(console: Console, multi: MultiEnvDiff) -> None:
         )
     console.print(table)
 
-    _render_env_matrix_table(console, multi)
+    _render_env_matrix_tables(console, multi)
 
     if multi.has_env_drift:
         console.print(
@@ -320,21 +320,61 @@ raw content lengths.
 """
 
 
-def _render_env_matrix_table(console: Console, multi: MultiEnvDiff) -> None:
-    """Per-object matrix showing what each env would apply.
+def _render_env_matrix_tables(console: Console, multi: MultiEnvDiff) -> None:
+    """One table per changed object, all sharing the same column widths.
 
-    Rows are keyed by ``(kind, slug, change_on)``. ``change_on`` is
-    ``(new)`` for a create, ``(deleted)`` for a delete, or a field path
-    for an update. Each env column shows ``before -> after`` for that
-    field (or a ``create`` / ``delete`` marker for op-summary rows), and
-    :data:`_MATRIX_EMPTY_CELL` when the env has no matching change.
+    Each object gets its own titled table (``kind: display_name``) with
+    the columns ``Change on / Test / Pilot / Production``. Rows follow
+    the same conventions as before: ``(new)`` for a create summary,
+    ``(deleted)`` for a delete summary, and one row per field path for
+    an update. Cell content is ``before -> after`` for that env, or the
+    empty-cell sentinel when the env has no matching change.
 
-    Width is sized from the data: the table renders at its natural width
-    (no forced wrapping) unless that exceeds :data:`_MATRIX_MAX_WIDTH`,
-    in which case it caps there and Rich distributes the shrink across
-    the widest columns.
+    Column widths are computed once across every object's data so all
+    tables render at the same total width and columns visually line up
+    down the page. Natural width is used when it fits under
+    :data:`_MATRIX_MAX_WIDTH`; otherwise columns shrink proportionally
+    (bounded below by their header labels) and Rich's ``overflow="fold"``
+    wraps long ``before -> after`` cells.
     """
     envs = tuple(multi.change_sets.keys())
+    per_object = _build_per_object_rows(multi, envs)
+    if not per_object:
+        return
+
+    header = ["Change on", *(env.title() for env in envs)]
+    all_rows = [row for _, _, rows in per_object for row in rows]
+    col_widths = _shared_column_widths(header, all_rows)
+    total_width = sum(col_widths) + _MATRIX_COL_OVERHEAD * len(col_widths) + 1
+
+    for kind, display_name, rows in per_object:
+        table = Table(
+            title=f"[bold]{kind}:[/bold] {display_name}",
+            title_justify="left",
+            width=total_width,
+        )
+        for i, label in enumerate(header):
+            table.add_column(label, width=col_widths[i], overflow="fold")
+        for row in rows:
+            table.add_row(*row)
+        # ``crop=False`` keeps each table at its intended width even when
+        # Rich can't detect a real terminal (CI logs, piped capture,
+        # Docker exec) — otherwise Rich falls back to an 80-column
+        # console and silently clips the Pilot / Production columns off
+        # the right edge.
+        console.print(table, crop=False)
+
+
+def _build_per_object_rows(
+    multi: MultiEnvDiff, envs: tuple[str, ...]
+) -> list[tuple[str, str, list[list[str]]]]:
+    """Group actionable changes into ``(kind, display_name, rows)`` triples.
+
+    Each ``rows`` entry has the shape ``[change_on, cell_env0, cell_env1, ...]``,
+    ready to be rendered without further transformation. Objects are
+    ordered by apply-order (kind) then slug; within an object rows go
+    ``(new)`` first, ``(deleted)`` next, then field paths alphabetically.
+    """
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     for env, cs in multi.change_sets.items():
         for change in cs.all_actionable():
@@ -344,12 +384,7 @@ def _render_env_matrix_table(console: Console, multi: MultiEnvDiff) -> None:
             )
             entry["per_env"][env] = change
 
-    if not grouped:
-        return
-
-    header = ["Type", "Name", "Change on", *(env.title() for env in envs)]
-    body: list[list[str]] = []
-
+    out: list[tuple[str, str, list[list[str]]]] = []
     ordered_keys = sorted(grouped.keys(), key=lambda k: (KIND_ORDER.index(k[0]), k[1]))
     for key in ordered_keys:
         kind, _slug = key
@@ -366,18 +401,21 @@ def _render_env_matrix_table(console: Console, multi: MultiEnvDiff) -> None:
                     leaves[leaf.path] = leaf
             env_fields[env] = leaves
 
-        obj_rows: list[tuple[str, list[str]]] = []
+        rows: list[list[str]] = []
         if any(op is DiffOp.create for op in env_ops.values()):
-            obj_rows.append(
-                ("(new)", [_op_summary_cell(env_ops.get(env), DiffOp.create) for env in envs])
+            rows.append(
+                ["(new)", *(_op_summary_cell(env_ops.get(env), DiffOp.create) for env in envs)]
             )
         if any(op is DiffOp.delete for op in env_ops.values()):
-            obj_rows.append(
-                ("(deleted)", [_op_summary_cell(env_ops.get(env), DiffOp.delete) for env in envs])
+            rows.append(
+                [
+                    "(deleted)",
+                    *(_op_summary_cell(env_ops.get(env), DiffOp.delete) for env in envs),
+                ]
             )
 
         for path in sorted({p for leaves in env_fields.values() for p in leaves}):
-            cells: list[str] = []
+            cells: list[str] = [path]
             for env in envs:
                 env_leaf: FieldChange | None = env_fields.get(env, {}).get(path)
                 if env_leaf is not None:
@@ -388,30 +426,11 @@ def _render_env_matrix_table(console: Console, multi: MultiEnvDiff) -> None:
                     cells.append("[red](deleted)[/red]")
                 else:
                     cells.append(_MATRIX_EMPTY_CELL)
-            obj_rows.append((path, cells))
+            rows.append(cells)
 
-        for change_on, cells in obj_rows:
-            body.append([kind, display_name, change_on, *cells])
+        out.append((kind, display_name, rows))
 
-    table = Table(
-        title="Per-object changes by environment",
-        title_justify="left",
-        width=_optimal_matrix_width(header, body),
-    )
-    table.add_column("Type", style="bold")
-    table.add_column("Name")
-    table.add_column("Change on")
-    for env in envs:
-        table.add_column(env.title(), overflow="fold")
-
-    for row in body:
-        table.add_row(*row)
-
-    # ``crop=False`` keeps the matrix at its intended width even when
-    # Rich can't detect a real terminal (CI logs, piped capture, Docker
-    # exec) — otherwise Rich falls back to an 80-column console and
-    # silently clips the Pilot / Production columns off the right edge.
-    console.print(table, crop=False)
+    return out
 
 
 def _cell_visible_width(cell: str) -> int:
@@ -420,22 +439,40 @@ def _cell_visible_width(cell: str) -> int:
     return max((len(line) for line in plain.splitlines()), default=len(plain))
 
 
-def _optimal_matrix_width(header: list[str], body: list[list[str]]) -> int:
-    """Total width the matrix table should render at.
+def _shared_column_widths(header: list[str], body: list[list[str]]) -> list[int]:
+    """Per-column widths applied to every per-object table.
 
-    Walks the header and every row to find the maximum visible width per
-    column, adds Rich's per-column overhead, and caps at
-    :data:`_MATRIX_MAX_WIDTH`. Returning the natural width when it fits
-    lets Rich render without any forced wrapping; over the cap, Rich
-    distributes the shrink across the widest columns.
+    Sizes each column to its widest visible cell across header + every
+    row of every object. When the summed natural widths + overhead fit
+    under :data:`_MATRIX_MAX_WIDTH`, natural widths are returned as-is —
+    tables render without any forced wrapping. Over the cap columns
+    shrink proportionally (never below their header labels) so long
+    ``before -> after`` cells wrap via Rich's ``overflow="fold"``.
     """
     ncols = len(header)
-    col_widths = [len(h) for h in header]
+    natural = [len(h) for h in header]
     for row in body:
         for i, cell in enumerate(row):
-            col_widths[i] = max(col_widths[i], _cell_visible_width(cell))
-    natural = sum(col_widths) + _MATRIX_COL_OVERHEAD * ncols + 1
-    return min(_MATRIX_MAX_WIDTH, natural)
+            natural[i] = max(natural[i], _cell_visible_width(cell))
+
+    overhead = _MATRIX_COL_OVERHEAD * ncols + 1
+    budget = _MATRIX_MAX_WIDTH - overhead
+    total = sum(natural)
+    if total <= budget:
+        return natural
+
+    # Proportional shrink first, honouring each column's header-label
+    # floor. That floor may push the total back above budget, so pull
+    # any remaining overrun from the widest column still above its floor
+    # (typically a ``before -> after`` cell that wraps cleanly).
+    widths = [max(len(h), round(w * budget / total)) for h, w in zip(header, natural, strict=True)]
+    while sum(widths) > budget:
+        candidates = [i for i, w in enumerate(widths) if w > len(header[i])]
+        if not candidates:
+            break
+        widest = max(candidates, key=lambda i: widths[i])
+        widths[widest] -= 1
+    return widths
 
 
 def _op_summary_cell(env_op: DiffOp | None, target: DiffOp) -> str:
