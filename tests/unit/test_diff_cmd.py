@@ -236,3 +236,156 @@ def test_diff_single_env_still_works_with_explicit_env(
     result = runner.invoke(app, ["diff", "--env", "test", "--repo", str(realistic_repo_root)])
     assert result.exit_code == 0, result.output + result.stderr
     assert "csfwctl diff --env test" in result.output
+
+
+# ---- per-object env matrix table (all-envs mode only) -------------------
+
+
+def _stub_multi_env(monkeypatch: pytest.MonkeyPatch, multi: Any) -> None:
+    from csfwctl import diff_cmd
+
+    monkeypatch.setattr(diff_cmd, "compute_all_envs_diff", lambda _c, _s: multi)
+
+
+def test_env_matrix_appears_in_all_envs_mode(
+    realistic_repo_root: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The matrix table appears after the summary in all-envs mode."""
+    monkeypatch.setattr(
+        "csfwctl.diff_cmd._default_state_provider",
+        lambda profile, credentials_file: lambda: LiveState(),
+    )
+    result = runner.invoke(app, ["diff", "--repo", str(realistic_repo_root)])
+    assert result.exit_code == 0, result.output + result.stderr
+    assert "Per-object changes by environment" in result.output
+
+
+def test_env_matrix_omitted_in_single_env_mode(
+    realistic_repo_root: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Single-env mode keeps its per-env details but does not render the matrix."""
+    monkeypatch.setattr(
+        "csfwctl.diff_cmd._default_state_provider",
+        lambda profile, credentials_file: lambda: LiveState(),
+    )
+    result = runner.invoke(app, ["diff", "--env", "test", "--repo", str(realistic_repo_root)])
+    assert result.exit_code == 0, result.output + result.stderr
+    assert "Per-object changes by environment" not in result.output
+
+
+def test_env_matrix_shows_create_and_delete_summary_rows(
+    realistic_repo_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Creates and deletes each get a single ``(new)`` / ``(deleted)`` row."""
+    from csfwctl import diff_cmd
+    from csfwctl.differ import (
+        KIND_POLICY,
+        ChangeSet,
+        DiffOp,
+        ManagedStatus,
+        MultiEnvDiff,
+        ObjectChange,
+    )
+
+    test = ChangeSet(env="test")
+    test.creates.append(
+        ObjectChange(
+            kind=KIND_POLICY,
+            op=DiffOp.create,
+            slug="abc01-endpoints-windows",
+            display_name="ABC01-Endpoints-Windows",
+            managed=ManagedStatus.new,
+        )
+    )
+    pilot = ChangeSet(env="pilot")
+    production = ChangeSet(env="production")
+    production.deletes.append(
+        ObjectChange(
+            kind=KIND_POLICY,
+            op=DiffOp.delete,
+            slug="legacy-policy",
+            display_name="Legacy-Policy",
+            managed=ManagedStatus.managed,
+            reason="tombstoned",
+        )
+    )
+    multi = MultiEnvDiff(change_sets={"test": test, "pilot": pilot, "production": production})
+    _stub_multi_env(monkeypatch, multi)
+
+    try:
+        diff_cmd.run_diff(
+            env=None,
+            repo=realistic_repo_root,
+            output=None,
+            state_provider=lambda: LiveState(),
+        )
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    captured = capsys.readouterr().out
+    assert "Per-object changes by environment" in captured
+    assert "(new)" in captured
+    assert "(deleted)" in captured
+    assert "ABC01-Endpoints-Windows" in captured
+    assert "Legacy-Policy" in captured
+
+
+def test_env_matrix_shows_one_row_per_field_path_with_before_after(
+    realistic_repo_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Updates emit one row per changed field; cell shows ``before -> after``."""
+    from csfwctl import diff_cmd
+    from csfwctl.differ import (
+        KIND_POLICY,
+        ChangeSet,
+        DiffOp,
+        FieldChange,
+        ManagedStatus,
+        MultiEnvDiff,
+        ObjectChange,
+    )
+
+    def _mk_update(env: str, enabled_before: bool, enabled_after: bool) -> ChangeSet:
+        cs = ChangeSet(env=env)
+        cs.updates.append(
+            ObjectChange(
+                kind=KIND_POLICY,
+                op=DiffOp.update,
+                slug="abc01-endpoints-windows",
+                display_name="ABC01-Endpoints-Windows",
+                managed=ManagedStatus.managed,
+                field_changes=(
+                    FieldChange(path="enabled", before=enabled_before, after=enabled_after),
+                    FieldChange(path="description", before="old", after="new"),
+                ),
+            )
+        )
+        return cs
+
+    multi = MultiEnvDiff(
+        change_sets={
+            "test": _mk_update("test", False, True),
+            "pilot": ChangeSet(env="pilot"),
+            "production": _mk_update("production", False, True),
+        }
+    )
+    _stub_multi_env(monkeypatch, multi)
+
+    try:
+        diff_cmd.run_diff(
+            env=None,
+            repo=realistic_repo_root,
+            output=None,
+            state_provider=lambda: LiveState(),
+        )
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    out = capsys.readouterr().out
+    assert "enabled" in out
+    assert "description" in out
+    assert "False -> True" in out
+    assert "'old' -> 'new'" in out
+    # Pilot has no change to this object — its cell for both field rows is the
+    # empty-cell sentinel.
+    assert "—" in out
