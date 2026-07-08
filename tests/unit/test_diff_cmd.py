@@ -250,14 +250,16 @@ def _stub_multi_env(monkeypatch: pytest.MonkeyPatch, multi: Any) -> None:
 def test_env_matrix_appears_in_all_envs_mode(
     realistic_repo_root: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The matrix table appears after the summary in all-envs mode."""
+    """Per-object matrix tables appear after the summary in all-envs mode."""
     monkeypatch.setattr(
         "csfwctl.diff_cmd._default_state_provider",
         lambda profile, credentials_file: lambda: LiveState(),
     )
     result = runner.invoke(app, ["diff", "--repo", str(realistic_repo_root)])
     assert result.exit_code == 0, result.output + result.stderr
-    assert "Per-object changes by environment" in result.output
+    # The "Change on" column header is the stable matrix marker; per-object
+    # titles use "kind: display_name" which the summary table doesn't emit.
+    assert "Change on" in result.output
 
 
 def test_env_matrix_omitted_in_single_env_mode(
@@ -270,7 +272,7 @@ def test_env_matrix_omitted_in_single_env_mode(
     )
     result = runner.invoke(app, ["diff", "--env", "test", "--repo", str(realistic_repo_root)])
     assert result.exit_code == 0, result.output + result.stderr
-    assert "Per-object changes by environment" not in result.output
+    assert "Change on" not in result.output
 
 
 def test_env_matrix_shows_create_and_delete_summary_rows(
@@ -323,11 +325,12 @@ def test_env_matrix_shows_create_and_delete_summary_rows(
         assert exc.code == 0
 
     captured = capsys.readouterr().out
-    assert "Per-object changes by environment" in captured
-    assert "(new)" in captured
-    assert "(deleted)" in captured
+    # Each object gets its own titled table.
+    assert "policy:" in captured
     assert "ABC01-Endpoints-Windows" in captured
     assert "Legacy-Policy" in captured
+    assert "(new)" in captured
+    assert "(deleted)" in captured
 
 
 def test_env_matrix_shows_one_row_per_field_path_with_before_after(
@@ -394,39 +397,111 @@ def test_env_matrix_shows_one_row_per_field_path_with_before_after(
 # ---- matrix width sizing ------------------------------------------------
 
 
-def test_optimal_matrix_width_returns_natural_when_narrow() -> None:
-    """Small data → table sizes to its natural width, not the 140 cap."""
-    from csfwctl.diff_cmd import _MATRIX_MAX_WIDTH, _optimal_matrix_width
+def test_shared_column_widths_returns_natural_when_narrow() -> None:
+    """Small data → each column sized to its widest cell, no cap needed."""
+    from csfwctl.diff_cmd import (
+        _MATRIX_COL_OVERHEAD,
+        _MATRIX_MAX_WIDTH,
+        _shared_column_widths,
+    )
 
-    header = ["Type", "Name", "Change on", "Test", "Pilot", "Production"]
+    header = ["Change on", "Test", "Pilot", "Production"]
     body = [
-        ["policy", "abc", "(new)", "create", "—", "—"],
-        ["policy", "abc", "enabled", "False -> True", "—", "—"],
+        ["(new)", "create", "—", "—"],
+        ["enabled", "False -> True", "—", "—"],
     ]
-    width = _optimal_matrix_width(header, body)
-    assert width < _MATRIX_MAX_WIDTH
-    # Sanity: at least wide enough for the header cells plus overhead.
-    assert width >= sum(len(h) for h in header)
+    widths = _shared_column_widths(header, body)
+    assert widths[0] >= len("Change on")
+    assert widths[1] >= len("False -> True")
+    total = sum(widths) + _MATRIX_COL_OVERHEAD * len(widths) + 1
+    assert total < _MATRIX_MAX_WIDTH
 
 
-def test_optimal_matrix_width_caps_at_140() -> None:
-    """A very long cell forces the cap so the table stays reviewable."""
-    from csfwctl.diff_cmd import _MATRIX_MAX_WIDTH, _optimal_matrix_width
+def test_shared_column_widths_caps_at_140() -> None:
+    """A very long cell forces proportional shrink; total stays within 140."""
+    from csfwctl.diff_cmd import (
+        _MATRIX_COL_OVERHEAD,
+        _MATRIX_MAX_WIDTH,
+        _shared_column_widths,
+    )
 
-    header = ["Type", "Name", "Change on", "Test", "Pilot", "Production"]
+    header = ["Change on", "Test", "Pilot", "Production"]
     huge = "x" * 500
-    body = [["policy", "abc", "description", huge, "—", "—"]]
-    assert _optimal_matrix_width(header, body) == _MATRIX_MAX_WIDTH
+    body = [["description", huge, "—", "—"]]
+    widths = _shared_column_widths(header, body)
+    total = sum(widths) + _MATRIX_COL_OVERHEAD * len(widths) + 1
+    assert total <= _MATRIX_MAX_WIDTH
+    # No column shrinks below its header label.
+    for w, h in zip(widths, header, strict=True):
+        assert w >= len(h)
 
 
-def test_optimal_matrix_width_ignores_rich_markup() -> None:
+def test_shared_column_widths_ignores_rich_markup() -> None:
     """``[green]create[/green]`` counts as 6 visible chars, not 21."""
-    from csfwctl.diff_cmd import _optimal_matrix_width
+    from csfwctl.diff_cmd import _shared_column_widths
 
     header = ["A", "B"]
     plain = [["A", "create"]]
     marked = [["A", "[green]create[/green]"]]
-    assert _optimal_matrix_width(header, plain) == _optimal_matrix_width(header, marked)
+    assert _shared_column_widths(header, plain) == _shared_column_widths(header, marked)
+
+
+def test_per_object_tables_share_column_widths(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Two objects → two tables that render at identical widths.
+
+    The whole point of the shared-width layout is that columns line up
+    down the page. Rendering into a StringIO Console captures the box
+    art, and the top edge (``┏━━━┳━━━┓``) of every matrix table must be
+    identical.
+    """
+    import io
+
+    from rich.console import Console
+
+    from csfwctl import diff_cmd
+    from csfwctl.differ import (
+        KIND_POLICY,
+        KIND_RULE_GROUP,
+        ChangeSet,
+        DiffOp,
+        FieldChange,
+        ManagedStatus,
+        MultiEnvDiff,
+        ObjectChange,
+    )
+
+    def _update(kind: str, slug: str, display: str) -> ObjectChange:
+        return ObjectChange(
+            kind=kind,
+            op=DiffOp.update,
+            slug=slug,
+            display_name=display,
+            managed=ManagedStatus.managed,
+            field_changes=(FieldChange(path="enabled", before=False, after=True),),
+        )
+
+    test = ChangeSet(env="test")
+    test.updates.append(_update(KIND_POLICY, "abc", "ABC-Windows"))
+    test.updates.append(_update(KIND_RULE_GROUP, "xyz", "XYZ-Rules"))
+    multi = MultiEnvDiff(
+        change_sets={
+            "test": test,
+            "pilot": ChangeSet(env="pilot"),
+            "production": ChangeSet(env="production"),
+        }
+    )
+
+    buf = io.StringIO()
+    console = Console(file=buf)
+    diff_cmd._render_env_matrix_tables(console, multi)
+
+    top_edges = [line for line in buf.getvalue().splitlines() if line.startswith("┏")]
+    assert len(top_edges) == 2, "expected one table per object"
+    assert top_edges[0] == top_edges[1], (
+        f"per-object tables should share column widths; got:\n{top_edges[0]!r}\n{top_edges[1]!r}"
+    )
 
 
 def test_env_matrix_not_cropped_in_non_tty_output() -> None:
@@ -474,7 +549,7 @@ def test_env_matrix_not_cropped_in_non_tty_output() -> None:
     assert not console.is_terminal, "test precondition: StringIO capture is non-tty"
     assert console.width < diff_cmd._MATRIX_MAX_WIDTH, "test precondition: width < cap"
 
-    diff_cmd._render_env_matrix_table(console, multi)
+    diff_cmd._render_env_matrix_tables(console, multi)
 
     rendered = buf.getvalue()
     # All three env column headers must survive — a clipped table drops

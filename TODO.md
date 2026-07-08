@@ -71,6 +71,15 @@ Three bugs surfaced by the per-leaf diff output:
       wrapping; at the cap Rich shrinks the widest columns. Keeps narrow
       change sets compact and gives long `before -> after` cells enough
       room in typical PR reviews.
+- [x] **One matrix table per object with shared column widths.** Dropped
+      the Type / Name columns and moved those values into each table's
+      title (`kind: display_name`). Every changed object now gets its
+      own titled table with columns Change on / Test / Pilot / Production.
+      `_shared_column_widths` computes per-column widths across every
+      object's data once and applies them uniformly, so tables line up
+      down the page. Over-budget totals shrink proportionally with a
+      header-label floor, then the widest column absorbs any remaining
+      overrun. Long cells wrap via `overflow="fold"`.
 
 ## Sprint 12 tasks
 
