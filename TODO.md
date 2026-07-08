@@ -55,6 +55,14 @@ Three bugs surfaced by the per-leaf diff output:
       `rule_from_api`, `_rule_to_api_shape`, `_trim_rule`. Updated
       `docs/schema_reference.md`, `docs/architecture.md`, and the realistic
       config-repo fixture.
+- [x] **Per-object env matrix in `diff` all-envs output.** Added a second
+      table after the summary in `_render_multi_env_text` (columns
+      Type / Name / Change on / Test / Pilot / Production). Updates emit one
+      row per changed field path with `before -> after` in each env cell;
+      creates and deletes emit a single `(new)` / `(deleted)` summary row.
+      Cells for envs with no matching change render an em-dash. Only appears
+      in all-envs mode; single-env output is unchanged. Tests in
+      `tests/unit/test_diff_cmd.py`.
 
 ## Sprint 12 tasks
 

@@ -30,6 +30,7 @@ from csfwctl.differ import (
     KIND_ORDER,
     ChangeSet,
     DiffOp,
+    FieldChange,
     LiveState,
     ManagedStatus,
     MultiEnvDiff,
@@ -271,6 +272,8 @@ def _render_multi_env_text(console: Console, multi: MultiEnvDiff) -> None:
         )
     console.print(table)
 
+    _render_env_matrix_table(console, multi)
+
     if multi.has_env_drift:
         console.print(
             "\n[bold yellow]⚠ cross-env ripple detected "
@@ -294,6 +297,100 @@ def _render_multi_env_text(console: Console, multi: MultiEnvDiff) -> None:
             console.print(f"  [bold]{section}[/bold]")
             for item in _sorted_by_kind(items):
                 _render_change(console, item)
+
+
+_MATRIX_EMPTY_CELL = "—"
+"""Rendered when an env has no matching change for the row's ``Change on`` key."""
+
+
+def _render_env_matrix_table(console: Console, multi: MultiEnvDiff) -> None:
+    """Per-object matrix showing what each env would apply.
+
+    Rows are keyed by ``(kind, slug, change_on)``. ``change_on`` is
+    ``(new)`` for a create, ``(deleted)`` for a delete, or a field path
+    for an update. Each env column shows ``before -> after`` for that
+    field (or a ``create`` / ``delete`` marker for op-summary rows), and
+    :data:`_MATRIX_EMPTY_CELL` when the env has no matching change.
+    """
+    envs = tuple(multi.change_sets.keys())
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for env, cs in multi.change_sets.items():
+        for change in cs.all_actionable():
+            entry = grouped.setdefault(
+                (change.kind, change.slug),
+                {"display_name": change.display_name, "per_env": {}},
+            )
+            entry["per_env"][env] = change
+
+    if not grouped:
+        return
+
+    table = Table(
+        title="Per-object changes by environment",
+        title_justify="left",
+    )
+    table.add_column("Type", style="bold")
+    table.add_column("Name")
+    table.add_column("Change on")
+    for env in envs:
+        table.add_column(env.title(), overflow="fold")
+
+    ordered_keys = sorted(grouped.keys(), key=lambda k: (KIND_ORDER.index(k[0]), k[1]))
+    for key in ordered_keys:
+        kind, _slug = key
+        entry = grouped[key]
+        display_name: str = entry["display_name"]
+        per_env: dict[str, ObjectChange] = entry["per_env"]
+
+        env_ops = {env: change.op for env, change in per_env.items()}
+        env_fields: dict[str, dict[str, FieldChange]] = {}
+        for env, change in per_env.items():
+            leaves: dict[str, FieldChange] = {}
+            for fc in change.field_changes:
+                for leaf in expand_field_change(fc):
+                    leaves[leaf.path] = leaf
+            env_fields[env] = leaves
+
+        rows: list[tuple[str, list[str]]] = []
+        if any(op is DiffOp.create for op in env_ops.values()):
+            rows.append(
+                ("(new)", [_op_summary_cell(env_ops.get(env), DiffOp.create) for env in envs])
+            )
+        if any(op is DiffOp.delete for op in env_ops.values()):
+            rows.append(
+                ("(deleted)", [_op_summary_cell(env_ops.get(env), DiffOp.delete) for env in envs])
+            )
+
+        for path in sorted({p for leaves in env_fields.values() for p in leaves}):
+            cells: list[str] = []
+            for env in envs:
+                env_leaf: FieldChange | None = env_fields.get(env, {}).get(path)
+                if env_leaf is not None:
+                    cells.append(f"{env_leaf.before!r} -> {env_leaf.after!r}")
+                elif env_ops.get(env) is DiffOp.create:
+                    cells.append("[green](new)[/green]")
+                elif env_ops.get(env) is DiffOp.delete:
+                    cells.append("[red](deleted)[/red]")
+                else:
+                    cells.append(_MATRIX_EMPTY_CELL)
+            rows.append((path, cells))
+
+        for change_on, cells in rows:
+            table.add_row(kind, display_name, change_on, *cells)
+
+    console.print(table)
+
+
+def _op_summary_cell(env_op: DiffOp | None, target: DiffOp) -> str:
+    """Cell for a ``(new)`` / ``(deleted)`` summary row.
+
+    Renders the op verb in colour when the env's op matches ``target``,
+    otherwise the empty-cell sentinel.
+    """
+    if env_op is not target:
+        return _MATRIX_EMPTY_CELL
+    colour = _OP_COLOR.get(target, "white")
+    return f"[{colour}]{target.value}[/{colour}]"
 
 
 def _sorted_by_kind(items: list[ObjectChange]) -> list[ObjectChange]:
