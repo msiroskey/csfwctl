@@ -63,6 +63,14 @@ Three bugs surfaced by the per-leaf diff output:
       Cells for envs with no matching change render an em-dash. Only appears
       in all-envs mode; single-env output is unchanged. Tests in
       `tests/unit/test_diff_cmd.py`.
+- [x] **Data-driven width for the env matrix.** `_optimal_matrix_width`
+      walks header + body to find each column's longest visible line
+      (stripping rich `[tag]` markup via `Text.from_markup`), sums with
+      Rich's per-column overhead, and caps at `_MATRIX_MAX_WIDTH = 140`.
+      Below the cap the table renders at its natural width — no forced
+      wrapping; at the cap Rich shrinks the widest columns. Keeps narrow
+      change sets compact and gives long `before -> after` cells enough
+      room in typical PR reviews.
 
 ## Sprint 12 tasks
 
