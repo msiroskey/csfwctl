@@ -964,6 +964,20 @@ def _platform_api_name(platform: Platform) -> str:
     return "Windows" if platform is Platform.windows else "Mac"
 
 
+def _is_platform_default_policy(record: dict[str, Any]) -> bool:
+    """True when a live policy record is the platform's default firewall policy.
+
+    The default policy always exists per platform, is not manageable via
+    csfwctl, and must be omitted from the ``set-policies-precedence``
+    payload — CrowdStrike keys off the ``is_default_policy`` flag on the
+    GET/QUERY response and rejects payloads that include it.
+    """
+    for key in ("is_default_policy", "platform_default"):
+        if bool(record.get(key)):
+            return True
+    return False
+
+
 def _apply_precedence(
     *,
     client: FalconClient,
@@ -1022,6 +1036,13 @@ def _apply_precedence(
             if not isinstance(record, dict):
                 continue
             if str(record.get("platform_name", "")) != platform_name:
+                continue
+            # The platform-default firewall policy sits outside the
+            # precedence order; CrowdStrike's set-policies-precedence
+            # endpoint rejects payloads that include it with
+            # "Did not provide all policies for platform X, expected N
+            # but N+1 provided". See falconpy firewall_policies.py:214.
+            if _is_platform_default_policy(record):
                 continue
             policy_id = str(record.get("id", "") or "")
             if not policy_id:
