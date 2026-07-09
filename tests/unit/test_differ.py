@@ -762,6 +762,66 @@ def test_compute_diff_matches_policy_by_display_name_when_slug_collapses() -> No
     assert any(c.slug == "asc-mac-endpoints" for c in policy_no_changes)
 
 
+def test_compute_diff_does_not_report_phantom_rule_groups_slug_change() -> None:
+    """A policy referencing a rule group whose display name collapses under
+    ``to_slug`` must not diff its own ``rule_groups`` list against live.
+
+    Regression: a YAML rule group ``asc-mac-endpoints`` with display name
+    ``ASC-MacEndpoints`` projects to live name ``ASC-MacEndpoints-Pilot``,
+    which ``policy_from_api`` re-slugs to ``asc-macendpoints`` when
+    resolving the referencing policy's ``rule_group_ids``. The desired
+    policy's ``rule_groups`` list carries ``asc-mac-endpoints`` from the
+    YAML, so a naive comparison emitted a phantom
+    ``rule_groups[0]: 'asc-macendpoints' -> 'asc-mac-endpoints'`` update
+    against a policy that had not actually changed. The rule-group diff
+    already reconciles the two via display-name fallback; the policy diff
+    must consume that reconciliation as a live→desired slug alias before
+    dumping and comparing the policy.
+    """
+    rg = RuleGroup(
+        name="asc-mac-endpoints",
+        display_name="ASC-MacEndpoints",
+        platform=Platform.mac,
+        rules=[
+            Rule(
+                name="Allow established inbound",
+                action=Action.allow,
+                direction=Direction.inbound,
+                protocol=Protocol.tcp,
+            ),
+        ],
+    )
+    policy = Policy(
+        name="asc-mac-endpoints",
+        display_name="ASC-Mac-Endpoints",
+        platform=Platform.mac,
+        rule_groups=[rg.name],
+    )
+    repo = _repo_with(policies=[policy], rule_groups=[rg])
+    state = _render_live(
+        env="pilot",
+        policies=[policy],
+        rule_groups=[rg],
+        extra_rule_groups_for_overrides=False,
+    )
+    # ``policy_to_api_shape`` derives its ``rule_group_ids`` from the
+    # policy's slug reference (``asc-mac-endpoints``) while
+    # ``rule_group_to_api_shape`` derives the rule group's id from its
+    # display name (``ASC-MacEndpoints``). When the two diverge the fake
+    # IDs no longer line up. Re-point the policy at the actual live rule
+    # group id so ``policy_from_api`` can resolve the reference and the
+    # test exercises the phantom-diff path we're guarding against.
+    rg_live_id = state.rule_groups[0]["id"]
+    state.policies[0]["settings"]["rule_group_ids"] = [rg_live_id]
+
+    cs = compute_diff(repo, "pilot", state)
+    policy_updates = [c for c in cs.updates if c.kind == "policy"]
+    assert policy_updates == [], (
+        f"unexpected policy updates (phantom rule_groups diff): {policy_updates}"
+    )
+    assert any(c.slug == policy.name for c in cs.no_changes if c.kind == "policy")
+
+
 # ---- JSON serialization -------------------------------------------------
 
 
