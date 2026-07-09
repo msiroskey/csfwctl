@@ -1173,6 +1173,57 @@ def test_apply_updates_policy_with_camelcase_display_name() -> None:
     assert payload["id"] == live_id
 
 
+def test_apply_updates_policy_with_colon_in_display_name() -> None:
+    """A live policy whose display name contains ``:`` still resolves to the
+    existing record on re-apply.
+
+    Regression: ``to_slug`` used to only fold whitespace/underscores into
+    hyphens, leaving punctuation like ``:`` in the derived slug. So a
+    YAML slug ``asc-exception-mac-monitor-only`` paired with display name
+    ``ASC-Exception-Mac: Monitor Only`` produced live CS name
+    ``ASC-Exception-Mac: Monitor Only-Test``, which re-slugged to
+    ``asc-exception-mac-monitor-only`` with **no** colon on the desired
+    side but ``asc-exception-mac:-monitor-only`` on the live side. The
+    slug-keyed live index therefore missed and the applier tried to
+    re-create the policy — CS rejected with ``Duplicate policy name``.
+    """
+    from csfwctl.schema import PrecedenceBucket
+
+    policy = Policy(
+        name="asc-exception-mac-monitor-only",
+        display_name="ASC-Exception-Mac: Monitor Only",
+        platform=Platform.mac,
+        priority=PrecedenceBucket.high,
+    )
+    repo = _repo_with(policies=[policy])
+    state = _render_live_state(env="test", policies=[policy])
+    # Force a drift so the differ has to emit an update rather than
+    # no-change; the point of the regression is that create must not fire.
+    state.policies[0]["enabled"] = False
+    live_id = state.policies[0]["id"]
+
+    cs = compute_diff(repo, "test", state)
+    p_creates = [c for c in cs.creates if c.kind == "policy"]
+    p_updates = [c for c in cs.updates if c.kind == "policy"]
+    assert p_creates == [], f"unexpected policy creates: {p_creates}"
+    assert any(c.slug == "asc-exception-mac-monitor-only" for c in p_updates)
+
+    client = FakeFalconClient()
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    assert not client.policies.created, (
+        f"applier attempted to create a policy that already exists: {client.policies.created}"
+    )
+    assert client.policies.updated, "expected an update against the live policy"
+    assert client.policies.updated[0]["id"] == live_id
+
+
 def test_apply_policy_update_routes_rule_groups_to_container_endpoint() -> None:
     """``update_policies`` does not accept ``rule_group_ids``; the change
     must be routed through ``update_policy_container``.

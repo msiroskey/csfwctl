@@ -24,6 +24,7 @@ from csfwctl.exporter import (
     rule_group_from_api,
     rule_group_to_api_shape,
     strip_env_suffix,
+    to_slug,
 )
 from csfwctl.schema import (
     Action,
@@ -72,6 +73,28 @@ def test_display_name_to_slug_normalises_spaces_and_underscores() -> None:
 def test_display_name_to_slug_rejects_unrepresentable_names() -> None:
     with pytest.raises(ImporterError, match="cannot derive a valid slug"):
         display_name_to_slug("123-Starts-With-Digit")
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Colons and other punctuation must fold into hyphens so a CS name
+        # like ``ASC-Exception-Mac: Monitor Only`` round-trips to the same
+        # kebab-case slug the YAML file carries — otherwise the differ
+        # can't match the live record and the applier tries to CREATE a
+        # policy that already exists.
+        ("ASC-Exception-Mac: Monitor Only", "asc-exception-mac-monitor-only"),
+        ("Weird/Name*With!Punctuation", "weird-name-with-punctuation"),
+        ("Trailing punctuation!!", "trailing-punctuation"),
+        ("  leading and trailing  ", "leading-and-trailing"),
+        ("Foo--Bar", "foo-bar"),
+        # Existing well-formed names still round-trip unchanged.
+        ("ABC01-Endpoints-Windows", "abc01-endpoints-windows"),
+        ("platform_default", "platform-default"),
+    ],
+)
+def test_to_slug_strips_punctuation_and_normalises(raw: str, expected: str) -> None:
+    assert to_slug(raw) == expected
 
 
 def test_host_group_env_reads_suffix() -> None:
