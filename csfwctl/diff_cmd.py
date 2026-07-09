@@ -414,6 +414,10 @@ def _build_per_object_rows(
                 ]
             )
 
+        managed_row = _managed_group_row(per_env, envs)
+        if managed_row is not None:
+            rows.append(managed_row)
+
         for path in sorted({p for leaves in env_fields.values() for p in leaves}):
             cells: list[str] = [path]
             for env in envs:
@@ -475,6 +479,39 @@ def _shared_column_widths(header: list[str], body: list[list[str]]) -> list[int]
     return widths
 
 
+def _managed_group_row(
+    per_env: dict[str, ObjectChange], envs: tuple[str, ...]
+) -> list[str] | None:
+    """Row rendering managed-host-group create/update ops across envs.
+
+    Returns ``None`` when no env has an actionable managed-group op — a
+    ``no-change`` or an env with no managed-group entry does not warrant
+    its own row. Otherwise cells follow the same conventions as the
+    field-path rows: ``before -> after`` for updates, an ``(new) <fql>``
+    prefix for creates, and the empty-cell sentinel elsewhere.
+    """
+    cells: list[str] = ["managed-host-group"]
+    any_actionable = False
+    for env in envs:
+        change = per_env.get(env)
+        actionable = None
+        if change is not None:
+            for mgc in change.managed_group_changes:
+                if mgc.op != "no-change":
+                    actionable = mgc
+                    break
+        if actionable is None:
+            cells.append(_MATRIX_EMPTY_CELL)
+            continue
+        any_actionable = True
+        if actionable.op == "create":
+            cells.append(f"[green](new)[/green] {actionable.desired_fql!r}")
+        else:  # "update"
+            live = actionable.live_fql or ""
+            cells.append(f"{live!r} -> {actionable.desired_fql!r}")
+    return cells if any_actionable else None
+
+
 def _op_summary_cell(env_op: DiffOp | None, target: DiffOp) -> str:
     """Cell for a ``(new)`` / ``(deleted)`` summary row.
 
@@ -508,6 +545,12 @@ def _render_change(console: Console, change: ObjectChange) -> None:
             console.print(f"      {leaf.path}: {leaf.before!r} -> {leaf.after!r}")
     for hg in change.host_group_changes:
         console.print(f"      host_group:{hg.op} {hg.group_name}")
+    for mg in change.managed_group_changes:
+        if mg.op == "no-change":
+            continue
+        console.print(
+            f"      managed-group:{mg.op} {mg.group_name} fql={mg.desired_fql!r}"
+        )
 
 
 _OP_COLOR: dict[DiffOp, str] = {

@@ -15,8 +15,19 @@ import pytest
 from typer.testing import CliRunner
 
 from csfwctl.cli import app
-from csfwctl.differ import LiveState
+from csfwctl.differ import (
+    KIND_POLICY,
+    ChangeSet,
+    DiffOp,
+    FieldChange,
+    LiveState,
+    ManagedGroupChange,
+    ManagedStatus,
+    MultiEnvDiff,
+    ObjectChange,
+)
 from csfwctl.loader import LoadError
+from csfwctl.schema import HostGroupEnv
 
 
 @pytest.fixture
@@ -557,3 +568,152 @@ def test_env_matrix_not_cropped_in_non_tty_output() -> None:
     assert "Test" in rendered
     assert "Pilot" in rendered
     assert "Production" in rendered
+
+
+# ---- managed host-group rendering ----------------------------------------
+
+
+def _policy_change_with_managed(
+    op: DiffOp,
+    slug: str,
+    display: str,
+    mg_op: str,
+    *,
+    desired_fql: str = "hostname:'a'",
+    live_fql: str | None = None,
+) -> ObjectChange:
+    """Build an ObjectChange carrying one ManagedGroupChange."""
+    return ObjectChange(
+        kind=KIND_POLICY,
+        op=op,
+        slug=slug,
+        display_name=display,
+        managed=ManagedStatus.new if op.value == "create" else ManagedStatus.managed,
+        managed_group_changes=(
+            ManagedGroupChange(
+                op=mg_op,
+                group_name=f"{display}-Managed-Test",
+                env=HostGroupEnv.test,
+                desired_fql=desired_fql,
+                live_fql=live_fql,
+            ),
+        ),
+    )
+
+
+def test_render_change_prints_managed_group_line() -> None:
+    """`_render_change` emits a ``managed-group:`` line for create/update ops."""
+    import io
+
+    from rich.console import Console
+
+    from csfwctl import diff_cmd
+
+    change = _policy_change_with_managed(
+        DiffOp.create,
+        "abc-endpoints",
+        "ABC-Endpoints",
+        "create",
+        desired_fql="hostname:'machine-a'",
+    )
+    buf = io.StringIO()
+    diff_cmd._render_change(Console(file=buf, force_terminal=False), change)
+    rendered = buf.getvalue()
+    assert "managed-group:create" in rendered
+    assert "ABC-Endpoints-Managed-Test" in rendered
+    assert "machine-a" in rendered
+
+
+def test_render_change_skips_no_change_managed_group() -> None:
+    """A ``no-change`` managed-group entry should not add a noise line."""
+    import io
+
+    from rich.console import Console
+
+    from csfwctl import diff_cmd
+
+    change = _policy_change_with_managed(
+        DiffOp.update,
+        "abc-endpoints",
+        "ABC-Endpoints",
+        "no-change",
+        live_fql="hostname:'machine-a'",
+        desired_fql="hostname:'machine-a'",
+    )
+    buf = io.StringIO()
+    diff_cmd._render_change(Console(file=buf, force_terminal=False), change)
+    assert "managed-group:" not in buf.getvalue()
+
+
+def test_matrix_row_emitted_for_managed_group_update() -> None:
+    """A policy update whose only diff is a managed-group update still gets a row.
+
+    Without the managed-group row the multi-env matrix would render an
+    empty table for the object — the classification is ``DiffOp.update``
+    (because ``mg_changes`` had a non-no-change op) but the field-path
+    loop has nothing to emit.
+    """
+    import io
+
+    from rich.console import Console
+
+    from csfwctl import diff_cmd
+
+    test = ChangeSet(env="test")
+    test.updates.append(
+        _policy_change_with_managed(
+            DiffOp.update,
+            "abc-endpoints",
+            "ABC-Endpoints",
+            "update",
+            live_fql="hostname:'a'",
+            desired_fql="hostname:'a' or hostname:'b'",
+        )
+    )
+    multi = MultiEnvDiff(
+        change_sets={
+            "test": test,
+            "pilot": ChangeSet(env="pilot"),
+            "production": ChangeSet(env="production"),
+        }
+    )
+    buf = io.StringIO()
+    diff_cmd._render_env_matrix_tables(Console(file=buf, force_terminal=False), multi)
+    rendered = buf.getvalue()
+    assert "managed-host-group" in rendered
+    # The update cell should render before -> after (Rich strips quoting
+    # syntax details, but the two FQL literals must both survive).
+    assert "hostname:'a'" in rendered
+    assert "hostname:'b'" in rendered
+
+
+def test_matrix_row_absent_when_no_actionable_managed_group() -> None:
+    """No managed-group row when every env is no-change or lacks an entry."""
+    import io
+
+    from rich.console import Console
+
+    from csfwctl import diff_cmd
+
+    # Plain field-only update; no managed_group_changes at all.
+    test = ChangeSet(env="test")
+    test.updates.append(
+        ObjectChange(
+            kind=KIND_POLICY,
+            op=DiffOp.update,
+            slug="abc-endpoints",
+            display_name="ABC-Endpoints",
+            managed=ManagedStatus.managed,
+            field_changes=(FieldChange(path="enabled", before=False, after=True),),
+        )
+    )
+    multi = MultiEnvDiff(
+        change_sets={
+            "test": test,
+            "pilot": ChangeSet(env="pilot"),
+            "production": ChangeSet(env="production"),
+        }
+    )
+    buf = io.StringIO()
+    diff_cmd._render_env_matrix_tables(Console(file=buf, force_terminal=False), multi)
+    assert "managed-host-group" not in buf.getvalue()
