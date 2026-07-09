@@ -165,6 +165,10 @@ class FakePoliciesAPI(FakeSubClient):
         self.container_state: dict[str, dict[str, Any]] = {}
         # set_precedence calls: (ids_in_order, platform_name)
         self.precedence_calls: list[tuple[list[str], str]] = []
+        # CS's authoritative precedence-ordered id list per platform, as
+        # returned by ``query_policies(filter=platform_name, sort=precedence.asc)``.
+        # Tests exercising the precedence hook seed this before apply.
+        self.platform_policies: dict[str, list[str]] = {}
 
     def create(self, policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -217,6 +221,33 @@ class FakePoliciesAPI(FakeSubClient):
 
     def set_precedence(self, ids_in_order: list[str], *, platform_name: str) -> None:
         self.precedence_calls.append((list(ids_in_order), platform_name))
+
+    def query(
+        self,
+        *,
+        filter: str | None = None,
+        limit: int | None = None,
+        sort: str | None = None,
+    ) -> list[str]:
+        """Mimic CS's precedence-ordered platform id query.
+
+        Reads from ``platform_policies`` (seeded by tests) and appends any
+        ids of policies created during the current apply so the fake
+        reflects the same live view CS would after the create step.
+        """
+        plat: str | None = None
+        if filter and "platform_name:" in filter:
+            for token in ("'", '"'):
+                if token in filter:
+                    plat = filter.split(token)[1]
+                    break
+        base = list(self.platform_policies.get(plat or "", []))
+        for p in self.created:
+            if plat is None or p.get("platform_name") == plat:
+                pid = f"policy-id-{p['name']}"
+                if pid not in base:
+                    base.append(pid)
+        return base
 
     def delete(self, ids: list[str]) -> None:
         self.deleted.extend(ids)
@@ -1637,6 +1668,21 @@ def _mac_policy(name: str, *, priority: Any, display_name: str | None = None) ->
     )
 
 
+def _platform_ids_from_state(state: LiveState, platform_name: str) -> list[str]:
+    """Return live ids for ``platform_name`` in state.policies order.
+
+    Mirrors what CS's ``query_policies(filter=platform_name, sort=precedence.asc)``
+    would return: ordered by live precedence, excluding the default policy.
+    Tests seed the fake's ``platform_policies`` with this so
+    ``_apply_precedence`` sees a realistic CS-side view.
+    """
+    return [
+        str(r["id"])
+        for r in state.policies
+        if isinstance(r, dict) and str(r.get("platform_name", "")) == platform_name and "id" in r
+    ]
+
+
 def test_apply_precedence_reorders_managed_policies_to_bucket_order() -> None:
     """A high-bucket policy lands ahead of a default-bucket one on the tenant."""
     from csfwctl.schema import PrecedenceBucket
@@ -1654,6 +1700,7 @@ def test_apply_precedence_reorders_managed_policies_to_bucket_order() -> None:
     state = _render_live_state(env="test", policies=[p_default, p_high])
     cs = compute_diff(repo, "test", state)
     client = FakeFalconClient()
+    client.policies.platform_policies["Mac"] = _platform_ids_from_state(state, "Mac")
     report = apply_change_set(
         client=client,
         repo=repo,
@@ -1688,6 +1735,7 @@ def test_apply_precedence_skips_when_live_order_already_matches() -> None:
     state = _render_live_state(env="test", policies=[p_high, p_default])
     cs = compute_diff(repo, "test", state)
     client = FakeFalconClient()
+    client.policies.platform_policies["Mac"] = _platform_ids_from_state(state, "Mac")
     report = apply_change_set(
         client=client,
         repo=repo,
@@ -1734,6 +1782,7 @@ def test_apply_precedence_preserves_unmanaged_policies_at_tail() -> None:
     )
     cs = compute_diff(repo, "test", state)
     client = FakeFalconClient()
+    client.policies.platform_policies["Mac"] = _platform_ids_from_state(state, "Mac")
     apply_change_set(
         client=client,
         repo=repo,
@@ -1758,6 +1807,13 @@ def test_apply_precedence_excludes_platform_default_policy() -> None:
     for platform X, expected N but N+1 provided``. See falconpy
     firewall_policies.py:214 — "You must specify all non-Default
     Policies for a platform when updating precedence."
+
+    The applier sources its platform id list from
+    ``query_policies(sort=precedence.asc)`` — a call that omits the
+    default from its response. This test verifies that even when the
+    pre-apply ``state.policies`` snapshot (from ``list_all()``) carries
+    the default record, only the CS-query-provided ids reach the
+    set-precedence payload.
     """
     from csfwctl.schema import PrecedenceBucket
 
@@ -1768,9 +1824,8 @@ def test_apply_precedence_excludes_platform_default_policy() -> None:
     )
     repo = _repo_with(policies=[p_high])
     state = _render_live_state(env="test", policies=[p_high])
-    # A live Mac record that CS returns as is_default_policy=True. It
-    # would normally sit at the tail of state.policies alongside any
-    # unmanaged ones, but must be filtered out before we call CS.
+    # state.policies includes the default (this mirrors what list_all()
+    # returns) plus one unmanaged non-default policy.
     state.policies.insert(
         0,
         {
@@ -1778,10 +1833,8 @@ def test_apply_precedence_excludes_platform_default_policy() -> None:
             "name": "platform_default",
             "platform_name": "Mac",
             "description": "Platform Default Firewall Policy",
-            "is_default_policy": True,
         },
     )
-    # A regular unmanaged policy that must still be preserved.
     state.policies.insert(
         1,
         {
@@ -1793,6 +1846,9 @@ def test_apply_precedence_excludes_platform_default_policy() -> None:
     )
     cs = compute_diff(repo, "test", state)
     client = FakeFalconClient()
+    # CS's query response — precedence-sorted, excluding the default.
+    managed_id = state.policies[2]["id"]
+    client.policies.platform_policies["Mac"] = ["unmanaged-1", managed_id]
     apply_change_set(
         client=client,
         repo=repo,
@@ -1804,9 +1860,7 @@ def test_apply_precedence_excludes_platform_default_policy() -> None:
     assert len(client.policies.precedence_calls) == 1
     ids_in_order, _ = client.policies.precedence_calls[0]
     assert "mac-default-policy-id" not in ids_in_order
-    # The managed high-bucket policy still leads; the unmanaged non-default
-    # tags along; the default policy is silently dropped.
-    managed_id = state.policies[2]["id"]
+    # Managed leads; the unmanaged non-default tags along.
     assert ids_in_order == [managed_id, "unmanaged-1"]
 
 
@@ -1834,6 +1888,8 @@ def test_apply_precedence_scopes_by_platform() -> None:
     )
     cs = compute_diff(repo, "test", state)
     client = FakeFalconClient(host_groups={"ABC01-Endpoints-Windows-Test": "hg-test"})
+    client.policies.platform_policies["Mac"] = _platform_ids_from_state(state, "Mac")
+    client.policies.platform_policies["Windows"] = _platform_ids_from_state(state, "Windows")
     apply_change_set(
         client=client,
         repo=repo,
@@ -1872,6 +1928,7 @@ def test_apply_precedence_dry_run_records_intent_without_write() -> None:
     state = _render_live_state(env="test", policies=[p_default, p_high])
     cs = compute_diff(repo, "test", state)
     client = FakeFalconClient()
+    client.policies.platform_policies["Mac"] = _platform_ids_from_state(state, "Mac")
     report = apply_change_set(
         client=client,
         repo=repo,
@@ -1906,6 +1963,9 @@ def test_apply_precedence_orders_freshly_created_policy_ahead_of_live() -> None:
     state = _render_live_state(env="test", policies=[p_default])
     cs = compute_diff(repo, "test", state)
     client = FakeFalconClient()
+    # CS query returns the pre-existing id; the fake auto-appends
+    # created-during-apply ids to mimic the post-create tenant view.
+    client.policies.platform_policies["Mac"] = _platform_ids_from_state(state, "Mac")
     apply_change_set(
         client=client,
         repo=repo,
@@ -1921,6 +1981,61 @@ def test_apply_precedence_orders_freshly_created_policy_ahead_of_live() -> None:
     default_id = state.policies[0]["id"]
     # The just-created high-bucket policy is first, ahead of the pre-existing one.
     assert ids_in_order == [created_id, default_id]
+
+
+def test_apply_precedence_uses_cs_query_over_state_policies() -> None:
+    """Regression: ``state.policies`` (from ``list_all()``) can include the
+    platform-default policy which CS's ``set-policies-precedence`` rejects
+    ("Did not provide all policies for platform X, expected N but N+1
+    provided"). The applier must instead source its id list from
+    ``query_policies(sort=precedence.asc)`` — a call that omits the default
+    — so the payload count matches CS's expectation.
+    """
+    from csfwctl.schema import PrecedenceBucket
+
+    p_high = _mac_policy(
+        "asc-exception-mac-monitor-only",
+        priority=PrecedenceBucket.high,
+        display_name="Exception-Mac-Monitor-Only",
+    )
+    p_default = _mac_policy(
+        "asc-mac-endpoints",
+        priority=PrecedenceBucket.default,
+        display_name="Mac-Endpoints",
+    )
+    repo = _repo_with(policies=[p_high, p_default])
+    state = _render_live_state(env="test", policies=[p_default, p_high])
+    # Simulate what list_all() returns on the real tenant: two managed
+    # policies + one platform-default that must NOT reach set-precedence.
+    state.policies.append(
+        {
+            "id": "mac-default-id",
+            "name": "platform_default",
+            "platform_name": "Mac",
+            "description": "Platform Default Firewall Policy",
+        }
+    )
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    # CS's precedence-sorted query returns only the two managed policies —
+    # not the default. The applier must trust that shorter list.
+    managed_low_id = state.policies[0]["id"]
+    managed_high_id = state.policies[1]["id"]
+    client.policies.platform_policies["Mac"] = [managed_low_id, managed_high_id]
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    assert len(client.policies.precedence_calls) == 1
+    ids_in_order, _ = client.policies.precedence_calls[0]
+    # Exactly two ids — matches CS's expected count. The default id from
+    # state.policies is nowhere to be seen.
+    assert ids_in_order == [managed_high_id, managed_low_id]
+    assert "mac-default-id" not in ids_in_order
 
 
 # ---- structured per-action diff detail -----------------------------------

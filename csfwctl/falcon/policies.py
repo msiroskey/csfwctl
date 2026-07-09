@@ -22,13 +22,26 @@ class PoliciesAPI:
     def _svc(self) -> Any:
         return self._client._firewall_policies_service()  # noqa: SLF001
 
-    def query(self, *, filter: str | None = None, limit: int | None = None) -> list[str]:
-        """Return policy IDs matching ``filter`` (FQL)."""
+    def query(
+        self,
+        *,
+        filter: str | None = None,
+        limit: int | None = None,
+        sort: str | None = None,
+    ) -> list[str]:
+        """Return policy IDs matching ``filter`` (FQL).
+
+        ``sort`` accepts CrowdStrike's FQL sort syntax (e.g.
+        ``precedence.asc`` to walk the platform's precedence order
+        from highest to lowest).
+        """
         params: dict[str, Any] = {}
         if filter is not None:
             params["filter"] = filter
         if limit is not None:
             params["limit"] = limit
+        if sort is not None:
+            params["sort"] = sort
         result = self._client.call(
             "firewall_policies.query",
             lambda: self._svc().query_policies(parameters=params),

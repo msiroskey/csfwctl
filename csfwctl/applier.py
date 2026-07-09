@@ -964,20 +964,6 @@ def _platform_api_name(platform: Platform) -> str:
     return "Windows" if platform is Platform.windows else "Mac"
 
 
-def _is_platform_default_policy(record: dict[str, Any]) -> bool:
-    """True when a live policy record is the platform's default firewall policy.
-
-    The default policy always exists per platform, is not manageable via
-    csfwctl, and must be omitted from the ``set-policies-precedence``
-    payload — CrowdStrike keys off the ``is_default_policy`` flag on the
-    GET/QUERY response and rejects payloads that include it.
-    """
-    for key in ("is_default_policy", "platform_default"):
-        if bool(record.get(key)):
-            return True
-    return False
-
-
 def _apply_precedence(
     *,
     client: FalconClient,
@@ -994,13 +980,20 @@ def _apply_precedence(
     still reflects the live platform roster CrowdStrike will validate
     against.
 
-    Managed policies land in the resolved order; any live policy id we
-    do not manage — including ids queued for delete a moment later — is
-    appended in its current live order. CrowdStrike's set-precedence
-    endpoint rejects payloads that omit an existing policy for the
-    platform, so preserving the tail is a correctness requirement, not
-    politeness. Skips silently when the resulting order already matches
-    live state; dry-run records the intent without calling the API.
+    The platform's authoritative id list comes from a live
+    ``query_policies(filter=platform_name, sort=precedence.asc)`` call
+    rather than from ``state.policies``: CrowdStrike's set-precedence
+    endpoint requires all *non-default* policies (see falconpy
+    ``firewall_policies.py:214``), and the precedence-sorted query
+    already omits the platform-default policy — using the query result
+    directly sidesteps having to identify the default from a response
+    field whose name is not documented.
+
+    Managed policies land in the resolved order; any remaining live id
+    (unmanaged or queued for delete) is appended in its current live
+    order so the payload matches CrowdStrike's expected count. Skips
+    silently when the resulting order already matches live state;
+    dry-run records the intent without calling the API.
     """
     try:
         resolved_by_platform = resolve_precedence(repo)
@@ -1031,31 +1024,30 @@ def _apply_precedence(
             continue
 
         platform_name = _platform_api_name(platform)
-        current_order: list[str] = []
-        for record in state.policies:
-            if not isinstance(record, dict):
-                continue
-            if str(record.get("platform_name", "")) != platform_name:
-                continue
-            # The platform-default firewall policy sits outside the
-            # precedence order; CrowdStrike's set-policies-precedence
-            # endpoint rejects payloads that include it with
-            # "Did not provide all policies for platform X, expected N
-            # but N+1 provided". See falconpy firewall_policies.py:214.
-            if _is_platform_default_policy(record):
-                continue
-            policy_id = str(record.get("id", "") or "")
-            if not policy_id:
-                continue
-            current_order.append(policy_id)
+        try:
+            current_order = client.policies.query(
+                filter=f"platform_name:'{platform_name}'",
+                sort="precedence.asc",
+            )
+        except Exception as exc:  # noqa: BLE001 — surface as warning
+            report.warnings.append(
+                f"precedence: failed to fetch live platform ids for {platform.value}: {exc}"
+            )
+            continue
 
-        tail = [pid for pid in current_order if pid not in seen_ids]
-        desired_order = managed_ids + tail
+        # Restrict managed ids to those CS still knows about — a policy
+        # queued for delete could otherwise show up in managed_ids without
+        # a matching entry on CS's side, throwing the count off.
+        live_set = set(current_order)
+        managed_present = [pid for pid in managed_ids if pid in live_set]
+        seen_present = set(managed_present)
+        tail = [pid for pid in current_order if pid not in seen_present]
+        desired_order = managed_present + tail
 
         if desired_order == current_order:
             continue
 
-        detail = f"{platform_name}: {len(managed_ids)} managed, {len(tail)} unmanaged"
+        detail = f"{platform_name}: {len(managed_present)} managed, {len(tail)} unmanaged"
         action_slug = f"__precedence_{platform.value}__"
         action_display = f"precedence:{platform_name}"
         if options.dry_run:
