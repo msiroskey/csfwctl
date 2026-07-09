@@ -12,7 +12,8 @@ project plan:
 4. **Host-group reassignments** for already-existing policies whose
    ``groups`` set drifted (the ``HostGroupChange`` rows on each policy
    update).
-5. **Precedence ordering** (Phase 6 stub — left as a hook).
+5. **Precedence ordering** — resolves the ``priority`` bucket per
+   platform and calls ``set_precedence`` when the live order differs.
 6. **Deletes** — policies, then rule groups, then locations.
 
 Every touched object's ``description`` is rewritten to carry the
@@ -49,6 +50,7 @@ from csfwctl.exporter import (
 from csfwctl.falcon.client import FalconClient
 from csfwctl.loader import ConfigRepo
 from csfwctl.observability import get_logger
+from csfwctl.precedence_resolver import PrecedenceError, resolve_precedence
 from csfwctl.safety import (
     MetadataSignature,
     SafetyError,
@@ -962,6 +964,108 @@ def _platform_api_name(platform: Platform) -> str:
     return "Windows" if platform is Platform.windows else "Mac"
 
 
+def _apply_precedence(
+    *,
+    client: FalconClient,
+    repo: ConfigRepo,
+    index: _LiveIndex,
+    state: Any,
+    options: ApplyOptions,
+    report: ApplyReport,
+) -> None:
+    """Reorder tenant policies to match the resolved bucket precedence.
+
+    Runs after policy creates/updates so freshly-created ids are already
+    threaded into ``index.policies``, and before deletes so the payload
+    still reflects the live platform roster CrowdStrike will validate
+    against.
+
+    Managed policies land in the resolved order; any live policy id we
+    do not manage — including ids queued for delete a moment later — is
+    appended in its current live order. CrowdStrike's set-precedence
+    endpoint rejects payloads that omit an existing policy for the
+    platform, so preserving the tail is a correctness requirement, not
+    politeness. Skips silently when the resulting order already matches
+    live state; dry-run records the intent without calling the API.
+    """
+    try:
+        resolved_by_platform = resolve_precedence(repo)
+    except PrecedenceError as exc:
+        report.warnings.append(f"precedence resolution failed: {exc}")
+        return
+
+    for platform, resolved_list in resolved_by_platform.items():
+        managed_ids: list[str] = []
+        seen_ids: set[str] = set()
+        aborted = False
+        for rp in resolved_list:
+            display_name = f"{rp.name}{options.env_suffix}"
+            entry = _policy_live_lookup(index, rp.slug, display_name)
+            if entry is None:
+                report.warnings.append(
+                    f"precedence: no live id for policy {rp.slug!r} on "
+                    f"{platform.value}; skipping platform reorder"
+                )
+                aborted = True
+                break
+            policy_id = entry[0]
+            if policy_id in seen_ids:
+                continue
+            managed_ids.append(policy_id)
+            seen_ids.add(policy_id)
+        if aborted or not managed_ids:
+            continue
+
+        platform_name = _platform_api_name(platform)
+        current_order: list[str] = []
+        for record in state.policies:
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("platform_name", "")) != platform_name:
+                continue
+            policy_id = str(record.get("id", "") or "")
+            if not policy_id:
+                continue
+            current_order.append(policy_id)
+
+        tail = [pid for pid in current_order if pid not in seen_ids]
+        desired_order = managed_ids + tail
+
+        if desired_order == current_order:
+            continue
+
+        detail = f"{platform_name}: {len(managed_ids)} managed, {len(tail)} unmanaged"
+        action_slug = f"__precedence_{platform.value}__"
+        action_display = f"precedence:{platform_name}"
+        if options.dry_run:
+            _append_action(
+                report,
+                AppliedAction(
+                    kind="policy",
+                    op="precedence",
+                    slug=action_slug,
+                    display_name=action_display,
+                    detail=f"dry-run ({detail})",
+                ),
+            )
+            continue
+        try:
+            client.policies.set_precedence(desired_order, platform_name=platform_name)
+        except Exception as exc:  # noqa: BLE001 — surface as warning, don't fail apply
+            report.warnings.append(f"precedence: set-precedence failed for {platform.value}: {exc}")
+            continue
+        _append_action(
+            report,
+            AppliedAction(
+                kind="policy",
+                op="precedence",
+                slug=action_slug,
+                display_name=action_display,
+                detail=detail,
+            ),
+        )
+
+
 # ---- main entrypoint ------------------------------------------------------
 
 
@@ -977,7 +1081,7 @@ def apply_change_set(
     """Apply ``change_set`` against ``client``'s tenant.
 
     Order: locations → rule groups → policies (with host groups set) →
-    host-group reassignments → precedence (stub) → deletes. The metadata
+    host-group reassignments → precedence → deletes. The metadata
     trailer is rewritten on every object the applier touches.
 
     ``state`` is the same :class:`csfwctl.differ.LiveState` the diff
@@ -1239,10 +1343,15 @@ def apply_change_set(
         for hg_change in change.host_group_changes:
             _record_host_group_change(report, change, hg_change)
 
-    # ---- 4. precedence (Phase 6 stub) -------------------------------------
-    # Resolving bucket → ordinal precedence + calling set_precedence is a
-    # Phase 6 concern. The hook is here so the order in apply is fixed
-    # before precedence resolution lands.
+    # ---- 4. precedence ----------------------------------------------------
+    _apply_precedence(
+        client=client,
+        repo=repo,
+        index=index,
+        state=state,
+        options=options,
+        report=report,
+    )
 
     # ---- 5. deletes (policies → rule groups → locations) ------------------
     for change in _ordered(change_set.deletes, KIND_POLICY):

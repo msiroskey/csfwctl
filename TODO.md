@@ -1093,12 +1093,13 @@ Three bugs surfaced by the per-leaf diff output:
     via `StatusReport.managed` / `.unmanaged`. The drift-check job
     (Phase 10) can compare those counts run-over-run; the JSON shape
     in `to_json()` is the contract.
-  - The applier's step-4 precedence hook is still a stub. The natural
-    follow-on is calling `PoliciesAPI.set_precedence` per platform
-    with the IDs threaded through `resolve_precedence` →
-    `_build_live_index` → `_apply_precedence`. Lands cleanly inside
-    `apply_change_set` between the policy create/update block and
-    the deletes.
+  - The applier's step-4 precedence hook is live: `_apply_precedence`
+    threads `resolve_precedence` output through `_LiveIndex.policies`
+    and calls `PoliciesAPI.set_precedence` per platform, skipping the
+    write when live already matches resolved. Unmanaged live IDs are
+    preserved at the tail because CS's set-precedence rejects payloads
+    that omit an existing policy for the platform. Dry-run records the
+    action without calling the API.
 - **Applier contract reminders for Phase 6+:**
   - The metadata trailer format is parsed by `safety.parse_signature`.
     Reuse it in the status command; do not re-derive the regex.
