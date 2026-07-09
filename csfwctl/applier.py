@@ -964,6 +964,37 @@ def _platform_api_name(platform: Platform) -> str:
     return "Windows" if platform is Platform.windows else "Mac"
 
 
+_PLATFORM_DEFAULT_POLICY_NAME = "platform_default"
+"""Verbatim ``name`` CrowdStrike assigns to each platform's default firewall policy.
+
+The name is not editable through the UI and is stable across tenants, so a
+name-plus-platform match is the reliable way to identify a default in the
+GET/QUERY response (there is no documented boolean flag on the read side).
+"""
+
+
+def _platform_default_ids(state: Any) -> dict[str, set[str]]:
+    """Return ``{platform_name: {id, ...}}`` for every default policy in state.
+
+    A CrowdStrike tenant carries one default firewall policy per platform,
+    always named :data:`_PLATFORM_DEFAULT_POLICY_NAME`. Callers use this to
+    strip default ids from the ``set-policies-precedence`` payload — CS
+    rejects any payload that lists them.
+    """
+    out: dict[str, set[str]] = {}
+    for record in state.policies:
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("name", "")).strip() != _PLATFORM_DEFAULT_POLICY_NAME:
+            continue
+        platform_name = str(record.get("platform_name", "")).strip()
+        policy_id = str(record.get("id", "") or "")
+        if not platform_name or not policy_id:
+            continue
+        out.setdefault(platform_name, set()).add(policy_id)
+    return out
+
+
 def _apply_precedence(
     *,
     client: FalconClient,
@@ -981,13 +1012,15 @@ def _apply_precedence(
     against.
 
     The platform's authoritative id list comes from a live
-    ``query_policies(filter=platform_name, sort=precedence.asc)`` call
-    rather than from ``state.policies``: CrowdStrike's set-precedence
-    endpoint requires all *non-default* policies (see falconpy
-    ``firewall_policies.py:214``), and the precedence-sorted query
-    already omits the platform-default policy — using the query result
-    directly sidesteps having to identify the default from a response
-    field whose name is not documented.
+    ``query_policies(filter=platform_name, sort=precedence.asc)`` call.
+    CS's ``set-policies-precedence`` requires all *non-default* policies
+    for the platform (see falconpy ``firewall_policies.py:214``) and
+    rejects any payload that references the platform-default policy —
+    which lives on the tenant with the fixed name ``platform_default``.
+    The precedence-sorted query is documented to omit defaults, but as
+    belt-and-suspenders any id whose ``state.policies`` record matches
+    ``name == 'platform_default'`` for this platform is stripped before
+    we hand the list off.
 
     Managed policies land in the resolved order; any remaining live id
     (unmanaged or queued for delete) is appended in its current live
@@ -1000,6 +1033,8 @@ def _apply_precedence(
     except PrecedenceError as exc:
         report.warnings.append(f"precedence resolution failed: {exc}")
         return
+
+    default_ids_by_platform = _platform_default_ids(state)
 
     for platform, resolved_list in resolved_by_platform.items():
         managed_ids: list[str] = []
@@ -1034,6 +1069,16 @@ def _apply_precedence(
                 f"precedence: failed to fetch live platform ids for {platform.value}: {exc}"
             )
             continue
+
+        # Strip any platform-default ids from CS's response. The
+        # precedence-sorted query is documented to omit them, but tenants
+        # in the wild return them anyway and CS then rejects the payload
+        # with ``Did not provide all policies for platform X, expected N
+        # but N+1 provided``. The default is identified by its verbatim
+        # ``name`` on the state record (see :data:`_PLATFORM_DEFAULT_POLICY_NAME`).
+        platform_defaults = default_ids_by_platform.get(platform_name, set())
+        if platform_defaults:
+            current_order = [pid for pid in current_order if pid not in platform_defaults]
 
         # Restrict managed ids to those CS still knows about — a policy
         # queued for delete could otherwise show up in managed_ids without
