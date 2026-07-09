@@ -34,6 +34,7 @@ from csfwctl.exporter import (
 from csfwctl.loader import ConfigRepo, load_config_repo
 from csfwctl.schema import (
     Action,
+    AddressFamily,
     Direction,
     Endpoint,
     HostGroupEnv,
@@ -267,6 +268,121 @@ def test_build_desired_state_includes_synthesised_overrides() -> None:
     assert set(rule_groups) == {"windows-baseline", "abc01-endpoints-windows-overrides-test"}
     assert set(policies) == {"abc01-endpoints-windows"}
     assert locations == {}
+
+
+def test_build_desired_state_drops_redundant_rule_group_address_family() -> None:
+    """A YAML ``address_family`` matching inference is dropped on the desired side.
+
+    ``rule_from_api`` only pins ``address_family`` on the live side when the
+    wire value diverges from inference. Without the mirror step on the desired
+    side, a YAML rule that pins ``address_family: ip4`` on an already-IPv4
+    rule produced a spurious ``None -> 'ip4'`` field change against the
+    canonicalised live rule.
+    """
+    rg = RuleGroup(
+        name="windows-baseline",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="Allow updater outbound",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.tcp,
+                address_family=AddressFamily.ip4,  # redundant: inference already IP4
+                remote=Endpoint(addresses=["10.0.0.0/8"]),
+            ),
+        ],
+    )
+    repo = _repo_with(rule_groups=[rg])
+    _, rule_groups, _ = build_desired_state(repo, "test")
+    assert rule_groups["windows-baseline"].rules[0].address_family is None
+
+
+def test_build_desired_state_preserves_divergent_rule_group_address_family() -> None:
+    """An ``address_family`` that diverges from inference is kept intact."""
+    rg = RuleGroup(
+        name="windows-baseline",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="App-based rule",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.tcp,
+                address_family=AddressFamily.ip4,  # no addresses → inference NONE
+            ),
+        ],
+    )
+    repo = _repo_with(rule_groups=[rg])
+    _, rule_groups, _ = build_desired_state(repo, "test")
+    assert rule_groups["windows-baseline"].rules[0].address_family is AddressFamily.ip4
+
+
+def test_build_desired_state_canonicalises_inherited_policy_rules() -> None:
+    """An inherited policy's inline rules are canonicalised in the override RG.
+
+    Regression for the report: adding a new inherited policy surfaced the
+    parent's redundantly-pinned ``address_family`` on every diff.
+    """
+    parent_rule = Rule(
+        name="Allow updater outbound",
+        action=Action.allow,
+        direction=Direction.outbound,
+        protocol=Protocol.tcp,
+        address_family=AddressFamily.ip4,  # matches inference (IPv4 remote)
+        remote=Endpoint(addresses=["10.0.0.0/8"]),
+    )
+    parent = Policy(
+        name="parent-policy",
+        platform=Platform.windows,
+        rules=[parent_rule],
+        host_groups={"Parent-HG-Test": HostGroupEnv.test},
+    )
+    child = Policy(
+        name="child-policy",
+        platform=Platform.windows,
+        inherits="parent-policy",
+        host_groups={"Child-HG-Test": HostGroupEnv.test},
+    )
+    repo = _repo_with(policies=[parent, child])
+    _, rule_groups, _ = build_desired_state(repo, "test")
+    for slug in ("parent-policy-overrides-test", "child-policy-overrides-test"):
+        assert rule_groups[slug].rules[0].address_family is None
+
+
+def test_compute_diff_no_change_when_yaml_pins_redundant_address_family() -> None:
+    """End-to-end: redundant explicit ``address_family: ip4`` in YAML no
+    longer trips ``compute_diff`` when the live wire matches inference.
+    """
+    rg = RuleGroup(
+        name="windows-baseline",
+        platform=Platform.windows,
+        rules=[
+            Rule(
+                name="Allow updater outbound",
+                action=Action.allow,
+                direction=Direction.outbound,
+                protocol=Protocol.tcp,
+                address_family=AddressFamily.ip4,
+                remote=Endpoint(addresses=["10.0.0.0/8"]),
+            ),
+        ],
+    )
+    policy = Policy(
+        name="abc01-endpoints-windows",
+        display_name="ABC01-Endpoints-Windows",
+        platform=Platform.windows,
+        rule_groups=["windows-baseline"],
+        host_groups={"ABC01-Endpoints-Windows-Test": HostGroupEnv.test},
+    )
+    repo = _repo_with(policies=[policy], rule_groups=[rg])
+    state = _render_live(env="test", policies=[policy], rule_groups=[rg])
+
+    cs = compute_diff(repo, "test", state)
+    assert cs.total_changes == 0, [
+        (c.op, c.display_name, [(fc.path, fc.before, fc.after) for fc in c.field_changes])
+        for c in cs.all_actionable()
+    ]
 
 
 # ---- end-to-end diff: no changes ----------------------------------------

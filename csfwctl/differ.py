@@ -33,6 +33,7 @@ from typing import Any
 from csfwctl.exporter import (
     OVERRIDE_SUFFIX_RE,
     _enrich_policy_records_with_containers,
+    canonicalize_rule_address_family,
     is_override_group_name,
     location_from_api,
     policy_from_api,
@@ -47,6 +48,7 @@ from csfwctl.schema import (
     HostGroupEnv,
     Location,
     Policy,
+    Rule,
     RuleGroup,
     Status,
 )
@@ -337,6 +339,32 @@ def project_policy_for_env(
     )
 
 
+def _canonicalize_rules(rules: list[Rule]) -> list[Rule]:
+    """Apply :func:`canonicalize_rule_address_family` to each rule.
+
+    Keeps desired-side ``Rule.address_family`` symmetric with what the
+    importer stores on the live side: an explicit value that already
+    matches inference is dropped so the diff does not report a false
+    ``None -> 'ip4'`` change on rules whose YAML pins the family
+    redundantly.
+    """
+    return [canonicalize_rule_address_family(rule) for rule in rules]
+
+
+def _canonicalize_policy_rules(policy: Policy) -> Policy:
+    """Return ``policy`` with inline rules run through the canonicaliser."""
+    if not policy.rules:
+        return policy
+    return policy.model_copy(update={"rules": _canonicalize_rules(policy.rules)})
+
+
+def _canonicalize_rule_group_rules(rule_group: RuleGroup) -> RuleGroup:
+    """Return ``rule_group`` with its rules run through the canonicaliser."""
+    if not rule_group.rules:
+        return rule_group
+    return rule_group.model_copy(update={"rules": _canonicalize_rules(rule_group.rules)})
+
+
 def build_desired_state(
     repo: ConfigRepo, env: str
 ) -> tuple[dict[str, Policy], dict[str, RuleGroup], dict[str, Location]]:
@@ -346,10 +374,14 @@ def build_desired_state(
     always work with flat, materialised policies.
     """
     materialised: dict[str, Policy] = {
-        slug: resolve_inheritance(policy, repo) for slug, policy in repo.policies.items()
+        slug: _canonicalize_policy_rules(resolve_inheritance(policy, repo))
+        for slug, policy in repo.policies.items()
     }
     overrides = synthesise_override_rule_groups_from(materialised, repo, env)
-    desired_rule_groups: dict[str, RuleGroup] = {**repo.rule_groups, **overrides}
+    desired_rule_groups: dict[str, RuleGroup] = {
+        **{slug: _canonicalize_rule_group_rules(rg) for slug, rg in repo.rule_groups.items()},
+        **overrides,
+    }
     desired_policies: dict[str, Policy] = {
         slug: project_policy_for_env(policy, slug, env, override_present=bool(policy.rules))
         for slug, policy in materialised.items()

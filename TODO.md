@@ -33,6 +33,23 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       modelled from intent, not confirmed against a tenant. Emit-when-set keeps
       the blast radius to rules that opt in. Confirm via the gated
       live-validation path before relying on them in production config.
+- [x] **Diff false-positive `address_family: None -> 'ip4'/'ip6'/'any'` on
+      every rule when the YAML pinned the family redundantly.** `rule_from_api`
+      only pins `address_family` on the live side when the wire value diverges
+      from inference, but the desired side kept whatever the YAML said. A YAML
+      rule with `address_family: ip4` on an already-IPv4 rule (inference IP4)
+      therefore produced a spurious `None -> 'ip4'` field change on every
+      diff. Surfaced most visibly when a new inherited policy pulled the
+      parent's redundantly-pinned rules into the child's synthesised override
+      rule group — the noise multiplied across every affected policy. Fix:
+      new `exporter.canonicalize_rule_address_family(rule)` mirrors the
+      importer decision (drop the explicit override when it matches
+      inference); `differ.build_desired_state` runs every rule (inline
+      policy rules after inheritance resolution, base and override rule
+      groups) through it so both sides carry symmetric shapes. Divergent
+      overrides (e.g. `address_family: ip4` on an application-based rule
+      with no addresses) are preserved. Regression tests in
+      `test_differ.py`.
 
 ## Diff-format follow-up fixes (post Sprint 12)
 

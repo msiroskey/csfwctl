@@ -1003,6 +1003,23 @@ def _resolve_address_family(rule: Rule) -> str:
     return _infer_address_family(rule)
 
 
+def canonicalize_rule_address_family(rule: Rule) -> Rule:
+    """Drop an explicit ``address_family`` when it matches inference.
+
+    Mirrors :func:`rule_from_api`'s post-import decision (pin explicitly
+    only on divergence). Applying it to desired-side rules before the
+    differ compares dumps keeps the two sides symmetric: a YAML that
+    pins ``address_family: ip4`` on a rule whose inference already yields
+    ``IP4`` no longer produces a spurious ``None -> 'ip4'`` field change
+    against the live rule (whose importer dropped the redundant pin).
+    """
+    if rule.address_family is None:
+        return rule
+    if _ADDRESS_FAMILY_TO_API[rule.address_family] == _infer_address_family(rule):
+        return rule.model_copy(update={"address_family": None})
+    return rule
+
+
 def _rule_to_api_shape(
     rule: Rule, parent_display_name: str, index: int, platform: Platform
 ) -> dict[str, Any]:
@@ -1648,6 +1665,7 @@ __all__ = [
     "ImporterError",
     "OVERRIDE_SUFFIX_RE",
     "UUID_RE",
+    "canonicalize_rule_address_family",
     "clean_description",
     "display_name_to_slug",
     "to_slug",
