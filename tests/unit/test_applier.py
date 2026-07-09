@@ -1749,6 +1749,67 @@ def test_apply_precedence_preserves_unmanaged_policies_at_tail() -> None:
     assert ids_in_order == [managed_id, "unmanaged-1", "unmanaged-2"]
 
 
+def test_apply_precedence_excludes_platform_default_policy() -> None:
+    """The platform-default firewall policy must not appear in the
+    set-precedence payload.
+
+    Regression: CS's set-policies-precedence endpoint rejects payloads
+    that include the default policy with ``Did not provide all policies
+    for platform X, expected N but N+1 provided``. See falconpy
+    firewall_policies.py:214 — "You must specify all non-Default
+    Policies for a platform when updating precedence."
+    """
+    from csfwctl.schema import PrecedenceBucket
+
+    p_high = _mac_policy(
+        "asc-exception-mac-monitor-only",
+        priority=PrecedenceBucket.high,
+        display_name="Exception-Mac-Monitor-Only",
+    )
+    repo = _repo_with(policies=[p_high])
+    state = _render_live_state(env="test", policies=[p_high])
+    # A live Mac record that CS returns as is_default_policy=True. It
+    # would normally sit at the tail of state.policies alongside any
+    # unmanaged ones, but must be filtered out before we call CS.
+    state.policies.insert(
+        0,
+        {
+            "id": "mac-default-policy-id",
+            "name": "platform_default",
+            "platform_name": "Mac",
+            "description": "Platform Default Firewall Policy",
+            "is_default_policy": True,
+        },
+    )
+    # A regular unmanaged policy that must still be preserved.
+    state.policies.insert(
+        1,
+        {
+            "id": "unmanaged-1",
+            "name": "Legacy-Mac-Policy",
+            "platform_name": "Mac",
+            "description": "not managed",
+        },
+    )
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    assert len(client.policies.precedence_calls) == 1
+    ids_in_order, _ = client.policies.precedence_calls[0]
+    assert "mac-default-policy-id" not in ids_in_order
+    # The managed high-bucket policy still leads; the unmanaged non-default
+    # tags along; the default policy is silently dropped.
+    managed_id = state.policies[2]["id"]
+    assert ids_in_order == [managed_id, "unmanaged-1"]
+
+
 def test_apply_precedence_scopes_by_platform() -> None:
     """Windows policies stay on the Windows call; Mac policies stay on the Mac call."""
     from csfwctl.schema import PrecedenceBucket
