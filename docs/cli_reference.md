@@ -119,10 +119,13 @@ What it produces (single env):
   deletes, no-change objects, unmanaged live-only objects, and any
   warnings.
 - Per-change detail blocks for each create / update / delete, with
-  field-level diffs (`path: before -> after`) and host-group add/remove
-  lines for policies. List-valued fields (notably a rule group's
-  `rules`) are expanded down to the individual element and leaf that
-  changed — e.g. `rules[Airdrop: Any Inbound].file_path: None ->
+  field-level diffs (`path: before -> after`), host-group add/remove
+  lines, and — for policies with `managed_host_groups` — a
+  `managed-group:<op> <group-name> fql=<desired>` line per env whose
+  csfwctl-managed dynamic host group is being created or updated.
+  List-valued fields (notably a rule group's `rules`) are expanded
+  down to the individual element and leaf that changed — e.g.
+  `rules[Airdrop: Any Inbound].file_path: None ->
   '/usr/libexec/sharingd'` — rather than printing the whole before/after
   list. Rules are matched by name, so an added/removed rule shows as a
   single `rules[<name>]` entry and a pure reorder as one compact
@@ -134,6 +137,9 @@ What it produces (single env):
 What it produces (all envs):
 
 - A combined table with one row per environment.
+- A per-object matrix table with rows for the object header, each
+  changed field path, and — when relevant — a `managed-host-group`
+  row whose cells show the create/update FQL per env.
 - A `⚠ cross-env ripple detected` callout listing each downstream env
   whose pending-change count exceeds test's, followed by per-env detail
   logs.
