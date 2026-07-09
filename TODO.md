@@ -267,6 +267,24 @@ Three bugs surfaced by the per-leaf diff output:
 
 ## Bug fixes
 
+- [x] **Phantom `rule_groups[i]` slug diff on a policy that hadn't
+      changed.** Follow-on to the "Rule-group create rejected with
+      `Duplicate rule group name`" fix. `_diff_rule_groups` already
+      reconciles a lossy `to_slug` on the live side by falling back to
+      display-name matching, but `_diff_policies` still diffed the
+      policy's `rule_groups` list as opaque slugs — so a YAML slug
+      `asc-mac-endpoints` paired with display name `ASC-MacEndpoints`
+      produced a spurious `rule_groups[0]: 'asc-macendpoints' ->
+      'asc-mac-endpoints'` field change on every diff for the policy
+      referencing it. Fix: new `differ._rule_group_slug_aliases`
+      builds a `live_slug -> desired_slug` map from the same
+      display-name reconciliation, and `_apply_rg_slug_aliases`
+      remaps the live policy's `rule_groups` list through it before
+      `_compare_models` runs. Overrides (already same on both sides)
+      and matching slugs are no-ops. The applier already resolved the
+      slug → id lookup via display-name fallback, so this is a
+      display-only cleanup. Regression test:
+      `tests/unit/test_differ.py::test_compute_diff_does_not_report_phantom_rule_groups_slug_change`.
 - [x] **`enforcement_mode` conflated local logging with enforcement and
       lacked a `disabled` mode.** The enum was `enforce | monitor |
       local_logging`, with `monitor` wrongly mapped to `enforce: false`.

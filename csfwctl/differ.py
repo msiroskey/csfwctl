@@ -960,6 +960,59 @@ def _diff_rule_groups(
             )
 
 
+def _rule_group_slug_aliases(
+    desired: dict[str, RuleGroup],
+    live: dict[str, tuple[RuleGroup, dict[str, Any]]],
+    env: str,
+) -> dict[str, str]:
+    """Map ``live_slug -> desired_slug`` for rule groups that already match.
+
+    ``to_slug`` collapses camelCase names (``ASC-MacEndpoints`` becomes
+    ``asc-macendpoints``), so a YAML slug ``asc-mac-endpoints`` paired
+    with display name ``ASC-MacEndpoints`` cannot be recovered from the
+    live name ``ASC-MacEndpoints-Pilot`` by slug normalisation alone.
+    The rule-group differ already handles this by matching on the full
+    env-suffixed display name (see :func:`_diff_rule_groups`), but the
+    policy differ then diffs ``rule_groups`` slugs as opaque strings and
+    still reports a phantom ``rule_groups[i]: 'asc-macendpoints' ->
+    'asc-mac-endpoints'`` field change.
+
+    This helper detects the same slug divergence and produces an alias
+    map the policy diff applies to the live side before comparison, so a
+    reference already resolved to the correct rule group does not look
+    like a change on the wire.
+    """
+    if not desired or not live:
+        return {}
+    suffix = env_suffix(env)
+    live_by_display_name: dict[str, str] = {
+        str(record.get("name", "")): live_slug for live_slug, (_, record) in live.items()
+    }
+    aliases: dict[str, str] = {}
+    for desired_slug, model in desired.items():
+        if desired_slug in live:
+            continue
+        display_name = (
+            _override_display_name(desired_slug, env)
+            if _is_override_slug(desired_slug)
+            else f"{model.display_name or model.name}{suffix}"
+        )
+        live_slug = live_by_display_name.get(display_name)
+        if live_slug is not None and live_slug != desired_slug:
+            aliases[live_slug] = desired_slug
+    return aliases
+
+
+def _apply_rg_slug_aliases(policy: Policy, aliases: dict[str, str] | None) -> Policy:
+    """Return ``policy`` with ``rule_groups`` slugs remapped through ``aliases``."""
+    if not aliases:
+        return policy
+    remapped = [aliases.get(slug, slug) for slug in policy.rule_groups]
+    if remapped == list(policy.rule_groups):
+        return policy
+    return policy.model_copy(update={"rule_groups": remapped})
+
+
 def _diff_policies(
     desired: dict[str, Policy],
     live: dict[str, tuple[Policy, dict[str, Any]]],
@@ -968,8 +1021,16 @@ def _diff_policies(
     cs: ChangeSet,
     materialised: dict[str, Policy],
     live_hg_by_name: dict[str, dict[str, Any]],
+    rg_slug_aliases: dict[str, str] | None = None,
 ) -> None:
-    """Append policy creates/updates/deletes/no-changes to ``cs``."""
+    """Append policy creates/updates/deletes/no-changes to ``cs``.
+
+    ``rg_slug_aliases`` maps ``live_slug -> desired_slug`` for rule groups
+    whose slugs differ across sides due to a lossy ``to_slug`` on the
+    live side (see :func:`_rule_group_slug_aliases`). The live policy's
+    ``rule_groups`` list is remapped through it before comparison so the
+    two sides carry the same slug for objects that already match.
+    """
     tombstoned = {entry.name for entry in repo.tombstones.policies}
     suffix = env_suffix(env)
     # Secondary index by the live raw display name. The slug-only lookup
@@ -993,6 +1054,7 @@ def _diff_policies(
         if live_slug is not None:
             matched_live_slugs.add(live_slug)
             live_model, live_record = live[live_slug]
+            live_model = _apply_rg_slug_aliases(live_model, rg_slug_aliases)
             field_changes = _compare_models(model, live_model)
             hg_changes = _host_group_changes(model, live_model, env)
             managed = _classify_managed(live_record)
@@ -1101,6 +1163,7 @@ def compute_diff(repo: ConfigRepo, env: str, state: LiveState) -> ChangeSet:
 
     _diff_locations(desired_locations, live.locations, repo, cs)
     _diff_rule_groups(desired_rule_groups, live.rule_groups, repo, env, cs)
+    rg_slug_aliases = _rule_group_slug_aliases(desired_rule_groups, live.rule_groups, env)
     _diff_policies(
         desired_policies,
         live.policies,
@@ -1109,6 +1172,7 @@ def compute_diff(repo: ConfigRepo, env: str, state: LiveState) -> ChangeSet:
         cs,
         materialised=materialised,
         live_hg_by_name=live_hg_by_name,
+        rg_slug_aliases=rg_slug_aliases,
     )
 
     return cs
