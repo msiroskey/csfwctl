@@ -479,9 +479,7 @@ def _shared_column_widths(header: list[str], body: list[list[str]]) -> list[int]
     return widths
 
 
-def _managed_group_row(
-    per_env: dict[str, ObjectChange], envs: tuple[str, ...]
-) -> list[str] | None:
+def _managed_group_row(per_env: dict[str, ObjectChange], envs: tuple[str, ...]) -> list[str] | None:
     """Row rendering managed-host-group create/update ops across envs.
 
     Returns ``None`` when no env has an actionable managed-group op — a
@@ -548,9 +546,7 @@ def _render_change(console: Console, change: ObjectChange) -> None:
     for mg in change.managed_group_changes:
         if mg.op == "no-change":
             continue
-        console.print(
-            f"      managed-group:{mg.op} {mg.group_name} fql={mg.desired_fql!r}"
-        )
+        console.print(f"      managed-group:{mg.op} {mg.group_name} fql={mg.desired_fql!r}")
 
 
 _OP_COLOR: dict[DiffOp, str] = {
