@@ -163,6 +163,8 @@ class FakePoliciesAPI(FakeSubClient):
         # to assert overlay semantics (existing values flow through unless
         # the YAML overrides them).
         self.container_state: dict[str, dict[str, Any]] = {}
+        # set_precedence calls: (ids_in_order, platform_name)
+        self.precedence_calls: list[tuple[list[str], str]] = []
 
     def create(self, policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -212,6 +214,9 @@ class FakePoliciesAPI(FakeSubClient):
             [policy_id],
             [{"name": "group_id", "value": host_group_id}],
         )
+
+    def set_precedence(self, ids_in_order: list[str], *, platform_name: str) -> None:
+        self.precedence_calls.append((list(ids_in_order), platform_name))
 
     def delete(self, ids: list[str]) -> None:
         self.deleted.extend(ids)
@@ -1564,6 +1569,246 @@ def test_apply_preserves_existing_free_text_in_description() -> None:
     assert "Baseline rules for Windows endpoints." in desc_value
     # And the new trailer is present.
     assert "Managed by csfwctl" in desc_value
+
+
+# ---- precedence hook (step 4) --------------------------------------------
+
+
+def _mac_policy(name: str, *, priority: Any, display_name: str | None = None) -> Policy:
+    """Minimal mac policy fixture for precedence tests."""
+    from csfwctl.schema import PrecedenceBucket
+
+    return Policy(
+        name=name,
+        display_name=display_name or name,
+        platform=Platform.mac,
+        priority=priority if isinstance(priority, PrecedenceBucket) else PrecedenceBucket(priority),
+    )
+
+
+def test_apply_precedence_reorders_managed_policies_to_bucket_order() -> None:
+    """A high-bucket policy lands ahead of a default-bucket one on the tenant."""
+    from csfwctl.schema import PrecedenceBucket
+
+    p_default = _mac_policy("asc-mac-endpoints", priority=PrecedenceBucket.default)
+    p_high = _mac_policy(
+        "asc-exception-mac-monitor-only",
+        priority=PrecedenceBucket.high,
+        display_name="Exception-Mac-Monitor-Only",
+    )
+    repo = _repo_with(policies=[p_default, p_high])
+    # Live state has both, but in the *reverse* of the resolved order — the
+    # high-bucket policy sits below the default one, mirroring CS's habit
+    # of appending new policies to the end of the platform list.
+    state = _render_live_state(env="test", policies=[p_default, p_high])
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    report = apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    assert len(client.policies.precedence_calls) == 1
+    ids_in_order, platform_name = client.policies.precedence_calls[0]
+    assert platform_name == "Mac"
+    high_id = state.policies[1]["id"]
+    default_id = state.policies[0]["id"]
+    # Both platforms show high before default.
+    assert ids_in_order.index(high_id) < ids_in_order.index(default_id)
+    prec_actions = [a for a in report.actions if a.op == "precedence"]
+    assert prec_actions and prec_actions[0].display_name == "precedence:Mac"
+
+
+def test_apply_precedence_skips_when_live_order_already_matches() -> None:
+    """No API call and no recorded action when live already matches resolved."""
+    from csfwctl.schema import PrecedenceBucket
+
+    p_high = _mac_policy(
+        "asc-exception-mac-monitor-only",
+        priority=PrecedenceBucket.high,
+        display_name="Exception-Mac-Monitor-Only",
+    )
+    p_default = _mac_policy("asc-mac-endpoints", priority=PrecedenceBucket.default)
+    repo = _repo_with(policies=[p_high, p_default])
+    # Live in the resolved order (high first).
+    state = _render_live_state(env="test", policies=[p_high, p_default])
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    report = apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    assert client.policies.precedence_calls == []
+    assert not [a for a in report.actions if a.op == "precedence"]
+
+
+def test_apply_precedence_preserves_unmanaged_policies_at_tail() -> None:
+    """CS rejects payloads that omit existing ids, so unmanaged live policies
+    must be appended in their current relative order."""
+    from csfwctl.schema import PrecedenceBucket
+
+    p_high = _mac_policy(
+        "asc-exception-mac-monitor-only",
+        priority=PrecedenceBucket.high,
+        display_name="Exception-Mac-Monitor-Only",
+    )
+    repo = _repo_with(policies=[p_high])
+    # Seed live with two unmanaged mac policies plus the managed one, with
+    # the managed policy at the bottom (as CS returns it).
+    state = _render_live_state(env="test", policies=[p_high])
+    state.policies.insert(
+        0,
+        {
+            "id": "unmanaged-1",
+            "name": "Legacy-Mac-Policy",
+            "platform_name": "Mac",
+            "description": "not managed",
+        },
+    )
+    state.policies.insert(
+        1,
+        {
+            "id": "unmanaged-2",
+            "name": "Another-Mac-Policy",
+            "platform_name": "Mac",
+            "description": "also not managed",
+        },
+    )
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    assert len(client.policies.precedence_calls) == 1
+    ids_in_order, _ = client.policies.precedence_calls[0]
+    managed_id = state.policies[2]["id"]
+    # Managed first, then unmanaged in their live relative order.
+    assert ids_in_order == [managed_id, "unmanaged-1", "unmanaged-2"]
+
+
+def test_apply_precedence_scopes_by_platform() -> None:
+    """Windows policies stay on the Windows call; Mac policies stay on the Mac call."""
+    from csfwctl.schema import PrecedenceBucket
+
+    p_mac_high = _mac_policy(
+        "asc-mac-high",
+        priority=PrecedenceBucket.high,
+        display_name="Mac-High",
+    )
+    p_mac_default = _mac_policy(
+        "asc-mac-default",
+        priority=PrecedenceBucket.default,
+        display_name="Mac-Default",
+    )
+    p_win = _windows_policy(with_inline=False)
+    rg = _windows_rg()
+    repo = _repo_with(policies=[p_mac_default, p_mac_high, p_win], rule_groups=[rg])
+    state = _render_live_state(
+        env="test",
+        policies=[p_mac_default, p_mac_high, p_win],
+        rule_groups=[rg],
+    )
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient(host_groups={"ABC01-Endpoints-Windows-Test": "hg-test"})
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    # Windows should not be reordered (only one policy on that platform,
+    # already in position); Mac should be reordered.
+    mac_calls = [c for c in client.policies.precedence_calls if c[1] == "Mac"]
+    windows_calls = [c for c in client.policies.precedence_calls if c[1] == "Windows"]
+    assert len(mac_calls) == 1
+    assert windows_calls == []
+    mac_ids, _ = mac_calls[0]
+    high_id = state.policies[1]["id"]
+    default_id = state.policies[0]["id"]
+    assert mac_ids.index(high_id) < mac_ids.index(default_id)
+
+
+def test_apply_precedence_dry_run_records_intent_without_write() -> None:
+    """Dry-run appends a ``precedence`` action but never calls set_precedence."""
+    from csfwctl.schema import PrecedenceBucket
+
+    p_high = _mac_policy(
+        "asc-mac-high",
+        priority=PrecedenceBucket.high,
+        display_name="Mac-High",
+    )
+    p_default = _mac_policy(
+        "asc-mac-default",
+        priority=PrecedenceBucket.default,
+        display_name="Mac-Default",
+    )
+    repo = _repo_with(policies=[p_high, p_default])
+    state = _render_live_state(env="test", policies=[p_default, p_high])
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    report = apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(dry_run=True),
+        safety_options=_safety(),
+    )
+    assert client.policies.precedence_calls == []
+    prec_actions = [a for a in report.actions if a.op == "precedence"]
+    assert len(prec_actions) == 1
+    assert prec_actions[0].detail.startswith("dry-run")
+
+
+def test_apply_precedence_orders_freshly_created_policy_ahead_of_live() -> None:
+    """A newly-created high-bucket policy lands at the top of the tenant order."""
+    from csfwctl.schema import PrecedenceBucket
+
+    # Existing live policy at default; the newly-desired one is high.
+    p_default = _mac_policy(
+        "asc-mac-endpoints",
+        priority=PrecedenceBucket.default,
+        display_name="Mac-Endpoints",
+    )
+    p_high = _mac_policy(
+        "asc-exception-mac-monitor-only",
+        priority=PrecedenceBucket.high,
+        display_name="Exception-Mac-Monitor-Only",
+    )
+    repo = _repo_with(policies=[p_default, p_high])
+    # Live has only the default; p_high will be created during apply.
+    state = _render_live_state(env="test", policies=[p_default])
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    assert len(client.policies.precedence_calls) == 1
+    ids_in_order, platform_name = client.policies.precedence_calls[0]
+    assert platform_name == "Mac"
+    created_id = f"policy-id-{client.policies.created[0]['name']}"
+    default_id = state.policies[0]["id"]
+    # The just-created high-bucket policy is first, ahead of the pre-existing one.
+    assert ids_in_order == [created_id, default_id]
 
 
 # ---- structured per-action diff detail -----------------------------------

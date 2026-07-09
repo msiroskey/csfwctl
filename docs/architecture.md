@@ -335,7 +335,12 @@ write. The split mirrors the differ/loader split: pure functions in
    resolved host-group membership in one round-trip.
 4. Host-group reassignments — recorded explicitly on the apply report
    even though they ride on the policy update payload above.
-5. Precedence ordering — Phase 6 stub.
+5. Precedence ordering — ``_apply_precedence`` resolves the desired
+   per-platform order via ``resolve_precedence`` and calls
+   ``PoliciesAPI.set_precedence`` when live differs. Managed policies
+   land first (in resolved order); every other live id for the platform
+   — unmanaged or queued for delete — is appended in its current live
+   order so CrowdStrike sees the full platform roster.
 6. Deletes — policies, then rule groups, then locations.
 
 **Metadata trailer.** Every touched object's ``description`` is

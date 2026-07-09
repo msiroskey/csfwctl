@@ -319,7 +319,10 @@ csfwctl apply --env {test|pilot|production}
       written on the policy payload itself.
    4. **Host-group reassignments** appear as explicit report rows even
       though they ride on the policy update payload.
-   5. **Precedence ordering** — Phase 6 stub.
+   5. **Precedence ordering** — resolves each policy's `priority`
+      bucket into a per-platform order and calls `set_precedence`
+      when the live tenant order differs; unmanaged live policies are
+      preserved at the tail so the API sees the full platform roster.
    6. **Deletes** — policies, then rule groups, then locations.
 6. Rewrites the metadata trailer on every touched object's description:
    `Managed by csfwctl | version: N | git_sha: X | applied: TS | env: E`.
