@@ -73,20 +73,26 @@ METADATA_SIGNATURE_RE = re.compile(
 """Metadata block appended to descriptions by the applier. The importer
 strips it so subsequent re-imports stay clean."""
 
-_SLUG_NORMALIZE_RE = re.compile(r"[\s_]+")
+_SLUG_INVALID_RE = re.compile(r"[^a-z0-9]+")
 _SLUG_COLLAPSE_RE = re.compile(r"-{2,}")
 
 
 def to_slug(name: str) -> str:
     """Normalise an arbitrary CrowdStrike name to a lowercase-kebab slug.
 
-    Lowercases, replaces runs of whitespace or underscores with a single
-    hyphen, collapses consecutive hyphens, and strips leading/trailing
-    hyphens. Does **not** validate the result against :data:`SLUG_RE` —
-    callers that need strict validation should check afterward.
+    Lowercases, replaces every run of characters outside ``[a-z0-9]`` with
+    a single hyphen (so ``:``, spaces, underscores, and other punctuation
+    fold into separators), collapses consecutive hyphens, and strips
+    leading/trailing hyphens. Does **not** validate the result against
+    :data:`SLUG_RE` — callers that need strict validation should check
+    afterward. Stripping punctuation matters because a live CrowdStrike
+    display name may carry ``:`` or other characters that are perfectly
+    legal on the tenant but never legal inside a repo slug; if we leave
+    them in, the applier's slug lookup misses the live record and the
+    next apply tries to *create* a policy that already exists.
     """
     slug = name.lower()
-    slug = _SLUG_NORMALIZE_RE.sub("-", slug)
+    slug = _SLUG_INVALID_RE.sub("-", slug)
     slug = _SLUG_COLLAPSE_RE.sub("-", slug)
     return slug.strip("-")
 
