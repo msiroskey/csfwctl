@@ -280,11 +280,14 @@ def synthesise_override_rule_groups(repo: ConfigRepo, env: str) -> dict[str, Rul
     The slug follows ``<policy-slug>-overrides-<env>`` so it matches what
     the importer's ``is_override_group_name`` detects on a re-import. The
     platform mirrors the policy's so the loader's cross-platform
-    invariants remain satisfied.
+    invariants remain satisfied. Policies whose ``skip_unassigned_envs``
+    flag drops them from ``env`` are omitted.
     """
     out: dict[str, RuleGroup] = {}
     for slug, policy in repo.policies.items():
         if not policy.rules:
+            continue
+        if policy.skip_unassigned_envs and not policy_is_assigned_in_env(policy, env):
             continue
         override_slug = f"{slug}-overrides-{env}"
         out[override_slug] = RuleGroup(
@@ -365,26 +368,48 @@ def _canonicalize_rule_group_rules(rule_group: RuleGroup) -> RuleGroup:
     return rule_group.model_copy(update={"rules": _canonicalize_rules(rule_group.rules)})
 
 
+def policy_is_assigned_in_env(policy: Policy, env: str) -> bool:
+    """``True`` when ``policy`` has a host-group binding in ``env``.
+
+    A binding is any entry in ``host_groups`` mapped to this env or a
+    non-empty ``managed_host_groups`` list for this env. Used by the
+    ``skip_unassigned_envs`` filter — policies with the flag set are
+    dropped from the desired state for envs where this returns ``False``.
+    """
+    hg_env = env_to_host_group_env(env)
+    if any(e is hg_env for e in policy.host_groups.values()):
+        return True
+    return bool(policy.managed_host_groups.get(hg_env))
+
+
 def build_desired_state(
     repo: ConfigRepo, env: str
 ) -> tuple[dict[str, Policy], dict[str, RuleGroup], dict[str, Location]]:
     """Build the per-env desired state as schema models keyed by slug.
 
     Inheritance is resolved before projection so the differ and applier
-    always work with flat, materialised policies.
+    always work with flat, materialised policies. Policies whose
+    ``skip_unassigned_envs`` flag is set and that carry no host-group
+    binding in ``env`` are excluded from the desired state; their
+    synthesised ``<slug>-overrides-<env>`` rule group is excluded too.
     """
     materialised: dict[str, Policy] = {
         slug: _canonicalize_policy_rules(resolve_inheritance(policy, repo))
         for slug, policy in repo.policies.items()
     }
-    overrides = synthesise_override_rule_groups_from(materialised, repo, env)
+    active: dict[str, Policy] = {
+        slug: policy
+        for slug, policy in materialised.items()
+        if not (policy.skip_unassigned_envs and not policy_is_assigned_in_env(policy, env))
+    }
+    overrides = synthesise_override_rule_groups_from(active, repo, env)
     desired_rule_groups: dict[str, RuleGroup] = {
         **{slug: _canonicalize_rule_group_rules(rg) for slug, rg in repo.rule_groups.items()},
         **overrides,
     }
     desired_policies: dict[str, Policy] = {
         slug: project_policy_for_env(policy, slug, env, override_present=bool(policy.rules))
-        for slug, policy in materialised.items()
+        for slug, policy in active.items()
     }
     desired_locations: dict[str, Location] = dict(repo.locations)
     return desired_policies, desired_rule_groups, desired_locations
@@ -875,8 +900,15 @@ def _diff_rule_groups(
     repo: ConfigRepo,
     env: str,
     cs: ChangeSet,
+    auto_tombstoned: frozenset[str] = frozenset(),
 ) -> None:
-    """Append rule-group creates/updates/deletes/no-changes to ``cs``."""
+    """Append rule-group creates/updates/deletes/no-changes to ``cs``.
+
+    ``auto_tombstoned`` names override-rule-group slugs (``<policy-slug>
+    -overrides-<env>``) whose owning policy opted into auto-deletion via
+    ``tombstone_unassigned_envs``. A live *managed* record matching one
+    of these slugs is emitted as a delete instead of an orphan warning.
+    """
     tombstoned = {entry.name for entry in repo.tombstones.rule_groups}
     suffix = env_suffix(env)
     # Secondary index: live records keyed by their raw CrowdStrike display
@@ -930,6 +962,7 @@ def _diff_rule_groups(
     for slug in sorted(set(live) - set(desired) - matched_live_slugs):
         live_model, live_record = live[slug]
         display = f"{live_model.display_name or live_model.name}{suffix}"
+        managed = _classify_managed(live_record)
         if slug in tombstoned:
             cs.deletes.append(
                 ObjectChange(
@@ -937,8 +970,19 @@ def _diff_rule_groups(
                     op=DiffOp.delete,
                     slug=slug,
                     display_name=display,
-                    managed=_classify_managed(live_record),
+                    managed=managed,
                     reason="tombstoned",
+                )
+            )
+        elif slug in auto_tombstoned and managed is ManagedStatus.managed:
+            cs.deletes.append(
+                ObjectChange(
+                    kind=KIND_RULE_GROUP,
+                    op=DiffOp.delete,
+                    slug=slug,
+                    display_name=display,
+                    managed=managed,
+                    reason="unassigned in env; tombstone_unassigned_envs=true",
                 )
             )
         elif _is_override_slug(slug):
@@ -954,7 +998,7 @@ def _diff_rule_groups(
                     op=DiffOp.no_change,
                     slug=slug,
                     display_name=display,
-                    managed=_classify_managed(live_record),
+                    managed=managed,
                     reason="not in YAML and not tombstoned",
                 )
             )
@@ -1022,6 +1066,7 @@ def _diff_policies(
     materialised: dict[str, Policy],
     live_hg_by_name: dict[str, dict[str, Any]],
     rg_slug_aliases: dict[str, str] | None = None,
+    auto_tombstoned: frozenset[str] = frozenset(),
 ) -> None:
     """Append policy creates/updates/deletes/no-changes to ``cs``.
 
@@ -1030,6 +1075,12 @@ def _diff_policies(
     live side (see :func:`_rule_group_slug_aliases`). The live policy's
     ``rule_groups`` list is remapped through it before comparison so the
     two sides carry the same slug for objects that already match.
+
+    ``auto_tombstoned`` names slugs whose ``tombstone_unassigned_envs``
+    flag opted them into auto-deletion for this env. A live *managed*
+    record matching one of these slugs is emitted as a delete instead of
+    ``unmanaged``; live unmanaged records are still reported as unmanaged
+    since csfwctl did not create them.
     """
     tombstoned = {entry.name for entry in repo.tombstones.policies}
     suffix = env_suffix(env)
@@ -1086,6 +1137,7 @@ def _diff_policies(
     for slug in sorted(set(live) - set(desired) - matched_live_slugs):
         live_model, live_record = live[slug]
         display = f"{live_model.display_name or live_model.name}{suffix}"
+        managed = _classify_managed(live_record)
         if slug in tombstoned:
             cs.deletes.append(
                 ObjectChange(
@@ -1093,8 +1145,19 @@ def _diff_policies(
                     op=DiffOp.delete,
                     slug=slug,
                     display_name=display,
-                    managed=_classify_managed(live_record),
+                    managed=managed,
                     reason="tombstoned",
+                )
+            )
+        elif slug in auto_tombstoned and managed is ManagedStatus.managed:
+            cs.deletes.append(
+                ObjectChange(
+                    kind=KIND_POLICY,
+                    op=DiffOp.delete,
+                    slug=slug,
+                    display_name=display,
+                    managed=managed,
+                    reason="unassigned in env; tombstone_unassigned_envs=true",
                 )
             )
         else:
@@ -1104,7 +1167,7 @@ def _diff_policies(
                     op=DiffOp.no_change,
                     slug=slug,
                     display_name=display,
-                    managed=_classify_managed(live_record),
+                    managed=managed,
                     reason="not in YAML and not tombstoned",
                 )
             )
@@ -1153,6 +1216,19 @@ def compute_diff(repo: ConfigRepo, env: str, state: LiveState) -> ChangeSet:
         slug: resolve_inheritance(policy, repo) for slug, policy in repo.policies.items()
     }
 
+    # Slugs whose policy opted into auto-tombstoning for this env because
+    # skip_unassigned_envs excluded it from the desired state.
+    auto_tombstoned_policies: frozenset[str] = frozenset(
+        slug
+        for slug, policy in materialised.items()
+        if policy.skip_unassigned_envs
+        and policy.tombstone_unassigned_envs
+        and not policy_is_assigned_in_env(policy, env)
+    )
+    auto_tombstoned_rule_groups: frozenset[str] = frozenset(
+        f"{slug}-overrides-{env}" for slug in auto_tombstoned_policies
+    )
+
     desired_policies, desired_rule_groups, desired_locations = build_desired_state(repo, env)
     live = _translate_live_state(state, env, cs)
 
@@ -1162,7 +1238,14 @@ def compute_diff(repo: ConfigRepo, env: str, state: LiveState) -> ChangeSet:
     }
 
     _diff_locations(desired_locations, live.locations, repo, cs)
-    _diff_rule_groups(desired_rule_groups, live.rule_groups, repo, env, cs)
+    _diff_rule_groups(
+        desired_rule_groups,
+        live.rule_groups,
+        repo,
+        env,
+        cs,
+        auto_tombstoned=auto_tombstoned_rule_groups,
+    )
     rg_slug_aliases = _rule_group_slug_aliases(desired_rule_groups, live.rule_groups, env)
     _diff_policies(
         desired_policies,
@@ -1173,6 +1256,7 @@ def compute_diff(repo: ConfigRepo, env: str, state: LiveState) -> ChangeSet:
         materialised=materialised,
         live_hg_by_name=live_hg_by_name,
         rg_slug_aliases=rg_slug_aliases,
+        auto_tombstoned=auto_tombstoned_policies,
     )
 
     return cs
@@ -1287,6 +1371,7 @@ __all__ = [
     "expand_field_change",
     "fetch_live_state",
     "is_managed_description",
+    "policy_is_assigned_in_env",
     "project_policy_for_env",
     "synthesise_override_rule_groups",
     "synthesise_override_rule_groups_from",

@@ -336,8 +336,14 @@ def test_resolve_settings_inherited(tmp_path: Path) -> None:
     assert result.settings.default_inbound is DefaultTrafficAction.deny
 
 
-def test_resolve_managed_host_groups_drops_inherited_overlap(tmp_path: Path) -> None:
-    """Child's managed_host_groups for test env removes inherited host_groups for test."""
+def test_resolve_child_managed_host_groups_wipes_parent_host_groups(tmp_path: Path) -> None:
+    """Child asserting managed_host_groups is authoritative for both maps.
+
+    A child that only declares ``managed_host_groups: {test: [...]}``
+    must NOT inherit the parent's Pilot / Production ``host_groups``
+    entries — the child is declaring the exhaustive binding scope for
+    the override, not extending the parent's.
+    """
     parent = _policy(
         "parent-policy",
         host_groups={"ABC01-Test": HostGroupEnv.test, "ABC01-Pilot": HostGroupEnv.pilot},
@@ -349,10 +355,58 @@ def test_resolve_managed_host_groups_drops_inherited_overlap(tmp_path: Path) -> 
     )
     repo = _make_repo([parent, child], tmp_path=tmp_path)
     result = resolve_inheritance(child, repo)
-    # test env must not appear in host_groups since managed_host_groups owns it
-    assert HostGroupEnv.test not in result.host_groups.values()
-    assert HostGroupEnv.pilot in result.host_groups.values()
+    assert result.host_groups == {}
     assert result.managed_host_groups.get(HostGroupEnv.test) == ["machine-foo"]
+
+
+def test_resolve_child_host_groups_wipes_parent_managed_host_groups(tmp_path: Path) -> None:
+    """Symmetric case: child sets host_groups → parent's managed map dropped."""
+    parent = _policy(
+        "parent-policy",
+        managed_host_groups={HostGroupEnv.test: ["machine-foo"]},
+    )
+    child = _policy(
+        "child-policy",
+        inherits="parent-policy",
+        host_groups={"ABC01-Pilot": HostGroupEnv.pilot},
+    )
+    repo = _make_repo([parent, child], tmp_path=tmp_path)
+    result = resolve_inheritance(child, repo)
+    assert result.host_groups == {"ABC01-Pilot": HostGroupEnv.pilot}
+    assert result.managed_host_groups == {}
+
+
+def test_resolve_child_sets_neither_map_inherits_both(tmp_path: Path) -> None:
+    """When the child sets neither map, both flow through unchanged."""
+    parent = _policy(
+        "parent-policy",
+        host_groups={"ABC01-Pilot": HostGroupEnv.pilot},
+        managed_host_groups={HostGroupEnv.test: ["machine-foo"]},
+    )
+    child = _policy("child-policy", inherits="parent-policy")
+    repo = _make_repo([parent, child], tmp_path=tmp_path)
+    result = resolve_inheritance(child, repo)
+    assert result.host_groups == {"ABC01-Pilot": HostGroupEnv.pilot}
+    assert result.managed_host_groups.get(HostGroupEnv.test) == ["machine-foo"]
+
+
+def test_resolve_child_sets_both_maps_replaces_both(tmp_path: Path) -> None:
+    """Child sets both explicitly → both fully child-authoritative."""
+    parent = _policy(
+        "parent-policy",
+        host_groups={"ABC01-Test": HostGroupEnv.test, "ABC01-Pilot": HostGroupEnv.pilot},
+        managed_host_groups={HostGroupEnv.production: ["parent-machine"]},
+    )
+    child = _policy(
+        "child-policy",
+        inherits="parent-policy",
+        host_groups={"Child-Pilot": HostGroupEnv.pilot},
+        managed_host_groups={HostGroupEnv.test: ["child-machine"]},
+    )
+    repo = _make_repo([parent, child], tmp_path=tmp_path)
+    result = resolve_inheritance(child, repo)
+    assert result.host_groups == {"Child-Pilot": HostGroupEnv.pilot}
+    assert result.managed_host_groups == {HostGroupEnv.test: ["child-machine"]}
 
 
 # ---- lint rules -------------------------------------------------------------

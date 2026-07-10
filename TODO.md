@@ -8,6 +8,41 @@ Project plan: ./csfwctl-project-plan.md
 Sprint 12: Cross-env diff + richer MR comments — complete.
 Sprint 11: Policy inheritance, policy settings, and managed host groups — complete.
 
+### Policy env-restriction flags (post Sprint 12)
+
+- [x] `Policy.skip_unassigned_envs` (bool, default `false`). Filters
+      out the policy and its synthesised `<slug>-overrides-<env>` rule
+      group in `build_desired_state` for envs where the policy has no
+      entry in `host_groups` or `managed_host_groups`. Aimed at
+      override-style policies scoped to a single environment.
+- [x] `Policy.tombstone_unassigned_envs` (bool, default `false`;
+      requires `skip_unassigned_envs`). When a live *managed* object
+      exists in an env that skip has removed from the desired state,
+      the differ emits a delete (reason
+      `unassigned in env; tombstone_unassigned_envs=true`) instead of
+      reporting it as unmanaged. Unmanaged live records are never
+      auto-deleted. Still gated by `--allow-delete` on apply.
+- [x] `docs/schema_reference.md` — new section
+      "Restricting a policy to assigned envs" plus rows in the Policy
+      field table.
+- [x] Unit tests: schema validators, `build_desired_state` skip
+      behaviour, `compute_diff` auto-tombstone (managed vs unmanaged),
+      flag-off passthrough. `tests/unit/test_differ.py` +
+      `tests/unit/test_schema_policy.py`.
+- [x] **Inheritance leak fix for override policies.** Previously a
+      child that set only ``managed_host_groups: {test: [...]}`` would
+      silently inherit the parent's Pilot / Production ``host_groups``
+      entries — the resolver only dropped inherited ``host_groups`` for
+      envs the child's ``managed_host_groups`` explicitly covered. Now
+      when the child sets *either* map, the parent's contribution to
+      **both** maps is dropped before the child's declaration is applied,
+      so the child's binding scope is authoritative. If the child sets
+      neither, both are inherited from the parent unchanged. Behaviour
+      change documented in `docs/schema_reference.md` §Policy
+      inheritance; regression tests in `tests/unit/test_sprint11.py`
+      cover the four combinations (child sets managed only, host_groups
+      only, both, neither).
+
 ## Rule schema extension: address family / address type / watch mode (post Sprint 12)
 
 - [x] **`Rule.address_family` (override, infer when omitted).** New optional

@@ -1051,3 +1051,121 @@ def test_compute_diff_detects_update_when_rules_keyed_by_family_id() -> None:
     cs = compute_diff(_repo_with(rule_groups=[rg]), "test", state)
     # Group is correctly detected as existing (no creates).
     assert not cs.creates, f"unexpected creates: {cs.creates}"
+
+
+# ---- skip_unassigned_envs / tombstone_unassigned_envs --------------------
+
+
+def _override_only_policy(
+    *,
+    envs: dict[str, HostGroupEnv] | None = None,
+    skip: bool = True,
+    tombstone: bool = False,
+    managed_hosts: dict[HostGroupEnv, list[str]] | None = None,
+) -> Policy:
+    """Single-env override-style policy for the skip/tombstone tests."""
+    return Policy(
+        name="abc01-adhoc-override",
+        display_name="ABC01-AdHoc-Override",
+        platform=Platform.windows,
+        host_groups=envs or {},
+        managed_host_groups=managed_hosts or {},
+        rules=[
+            Rule(
+                name="Allow local ssh",
+                action=Action.allow,
+                direction=Direction.inbound,
+                protocol=Protocol.tcp,
+                remote=Endpoint(ports=[22]),
+            )
+        ],
+        skip_unassigned_envs=skip,
+        tombstone_unassigned_envs=tombstone,
+    )
+
+
+def test_build_desired_state_skips_unassigned_env() -> None:
+    policy = _override_only_policy(envs={"ABC01-AdHoc-Test": HostGroupEnv.test})
+    repo = _repo_with(policies=[policy])
+    # Bound to test → present in test's desired state, plus its override RG.
+    policies, rule_groups, _ = build_desired_state(repo, "test")
+    assert "abc01-adhoc-override" in policies
+    assert "abc01-adhoc-override-overrides-test" in rule_groups
+    # Unassigned in pilot → dropped entirely.
+    policies, rule_groups, _ = build_desired_state(repo, "pilot")
+    assert "abc01-adhoc-override" not in policies
+    assert "abc01-adhoc-override-overrides-pilot" not in rule_groups
+
+
+def test_build_desired_state_managed_host_groups_count_as_assignment() -> None:
+    policy = _override_only_policy(
+        managed_hosts={HostGroupEnv.pilot: ["host-a", "host-b"]},
+    )
+    repo = _repo_with(policies=[policy])
+    policies, _, _ = build_desired_state(repo, "pilot")
+    assert "abc01-adhoc-override" in policies
+    policies, _, _ = build_desired_state(repo, "production")
+    assert "abc01-adhoc-override" not in policies
+
+
+def test_build_desired_state_flag_off_still_generates_all_envs() -> None:
+    policy = _override_only_policy(envs={"ABC01-AdHoc-Test": HostGroupEnv.test}, skip=False)
+    repo = _repo_with(policies=[policy])
+    for env in ("test", "pilot", "production"):
+        policies, _, _ = build_desired_state(repo, env)
+        assert "abc01-adhoc-override" in policies
+
+
+def test_compute_diff_skipped_unassigned_env_reports_managed_live_as_unmanaged() -> None:
+    """Skip alone (no tombstone): a stale managed object is preserved.
+
+    The safety invariant is that deletes require an explicit tombstone.
+    Without ``tombstone_unassigned_envs`` a lingering managed object in
+    an unassigned env is reported as unmanaged (i.e. drift) so an
+    operator has to notice it, not silently deleted.
+    """
+    policy = _override_only_policy(envs={"ABC01-AdHoc-Test": HostGroupEnv.test})
+    repo = _repo_with(policies=[policy])
+    # Pretend the object exists live in pilot even though it's unassigned there.
+    pilot_policy = _override_only_policy(envs={"ABC01-AdHoc-Pilot": HostGroupEnv.pilot}, skip=False)
+    live = _render_live(env="pilot", policies=[pilot_policy])
+    cs = compute_diff(repo, "pilot", live)
+    assert not cs.deletes
+    assert any(u.slug == "abc01-adhoc-override" for u in cs.unmanaged)
+
+
+def test_compute_diff_tombstone_flag_auto_deletes_managed_live() -> None:
+    """With tombstone_unassigned_envs, the stale managed object is queued for delete."""
+    policy = _override_only_policy(envs={"ABC01-AdHoc-Test": HostGroupEnv.test}, tombstone=True)
+    repo = _repo_with(policies=[policy])
+    pilot_policy = _override_only_policy(envs={"ABC01-AdHoc-Pilot": HostGroupEnv.pilot}, skip=False)
+    live = _render_live(env="pilot", policies=[pilot_policy])
+    cs = compute_diff(repo, "pilot", live)
+    delete_slugs = {d.slug for d in cs.deletes}
+    assert "abc01-adhoc-override" in delete_slugs
+    # Its synthesised override rule group is auto-deleted too.
+    assert "abc01-adhoc-override-overrides-pilot" in delete_slugs
+    policy_delete = next(d for d in cs.deletes if d.slug == "abc01-adhoc-override")
+    assert policy_delete.reason == "unassigned in env; tombstone_unassigned_envs=true"
+
+
+def test_compute_diff_tombstone_flag_leaves_unmanaged_live_alone() -> None:
+    """An unmanaged live object (no csfwctl signature) is never auto-deleted."""
+    policy = _override_only_policy(envs={"ABC01-AdHoc-Test": HostGroupEnv.test}, tombstone=True)
+    repo = _repo_with(policies=[policy])
+    pilot_policy = _override_only_policy(envs={"ABC01-AdHoc-Pilot": HostGroupEnv.pilot}, skip=False)
+    live = _render_live(env="pilot", policies=[pilot_policy], description_for_managed=False)
+    cs = compute_diff(repo, "pilot", live)
+    assert not any(d.slug == "abc01-adhoc-override" for d in cs.deletes)
+    assert any(u.slug == "abc01-adhoc-override" for u in cs.unmanaged)
+
+
+def test_compute_diff_skip_keeps_other_envs_creating_normally() -> None:
+    """The flag is per-env; the assigned env still gets create+apply."""
+    policy = _override_only_policy(envs={"ABC01-AdHoc-Test": HostGroupEnv.test}, tombstone=True)
+    repo = _repo_with(policies=[policy])
+    # Nothing live in test yet → create expected.
+    cs = compute_diff(repo, "test", LiveState())
+    slugs = {c.slug for c in cs.creates}
+    assert "abc01-adhoc-override" in slugs
+    assert "abc01-adhoc-override-overrides-test" in slugs
