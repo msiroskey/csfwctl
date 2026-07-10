@@ -21,6 +21,7 @@ from csfwctl.differ import (
     build_desired_state,
     compute_all_envs_diff,
     compute_diff,
+    compute_precedence_diff,
     env_suffix,
     is_managed_description,
     project_policy_for_env,
@@ -822,6 +823,57 @@ def test_compute_diff_does_not_report_phantom_rule_groups_slug_change() -> None:
     assert any(c.slug == policy.name for c in cs.no_changes if c.kind == "policy")
 
 
+def test_compute_diff_does_not_report_phantom_priority_change() -> None:
+    """A policy whose YAML sets a non-default ``priority`` bucket must not
+    fire a phantom ``priority: 'default' -> '<bucket>'`` field change.
+
+    Regression: ``policy_from_api`` hardcodes ``priority=default`` on
+    every imported live record because the CrowdStrike firewall-policy
+    API has no per-policy priority field — precedence is converged
+    separately via ``set_precedence``. ``policy_to_api_shape`` likewise
+    omits the field. Comparing ``priority`` as a policy body field
+    therefore surfaced a phantom bucket transition on every apply of
+    e.g. ``Exception-Mac: Monitor Only`` (``priority: high``), obscuring
+    the actual change under review.
+    """
+    from csfwctl.schema import PrecedenceBucket
+
+    policy = Policy(
+        name="asc-exception-mac-monitor-only",
+        display_name="ASC-Exception-Mac-Monitor-Only",
+        platform=Platform.mac,
+        priority=PrecedenceBucket.high,
+        host_groups={"ASC-Exception-Mac-Monitor-Only-Test": HostGroupEnv.test},
+        rule_groups=["asc-mac-endpoints"],
+    )
+    rg = RuleGroup(
+        name="asc-mac-endpoints",
+        platform=Platform.mac,
+        rules=[
+            Rule(
+                name="Allow established inbound",
+                action=Action.allow,
+                direction=Direction.inbound,
+                protocol=Protocol.tcp,
+            ),
+        ],
+    )
+    repo = _repo_with(policies=[policy], rule_groups=[rg])
+    state = _render_live(
+        env="test",
+        policies=[policy],
+        rule_groups=[rg],
+        extra_rule_groups_for_overrides=False,
+    )
+
+    cs = compute_diff(repo, "test", state)
+    policy_updates = [c for c in cs.updates if c.kind == "policy"]
+    assert policy_updates == [], (
+        f"unexpected policy updates (phantom priority diff): {policy_updates}"
+    )
+    assert any(c.slug == policy.name for c in cs.no_changes if c.kind == "policy")
+
+
 # ---- JSON serialization -------------------------------------------------
 
 
@@ -917,6 +969,8 @@ def test_multi_env_diff_to_json_shape() -> None:
     assert len(payload["env_drift_warnings"]) == 2
     assert set(payload["change_sets"].keys()) == {"test", "pilot", "production"}
     assert payload["change_sets"]["test"]["env"] == "test"
+    assert payload["precedence_deltas"] == {}
+    assert payload["precedence_warnings"] == []
 
 
 # ---- unknown env --------------------------------------------------------
@@ -1169,3 +1223,104 @@ def test_compute_diff_skip_keeps_other_envs_creating_normally() -> None:
     slugs = {c.slug for c in cs.creates}
     assert "abc01-adhoc-override" in slugs
     assert "abc01-adhoc-override-overrides-test" in slugs
+
+
+# ---- precedence preview --------------------------------------------------
+
+
+def _mac_policy_with_priority(slug: str, display: str, bucket: Any) -> Policy:
+    """Minimal mac policy assigned to Test — enough for precedence resolution."""
+    from csfwctl.schema import PrecedenceBucket
+
+    return Policy(
+        name=slug,
+        display_name=display,
+        platform=Platform.mac,
+        priority=bucket if isinstance(bucket, PrecedenceBucket) else PrecedenceBucket(bucket),
+        host_groups={f"{display}-Test": HostGroupEnv.test},
+    )
+
+
+def test_compute_precedence_diff_flags_high_bucket_move_up() -> None:
+    """A ``high`` policy sitting below defaults on the tenant surfaces as a move.
+
+    Regression: `Exception-Mac: Monitor Only` (priority high) shipped
+    below its `default`-bucket sibling in the tenant. Applying the
+    resolver's precedence should lift it above; the diff-time preview
+    must surface that transition so the operator knows the ordering
+    call is coming.
+    """
+    from csfwctl.schema import PrecedenceBucket
+
+    endpoints = _mac_policy_with_priority(
+        "asc-mac-endpoints", "Asc-Mac-Endpoints", PrecedenceBucket.default
+    )
+    exception = _mac_policy_with_priority(
+        "asc-exception-mac-monitor-only",
+        "Asc-Exception-Mac-Monitor-Only",
+        PrecedenceBucket.high,
+    )
+    repo = _repo_with(policies=[endpoints, exception])
+    state = _render_live(env="test", policies=[endpoints, exception])
+    # Simulate the tenant returning `default` ahead of `high` in
+    # precedence.asc — that is exactly the pre-apply state.
+    state.precedence_ids_by_platform = {
+        "Mac": [state.policies[0]["id"], state.policies[1]["id"]],
+    }
+
+    deltas, warnings = compute_precedence_diff(repo, state)
+    assert warnings == []
+    assert Platform.mac in deltas
+    delta = deltas[Platform.mac]
+    move_by_slug = {m.slug: m for m in delta.moves}
+    assert set(move_by_slug) == {"asc-exception-mac-monitor-only", "asc-mac-endpoints"}
+    assert move_by_slug["asc-exception-mac-monitor-only"].live_ordinal == 1
+    assert move_by_slug["asc-exception-mac-monitor-only"].resolved_ordinal == 0
+    assert move_by_slug["asc-exception-mac-monitor-only"].delta == -1
+
+
+def test_compute_precedence_diff_skips_platform_without_live_order() -> None:
+    """Platforms whose ``precedence_ids_by_platform`` is empty are skipped.
+
+    Unit tests that hand-build a LiveState do not populate the
+    precedence field; the preview should stay quiet rather than emit
+    'all resolved policies are new' noise.
+    """
+    from csfwctl.schema import PrecedenceBucket
+
+    endpoints = _mac_policy_with_priority(
+        "asc-mac-endpoints", "Asc-Mac-Endpoints", PrecedenceBucket.default
+    )
+    repo = _repo_with(policies=[endpoints])
+    state = _render_live(env="test", policies=[endpoints])
+    assert state.precedence_ids_by_platform == {}
+
+    deltas, warnings = compute_precedence_diff(repo, state)
+    assert deltas == {}
+    assert warnings == []
+
+
+def test_compute_all_envs_diff_populates_precedence_deltas() -> None:
+    """The multi-env aggregate carries the computed precedence deltas."""
+    from csfwctl.schema import PrecedenceBucket
+
+    endpoints = _mac_policy_with_priority(
+        "asc-mac-endpoints", "Asc-Mac-Endpoints", PrecedenceBucket.default
+    )
+    exception = _mac_policy_with_priority(
+        "asc-exception-mac-monitor-only",
+        "Asc-Exception-Mac-Monitor-Only",
+        PrecedenceBucket.high,
+    )
+    repo = _repo_with(policies=[endpoints, exception])
+    state = _render_live(env="test", policies=[endpoints, exception])
+    state.precedence_ids_by_platform = {
+        "Mac": [state.policies[0]["id"], state.policies[1]["id"]],
+    }
+
+    multi = compute_all_envs_diff(repo, state)
+    assert multi.has_precedence_changes is True
+    payload = multi.to_json()
+    assert "mac" in payload["precedence_deltas"]
+    move_slugs = [m["slug"] for m in payload["precedence_deltas"]["mac"]["moves"]]
+    assert "asc-exception-mac-monitor-only" in move_slugs

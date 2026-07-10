@@ -212,6 +212,26 @@ Three bugs surfaced by the per-leaf diff output:
 
 ## Enhancements
 
+- [x] **Precedence-preview section in `csfwctl diff`.** All-envs diff
+      now surfaces the per-platform `set_precedence` moves that an
+      apply will push. `fetch_live_state` adds a `precedence.asc`
+      `query_policies` per platform and threads the ids through the
+      new `LiveState.precedence_ids_by_platform`; the differ's
+      `compute_precedence_diff` maps those ids to family slugs (dedupe
+      by first live appearance so env-clustered instances count once)
+      and produces a `PrecedenceDelta` per platform.
+      `MultiEnvDiff.precedence_deltas` / `precedence_warnings` carry
+      the result; `diff_cmd._render_precedence_deltas` renders a per-
+      platform table listing only the families whose ordinal moves
+      (`Live #`, `New #`, and a signed `Δ`; families new to the tenant
+      show `(new)` in the Live column). JSON output grows
+      `precedence_deltas` / `precedence_warnings` alongside the
+      existing `change_sets`. Single-env diff intentionally skips the
+      section — precedence is cross-env by construction and would
+      repeat across envs. Tests in
+      `tests/unit/test_precedence_resolver.py` (delta computation,
+      dedup, JSON) and `tests/unit/test_diff_cmd.py` (table render,
+      new-family marker, warning surfacing).
 - [x] **Gated live tenant validation.** A real test environment is now
       available for the wire-contract questions mocks can't answer (the
       diff-based `update_rule_group` payload; the `image_name` filepath
@@ -320,6 +340,20 @@ Three bugs surfaced by the per-leaf diff output:
       slug → id lookup via display-name fallback, so this is a
       display-only cleanup. Regression test:
       `tests/unit/test_differ.py::test_compute_diff_does_not_report_phantom_rule_groups_slug_change`.
+- [x] **Phantom `priority: 'default' -> '<bucket>'` field change on a
+      policy whose YAML sets a non-default `PrecedenceBucket`.** The
+      CrowdStrike firewall-policy API record has no priority field —
+      per-platform precedence is converged separately via
+      `set_precedence`. `policy_from_api` hardcodes
+      `priority=PrecedenceBucket.default` on every imported live record
+      and `policy_to_api_shape` never sends the field, so comparing
+      `priority` in the policy body diff always fired a spurious
+      `priority: 'default' -> 'high'` (etc.) on policies like
+      `Exception-Mac: Monitor Only`. Fix: `priority` added to
+      `differ._POLICY_DIFF_EXCLUDE` so `_model_dump` drops it before
+      `_compare_models` runs; precedence changes still surface via the
+      dedicated `csfwctl precedence` output. Regression test:
+      `tests/unit/test_differ.py::test_compute_diff_does_not_report_phantom_priority_change`.
 - [x] **`enforcement_mode` conflated local logging with enforcement and
       lacked a `disabled` mode.** The enum was `enforce | monitor |
       local_logging`, with `monitor` wrongly mapped to `enforce: false`.

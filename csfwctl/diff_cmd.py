@@ -44,6 +44,8 @@ from csfwctl.differ import (
 from csfwctl.falcon.client import FalconAPIError, FalconClient
 from csfwctl.loader import ConfigRepo, ConfigRepoError, load_config_repo
 from csfwctl.notifiers import Notifier, emit, make_event, setup_notifiers
+from csfwctl.precedence_resolver import PrecedenceDelta
+from csfwctl.schema import Platform
 
 ENV_DRIFT_EXIT_CODE = 2
 """Exit code when ``--fail-on-env-drift`` is set and a ripple is detected.
@@ -133,7 +135,7 @@ def _run_all_envs(
     """All-envs diff: one fetch, three passes, combined render + ripple check."""
     multi = compute_all_envs_diff(config, state)
 
-    if multi.has_changes:
+    if multi.has_changes or multi.has_precedence_changes:
         notifiers = setup_notifiers(config.tool_config)
         _emit_all_envs(multi, notifiers)
 
@@ -142,6 +144,7 @@ def _run_all_envs(
         out.print(f"[green]diff: JSON written to {output}[/green]")
 
     _render_multi_env_text(out, multi)
+    _render_precedence_deltas(out, multi.precedence_deltas, multi.precedence_warnings)
 
     if fail_on_env_drift and multi.has_env_drift:
         raise typer.Exit(code=ENV_DRIFT_EXIT_CODE)
@@ -183,6 +186,9 @@ def _emit_all_envs(multi: MultiEnvDiff, notifiers: list[Notifier]) -> None:
     summary = "diff (all envs): " + ", ".join(parts)
     if multi.has_env_drift:
         summary += " — cross-env ripple detected"
+    if multi.has_precedence_changes:
+        move_total = sum(len(delta.moves) for delta in multi.precedence_deltas.values())
+        summary += f" — {move_total} precedence move(s)"
     emit(
         make_event(
             "diff.changes_detected",
@@ -477,6 +483,62 @@ def _shared_column_widths(header: list[str], body: list[list[str]]) -> list[int]
         widest = max(candidates, key=lambda i: widths[i])
         widths[widest] -= 1
     return widths
+
+
+def _render_precedence_deltas(
+    console: Console,
+    deltas: dict[Platform, PrecedenceDelta],
+    warnings: list[str],
+) -> None:
+    """One table per platform whose ``set_precedence`` payload will change.
+
+    Skipped entirely when the resolver could not run (a warning is
+    surfaced instead) and skipped per-platform when the family order
+    already matches live. Rows list only the families whose position is
+    moving; a positional delta of zero would be uninformative.
+    """
+    if warnings:
+        console.print()
+        console.print("[yellow]precedence:[/yellow]")
+        for warning in warnings:
+            console.print(f"  [yellow]{warning}[/yellow]")
+
+    changed = [(platform, delta) for platform, delta in deltas.items() if delta.has_changes]
+    if not changed:
+        return
+
+    for platform, delta in sorted(changed, key=lambda pd: pd[0].value):
+        console.print()
+        table = Table(
+            title=f"precedence changes — {platform.value}",
+            title_justify="left",
+        )
+        table.add_column("Slug")
+        table.add_column("Name")
+        table.add_column("Bucket")
+        table.add_column("Live #", justify="right")
+        table.add_column("New #", justify="right")
+        table.add_column("Δ", justify="right")
+        for move in delta.moves:
+            live_cell = (
+                "[green](new)[/green]" if move.live_ordinal is None else str(move.live_ordinal)
+            )
+            new_cell = str(move.resolved_ordinal)
+            if move.delta is None:
+                delta_cell = "[green]+[/green]"
+            elif move.delta < 0:
+                delta_cell = f"[green]{move.delta}[/green]"
+            else:
+                delta_cell = f"[yellow]+{move.delta}[/yellow]"
+            table.add_row(
+                move.slug,
+                move.name,
+                move.bucket.value,
+                live_cell,
+                new_cell,
+                delta_cell,
+            )
+        console.print(table, crop=False)
 
 
 def _managed_group_row(per_env: dict[str, ObjectChange], envs: tuple[str, ...]) -> list[str] | None:
