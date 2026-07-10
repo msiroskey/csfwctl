@@ -39,6 +39,20 @@ class Policy(BaseModel):
     The applier creates (or updates) a CrowdStrike dynamic host group for
     each env whose FQL is ``hostname:'a' or hostname:'b' …`` and assigns
     that group to the policy. Must not overlap with ``host_groups`` envs.
+
+    ``skip_unassigned_envs`` restricts the policy (and its synthesised
+    ``<slug>-overrides-<env>`` rule group) to environments that carry a
+    host-group binding — an entry in either ``host_groups`` or
+    ``managed_host_groups``. Useful for override-style policies that only
+    apply to a single environment, so the applier does not create empty
+    per-env objects for the environments where the policy is unused.
+
+    ``tombstone_unassigned_envs`` opts the policy into auto-tombstoning:
+    when combined with ``skip_unassigned_envs``, a live managed object
+    for this policy in a now-unassigned env is emitted as a delete
+    (still gated by ``--allow-delete``) instead of being reported as
+    drift. Off by default — the "deletions require an explicit
+    tombstone" invariant otherwise stands.
     """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -57,6 +71,8 @@ class Policy(BaseModel):
     append_rules: bool = False
     settings: PolicySettings | None = None
     managed_host_groups: dict[HostGroupEnv, list[str]] = Field(default_factory=dict)
+    skip_unassigned_envs: bool = False
+    tombstone_unassigned_envs: bool = False
 
     @model_validator(mode="after")
     def _rule_names_unique(self) -> Policy:
@@ -100,6 +116,12 @@ class Policy(BaseModel):
     def _no_self_inheritance(self) -> Policy:
         if self.inherits is not None and self.inherits == self.name:
             raise ValueError(f"policy {self.name!r} cannot inherit from itself")
+        return self
+
+    @model_validator(mode="after")
+    def _tombstone_requires_skip(self) -> Policy:
+        if self.tombstone_unassigned_envs and not self.skip_unassigned_envs:
+            raise ValueError("tombstone_unassigned_envs requires skip_unassigned_envs to be true")
         return self
 
     @model_validator(mode="after")

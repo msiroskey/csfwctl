@@ -80,6 +80,32 @@ def test_policy_rejects_two_host_groups_in_same_env() -> None:
         )
 
 
+def test_policy_skip_unassigned_envs_defaults_off() -> None:
+    p = Policy(name="abc01-endpoints-windows", platform=Platform.windows)
+    assert p.skip_unassigned_envs is False
+    assert p.tombstone_unassigned_envs is False
+
+
+def test_policy_tombstone_requires_skip_flag() -> None:
+    with pytest.raises(ValidationError, match="tombstone_unassigned_envs requires"):
+        Policy(
+            name="abc01",
+            platform=Platform.windows,
+            tombstone_unassigned_envs=True,
+        )
+
+
+def test_policy_tombstone_with_skip_is_valid() -> None:
+    p = Policy(
+        name="abc01",
+        platform=Platform.windows,
+        skip_unassigned_envs=True,
+        tombstone_unassigned_envs=True,
+    )
+    assert p.skip_unassigned_envs is True
+    assert p.tombstone_unassigned_envs is True
+
+
 def test_rule_group_name_must_be_slug() -> None:
     with pytest.raises(ValidationError):
         RuleGroup(name="WindowsBaseline", platform=Platform.windows)

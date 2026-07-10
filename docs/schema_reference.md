@@ -39,6 +39,8 @@ stem (slug). Extra characters are rejected at load time.
 | `inherits`            | slug of parent policy                   | no       | Inherit all unset fields from the named policy. Depth-1 only. See [Policy inheritance](#policy-inheritance). |
 | `append_rule_groups`  | bool                                    | no       | Default `false`. When `true` and `inherits` is set, prepends parent `rule_groups` before child's. |
 | `append_rules`        | bool                                    | no       | Default `false`. When `true` and `inherits` is set, prepends parent inline `rules` before child's. |
+| `skip_unassigned_envs`     | bool | no | Default `false`. When `true`, the policy (and its synthesised `<slug>-overrides-<env>` rule group) is only created for envs that carry a host-group binding — an entry in `host_groups` or `managed_host_groups`. Intended for override-style policies scoped to a single environment. |
+| `tombstone_unassigned_envs` | bool | no | Default `false`. When `true` (requires `skip_unassigned_envs: true`), a live *managed* object for this policy in an env that has since become unassigned is queued for deletion instead of being reported as drift. The `--allow-delete` gate on `apply` still applies. |
 
 Precedence buckets: `emergency` `high` `medium` `default` `low`.
 
@@ -110,6 +112,57 @@ Restrictions:
   same policy (validated at load time).
 - An empty hostname list is allowed in YAML but produces no host group and no
   assignment (equivalent to omitting the env key).
+
+## Restricting a policy to assigned envs (`skip_unassigned_envs`)
+
+Override-style policies often bind to a single environment. By default
+csfwctl creates a per-env CrowdStrike policy object (and, if the policy
+has inline `rules`, a synthesised `<slug>-overrides-<env>` rule group)
+for **every** environment — Test, Pilot, and Production — regardless of
+whether any hosts are assigned in that env.
+
+Setting `skip_unassigned_envs: true` restricts the policy to the envs
+that carry a host-group binding — an entry in either `host_groups` or
+`managed_host_groups` for that env. In envs where the policy is
+unassigned it is omitted from the desired state entirely and the applier
+creates no per-env objects for it.
+
+```yaml
+name: abc01-adhoc-override
+platform: windows
+skip_unassigned_envs: true
+host_groups:
+  ABC01-AdHoc-Test: test
+rules:
+  - name: Allow local ssh
+    action: allow
+    direction: inbound
+    protocol: tcp
+    remote:
+      ports: [22]
+```
+
+The example above produces objects only in the Test environment;
+`csfwctl apply --env pilot` and `--env production` treat the policy as
+non-existent for those envs.
+
+### Auto-tombstoning stale envs (`tombstone_unassigned_envs`)
+
+`skip_unassigned_envs` alone will not remove a policy object that was
+already applied to an env before the flag was flipped or the binding was
+moved. The lingering CrowdStrike object surfaces as **unmanaged** on the
+next diff so an operator has to notice it and either add a tombstone
+entry or restore the binding.
+
+Setting `tombstone_unassigned_envs: true` (which requires
+`skip_unassigned_envs: true`) lets the policy consent to its own
+targeted deletion: a live *managed* object matching the policy in an
+env where the policy is now unassigned is queued for delete instead of
+being reported as drift. The `--allow-delete` gate on `apply` still
+applies; no separate tombstone entry is needed.
+
+Unmanaged live objects (records that predate csfwctl or that were
+created outside it) are never auto-deleted even with the flag on.
 
 ## RuleGroup (`rule_groups/<slug>.yaml`)
 

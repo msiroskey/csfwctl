@@ -8,6 +8,28 @@ Project plan: ./csfwctl-project-plan.md
 Sprint 12: Cross-env diff + richer MR comments — complete.
 Sprint 11: Policy inheritance, policy settings, and managed host groups — complete.
 
+### Policy env-restriction flags (post Sprint 12)
+
+- [x] `Policy.skip_unassigned_envs` (bool, default `false`). Filters
+      out the policy and its synthesised `<slug>-overrides-<env>` rule
+      group in `build_desired_state` for envs where the policy has no
+      entry in `host_groups` or `managed_host_groups`. Aimed at
+      override-style policies scoped to a single environment.
+- [x] `Policy.tombstone_unassigned_envs` (bool, default `false`;
+      requires `skip_unassigned_envs`). When a live *managed* object
+      exists in an env that skip has removed from the desired state,
+      the differ emits a delete (reason
+      `unassigned in env; tombstone_unassigned_envs=true`) instead of
+      reporting it as unmanaged. Unmanaged live records are never
+      auto-deleted. Still gated by `--allow-delete` on apply.
+- [x] `docs/schema_reference.md` — new section
+      "Restricting a policy to assigned envs" plus rows in the Policy
+      field table.
+- [x] Unit tests: schema validators, `build_desired_state` skip
+      behaviour, `compute_diff` auto-tombstone (managed vs unmanaged),
+      flag-off passthrough. `tests/unit/test_differ.py` +
+      `tests/unit/test_schema_policy.py`.
+
 ## Rule schema extension: address family / address type / watch mode (post Sprint 12)
 
 - [x] **`Rule.address_family` (override, infer when omitted).** New optional
