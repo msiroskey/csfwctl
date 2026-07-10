@@ -2095,6 +2095,102 @@ def test_apply_precedence_strips_default_even_if_cs_query_includes_it() -> None:
     assert ids_in_order == [managed_high_id, managed_low_id]
 
 
+def test_apply_precedence_clusters_slug_families_across_envs() -> None:
+    """Bucket ordering must hold *across* envs, not just within the current one.
+
+    Regression: with two Mac policies (Exception=high, Endpoint=default) that
+    exist in Test/Pilot/Production, running ``apply --env test`` used to
+    only reorder the two test-env ids. The pilot/prod ids stayed in their
+    (env-interleaved) live positions, so a high-bucket Exception-Pilot
+    could sit *below* a default-bucket Endpoint-Production. The user's
+    observed order was Exception-Prod, Endpoint-Prod, Exception-Pilot,
+    Endpoint-Pilot, Exception-Test, Endpoint-Test — env-clustered, not
+    bucket-clustered.
+
+    The fix groups every live id by its policy-family slug (across all
+    envs) and emits each family together in the resolver's bucket order.
+    """
+    from csfwctl.schema import PrecedenceBucket
+
+    p_high = _mac_policy(
+        "asc-exception-mac-monitor-only",
+        priority=PrecedenceBucket.high,
+        display_name="Exception-Mac",
+    )
+    p_default = _mac_policy(
+        "asc-mac-endpoints",
+        priority=PrecedenceBucket.default,
+        display_name="Mac-Endpoint",
+    )
+    repo = _repo_with(policies=[p_high, p_default])
+
+    # Build a live state with all 6 instances (2 slug families × 3 envs).
+    state = LiveState()
+    ids: dict[tuple[str, str], str] = {}
+    for env_label, env_suffix in (
+        ("production", "Production"),
+        ("pilot", "Pilot"),
+        ("test", "Test"),
+    ):
+        for family_display, family_key in (
+            ("Exception-Mac", "exception"),
+            ("Mac-Endpoint", "endpoint"),
+        ):
+            pid = f"pol-{family_key}-{env_label}"
+            ids[(family_key, env_label)] = pid
+            state.policies.append(
+                {
+                    "id": pid,
+                    "name": f"{family_display}-{env_suffix}",
+                    "platform_name": "Mac",
+                    "description": _signed_description(env_label, ""),
+                    "enabled": True,
+                    "groups": [],
+                    "settings": {},
+                }
+            )
+    cs = compute_diff(repo, "test", state)
+
+    client = FakeFalconClient()
+    # CS's query returns the current env-clustered order (the bad order).
+    client.policies.platform_policies["Mac"] = [
+        ids[("exception", "production")],
+        ids[("endpoint", "production")],
+        ids[("exception", "pilot")],
+        ids[("endpoint", "pilot")],
+        ids[("exception", "test")],
+        ids[("endpoint", "test")],
+    ]
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(env="test"),
+        safety_options=_safety(),
+    )
+
+    assert len(client.policies.precedence_calls) == 1
+    ids_in_order, platform_name = client.policies.precedence_calls[0]
+    assert platform_name == "Mac"
+
+    exception_positions = [
+        ids_in_order.index(ids[("exception", e)]) for e in ("production", "pilot", "test")
+    ]
+    endpoint_positions = [
+        ids_in_order.index(ids[("endpoint", e)]) for e in ("production", "pilot", "test")
+    ]
+    # Every high-bucket instance lands ahead of every default-bucket instance.
+    assert max(exception_positions) < min(endpoint_positions), (
+        f"expected all Exception-Mac ids ahead of all Mac-Endpoint ids; got {ids_in_order}"
+    )
+    # Env order within a family is preserved from CS's live order
+    # (production, pilot, test in this case) — the applier does not
+    # unilaterally reorder envs within a family.
+    assert exception_positions == sorted(exception_positions)
+    assert endpoint_positions == sorted(endpoint_positions)
+
+
 # ---- structured per-action diff detail -----------------------------------
 
 

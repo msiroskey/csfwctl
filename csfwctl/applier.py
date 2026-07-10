@@ -1022,12 +1022,19 @@ def _apply_precedence(
     ``name == 'platform_default'`` for this platform is stripped before
     we hand the list off.
 
-    Managed policies land in the resolved order; any remaining live id
-    (unmanaged or queued for delete) is appended in its current live
-    order so the payload matches CrowdStrike's expected count. Skips
-    silently when the resulting order already matches live state;
-    dry-run records the intent without calling the API.
+    Ordering is **cross-env**: a single apply queries the whole platform,
+    groups every live id by its policy-family slug, and walks the
+    resolver's bucket-ordered slug list to emit each family's ids
+    together. Without this, applying ``--env test`` would only move the
+    test-env policies to the top and leave pilot/prod interleaved, so a
+    high-bucket policy in prod could still sit below a default-bucket
+    policy in test. Env order within a family is preserved from CS's
+    current live order — the applier does not opine on prod-vs-pilot-vs
+    -test precedence. Unmanaged families ride at the tail, also in
+    their current live order.
     """
+    from csfwctl.exporter import strip_env_suffix, to_slug
+
     try:
         resolved_by_platform = resolve_precedence(repo)
     except PrecedenceError as exc:
@@ -1035,29 +1042,14 @@ def _apply_precedence(
         return
 
     default_ids_by_platform = _platform_default_ids(state)
+    # display_name -> YAML slug so we can map a live record back to the
+    # slug it belongs to even when to_slug(cs_name) doesn't equal the
+    # YAML slug (e.g. YAML ``asc-mac-endpoints`` + display ``ASC-MacEndpoints``).
+    name_to_yaml_slug: dict[str, str] = {}
+    for slug, policy in repo.policies.items():
+        name_to_yaml_slug[policy.display_name or policy.name] = slug
 
     for platform, resolved_list in resolved_by_platform.items():
-        managed_ids: list[str] = []
-        seen_ids: set[str] = set()
-        aborted = False
-        for rp in resolved_list:
-            display_name = f"{rp.name}{options.env_suffix}"
-            entry = _policy_live_lookup(index, rp.slug, display_name)
-            if entry is None:
-                report.warnings.append(
-                    f"precedence: no live id for policy {rp.slug!r} on "
-                    f"{platform.value}; skipping platform reorder"
-                )
-                aborted = True
-                break
-            policy_id = entry[0]
-            if policy_id in seen_ids:
-                continue
-            managed_ids.append(policy_id)
-            seen_ids.add(policy_id)
-        if aborted or not managed_ids:
-            continue
-
         platform_name = _platform_api_name(platform)
         try:
             current_order = client.policies.query(
@@ -1070,29 +1062,65 @@ def _apply_precedence(
             )
             continue
 
-        # Strip any platform-default ids from CS's response. The
-        # precedence-sorted query is documented to omit them, but tenants
-        # in the wild return them anyway and CS then rejects the payload
-        # with ``Did not provide all policies for platform X, expected N
-        # but N+1 provided``. The default is identified by its verbatim
-        # ``name`` on the state record (see :data:`_PLATFORM_DEFAULT_POLICY_NAME`).
+        # Strip any platform-default ids from CS's response. See docstring.
         platform_defaults = default_ids_by_platform.get(platform_name, set())
         if platform_defaults:
             current_order = [pid for pid in current_order if pid not in platform_defaults]
 
-        # Restrict managed ids to those CS still knows about — a policy
-        # queued for delete could otherwise show up in managed_ids without
-        # a matching entry on CS's side, throwing the count off.
-        live_set = set(current_order)
-        managed_present = [pid for pid in managed_ids if pid in live_set]
-        seen_present = set(managed_present)
-        tail = [pid for pid in current_order if pid not in seen_present]
-        desired_order = managed_present + tail
+        # Build id -> slug for every platform id we know about. Prefer the
+        # display-name match (which yields the YAML slug) so cross-env
+        # instances of a family group correctly. Fold in current-env
+        # creates from ``index.policies`` for ids CS knows about but the
+        # pre-apply ``state.policies`` snapshot doesn't.
+        id_to_slug: dict[str, str] = {}
+        for record in state.policies:
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("platform_name", "")) != platform_name:
+                continue
+            pid = str(record.get("id", "") or "")
+            if not pid:
+                continue
+            base, _ = strip_env_suffix(str(record.get("name", "")))
+            id_to_slug[pid] = name_to_yaml_slug.get(base) or to_slug(base)
+        for slug, (pid, _desc) in index.policies.items():
+            if pid and pid not in id_to_slug:
+                id_to_slug[pid] = slug
+
+        # Group live ids by slug, preserving their current relative order
+        # within a family (so env order within a slug is CS's live order —
+        # the applier doesn't unilaterally pick prod-vs-pilot-vs-test).
+        by_slug: dict[str, list[str]] = {}
+        for pid in current_order:
+            slug_for_id = id_to_slug.get(pid)
+            if slug_for_id is None:
+                continue
+            by_slug.setdefault(slug_for_id, []).append(pid)
+
+        # Emit desired_order: managed families first (in bucket order,
+        # each family's env instances clustered), then unmanaged and
+        # unmapped ids in their live order.
+        desired_order: list[str] = []
+        emitted: set[str] = set()
+        managed_count = 0
+        for rp in resolved_list:
+            for pid in by_slug.get(rp.slug, []):
+                if pid in emitted:
+                    continue
+                desired_order.append(pid)
+                emitted.add(pid)
+                managed_count += 1
+        for pid in current_order:
+            if pid in emitted:
+                continue
+            desired_order.append(pid)
+            emitted.add(pid)
+        unmanaged_count = len(desired_order) - managed_count
 
         if desired_order == current_order:
             continue
 
-        detail = f"{platform_name}: {len(managed_present)} managed, {len(tail)} unmanaged"
+        detail = f"{platform_name}: {managed_count} managed, {unmanaged_count} unmanaged"
         action_slug = f"__precedence_{platform.value}__"
         action_display = f"precedence:{platform_name}"
         if options.dry_run:
