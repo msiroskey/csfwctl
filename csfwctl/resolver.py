@@ -17,12 +17,16 @@ Collection merge behaviour:
 - ``rule_groups`` and ``rules`` also default to replace. Set
   ``append_rule_groups: true`` or ``append_rules: true`` on the child to
   prepend parent items before the child's own items instead.
-- ``host_groups`` and ``managed_host_groups`` use replace semantics only.
-  If the materialised policy would have both ``host_groups`` and
-  ``managed_host_groups`` covering the same env (because the child
-  inherited ``host_groups`` from the parent but also declares
-  ``managed_host_groups``), the managed entry takes precedence and the
-  inherited ``host_groups`` entry for that env is silently dropped.
+- ``host_groups`` and ``managed_host_groups`` use replace semantics
+  jointly. If the child sets *either* map, both are treated as
+  child-authoritative — the parent's contribution to whichever map the
+  child left unset is dropped, so an override policy that only sets
+  ``managed_host_groups: {test: [...]}`` does not silently inherit the
+  parent's Pilot / Production ``host_groups`` entries. Only when the
+  child sets neither map are both inherited from the parent unchanged.
+- The overlap check between the two maps still runs at the end as a
+  belt-and-braces guard: any env that ends up in both after inheritance
+  keeps the ``managed_host_groups`` entry and drops ``host_groups``.
 """
 
 from __future__ import annotations
@@ -78,6 +82,21 @@ def resolve_inheritance(policy: Policy, repo: ConfigRepo) -> Policy:
     # Start from the parent's full state.
     base: dict[str, Any] = parent.model_dump(mode="json")
 
+    # When the child explicitly declares any host binding — either
+    # ``host_groups`` or ``managed_host_groups`` — its declaration is
+    # authoritative for both maps. The parent's contribution to whichever
+    # map the child did *not* set is wiped before the child's value is
+    # applied, so an override-style policy that only sets
+    # ``managed_host_groups: {test: [...]}`` doesn't silently inherit the
+    # parent's Pilot / Production ``host_groups`` entries. When the child
+    # sets neither, both maps come from the parent unchanged.
+    child_sets_bindings = (
+        "host_groups" in policy.model_fields_set or "managed_host_groups" in policy.model_fields_set
+    )
+    if child_sets_bindings:
+        base["host_groups"] = {}
+        base["managed_host_groups"] = {}
+
     # Override with every field the child explicitly set in its YAML.
     child_data: dict[str, Any] = policy.model_dump(mode="json")
     for field_name in policy.model_fields_set:
@@ -94,8 +113,11 @@ def resolve_inheritance(policy: Policy, repo: ConfigRepo) -> Policy:
         child_rules = [r.model_dump(mode="json") for r in policy.rules]
         base["rules"] = parent_rules + child_rules
 
-    # If managed_host_groups covers an env that the inherited host_groups
-    # also covers, managed takes precedence — drop the host_groups entry.
+    # Belt-and-braces: if both maps ended up covering the same env
+    # (child set both, or the child inherited both from a parent that
+    # did), managed takes precedence and the host_groups entry for that
+    # env is dropped. The child-side validators reject direct overlap
+    # inside a single policy; this branch only fires on inheritance.
     managed_envs: set[HostGroupEnv] = {
         HostGroupEnv(e) for e, hosts in base.get("managed_host_groups", {}).items() if hosts
     }

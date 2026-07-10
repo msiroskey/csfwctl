@@ -29,6 +29,19 @@ Sprint 11: Policy inheritance, policy settings, and managed host groups — comp
       behaviour, `compute_diff` auto-tombstone (managed vs unmanaged),
       flag-off passthrough. `tests/unit/test_differ.py` +
       `tests/unit/test_schema_policy.py`.
+- [x] **Inheritance leak fix for override policies.** Previously a
+      child that set only ``managed_host_groups: {test: [...]}`` would
+      silently inherit the parent's Pilot / Production ``host_groups``
+      entries — the resolver only dropped inherited ``host_groups`` for
+      envs the child's ``managed_host_groups`` explicitly covered. Now
+      when the child sets *either* map, the parent's contribution to
+      **both** maps is dropped before the child's declaration is applied,
+      so the child's binding scope is authoritative. If the child sets
+      neither, both are inherited from the parent unchanged. Behaviour
+      change documented in `docs/schema_reference.md` §Policy
+      inheritance; regression tests in `tests/unit/test_sprint11.py`
+      cover the four combinations (child sets managed only, host_groups
+      only, both, neither).
 
 ## Rule schema extension: address family / address type / watch mode (post Sprint 12)
 

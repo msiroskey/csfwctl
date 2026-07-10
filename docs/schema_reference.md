@@ -82,10 +82,15 @@ baseline. At materialise time (diff / apply) the resolver produces a flat
   `append_rule_groups: true` to prepend the parent's list before the child's.
 - **`rules`** — replaced by the child's list (default). Set
   `append_rules: true` to prepend the parent's rules before the child's.
-- **`host_groups` / `managed_host_groups`** — always replaced (no append).
-  If the resolved policy would have both `host_groups` and `managed_host_groups`
-  covering the same env, `managed_host_groups` wins and the inherited
-  `host_groups` entry for that env is dropped.
+- **`host_groups` / `managed_host_groups`** — jointly authoritative on
+  the child. If the child sets *either* map, its declaration is the
+  complete binding scope: the parent's contribution to whichever map the
+  child left unset is dropped. Only when the child sets neither are both
+  inherited from the parent. This prevents override-style policies that
+  set only `managed_host_groups: {test: [...]}` from silently picking up
+  the parent's Pilot / Production `host_groups` entries. When both maps
+  still end up covering the same env after the merge, `managed_host_groups`
+  wins and the `host_groups` entry for that env is dropped.
 
 Inheritance is **depth-1 only**: a parent policy must not itself have an
 `inherits` field. The `inheritance-depth` lint rule enforces this statically.
