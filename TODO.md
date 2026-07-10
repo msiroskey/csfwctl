@@ -320,6 +320,20 @@ Three bugs surfaced by the per-leaf diff output:
       slug → id lookup via display-name fallback, so this is a
       display-only cleanup. Regression test:
       `tests/unit/test_differ.py::test_compute_diff_does_not_report_phantom_rule_groups_slug_change`.
+- [x] **Phantom `priority: 'default' -> '<bucket>'` field change on a
+      policy whose YAML sets a non-default `PrecedenceBucket`.** The
+      CrowdStrike firewall-policy API record has no priority field —
+      per-platform precedence is converged separately via
+      `set_precedence`. `policy_from_api` hardcodes
+      `priority=PrecedenceBucket.default` on every imported live record
+      and `policy_to_api_shape` never sends the field, so comparing
+      `priority` in the policy body diff always fired a spurious
+      `priority: 'default' -> 'high'` (etc.) on policies like
+      `Exception-Mac: Monitor Only`. Fix: `priority` added to
+      `differ._POLICY_DIFF_EXCLUDE` so `_model_dump` drops it before
+      `_compare_models` runs; precedence changes still surface via the
+      dedicated `csfwctl precedence` output. Regression test:
+      `tests/unit/test_differ.py::test_compute_diff_does_not_report_phantom_priority_change`.
 - [x] **`enforcement_mode` conflated local logging with enforcement and
       lacked a `disabled` mode.** The enum was `enforce | monitor |
       local_logging`, with `monitor` wrongly mapped to `enforce: false`.

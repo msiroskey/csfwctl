@@ -723,8 +723,13 @@ def _classify_managed(live_record: dict[str, Any]) -> ManagedStatus:
 
 # Fields on Policy that exist only in the config-repo representation and
 # have no counterpart on the live API record — exclude from diff comparison.
+# ``priority`` drives the separate ``set_precedence`` order and is not
+# stored on the per-policy record; the importer hardcodes it to
+# ``default`` so leaving it in the diff would fire a phantom
+# ``priority: 'default' -> '<bucket>'`` change on every policy whose
+# YAML sets a non-default bucket.
 _POLICY_DIFF_EXCLUDE: frozenset[str] = frozenset(
-    {"inherits", "append_rule_groups", "append_rules", "managed_host_groups"}
+    {"inherits", "append_rule_groups", "append_rules", "managed_host_groups", "priority"}
 )
 
 

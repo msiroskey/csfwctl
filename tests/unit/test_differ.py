@@ -822,6 +822,57 @@ def test_compute_diff_does_not_report_phantom_rule_groups_slug_change() -> None:
     assert any(c.slug == policy.name for c in cs.no_changes if c.kind == "policy")
 
 
+def test_compute_diff_does_not_report_phantom_priority_change() -> None:
+    """A policy whose YAML sets a non-default ``priority`` bucket must not
+    fire a phantom ``priority: 'default' -> '<bucket>'`` field change.
+
+    Regression: ``policy_from_api`` hardcodes ``priority=default`` on
+    every imported live record because the CrowdStrike firewall-policy
+    API has no per-policy priority field — precedence is converged
+    separately via ``set_precedence``. ``policy_to_api_shape`` likewise
+    omits the field. Comparing ``priority`` as a policy body field
+    therefore surfaced a phantom bucket transition on every apply of
+    e.g. ``Exception-Mac: Monitor Only`` (``priority: high``), obscuring
+    the actual change under review.
+    """
+    from csfwctl.schema import PrecedenceBucket
+
+    policy = Policy(
+        name="asc-exception-mac-monitor-only",
+        display_name="ASC-Exception-Mac-Monitor-Only",
+        platform=Platform.mac,
+        priority=PrecedenceBucket.high,
+        host_groups={"ASC-Exception-Mac-Monitor-Only-Test": HostGroupEnv.test},
+        rule_groups=["asc-mac-endpoints"],
+    )
+    rg = RuleGroup(
+        name="asc-mac-endpoints",
+        platform=Platform.mac,
+        rules=[
+            Rule(
+                name="Allow established inbound",
+                action=Action.allow,
+                direction=Direction.inbound,
+                protocol=Protocol.tcp,
+            ),
+        ],
+    )
+    repo = _repo_with(policies=[policy], rule_groups=[rg])
+    state = _render_live(
+        env="test",
+        policies=[policy],
+        rule_groups=[rg],
+        extra_rule_groups_for_overrides=False,
+    )
+
+    cs = compute_diff(repo, "test", state)
+    policy_updates = [c for c in cs.updates if c.kind == "policy"]
+    assert policy_updates == [], (
+        f"unexpected policy updates (phantom priority diff): {policy_updates}"
+    )
+    assert any(c.slug == policy.name for c in cs.no_changes if c.kind == "policy")
+
+
 # ---- JSON serialization -------------------------------------------------
 
 
