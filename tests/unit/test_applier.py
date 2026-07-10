@@ -2038,6 +2038,63 @@ def test_apply_precedence_uses_cs_query_over_state_policies() -> None:
     assert "mac-default-id" not in ids_in_order
 
 
+def test_apply_precedence_strips_default_even_if_cs_query_includes_it() -> None:
+    """Belt-and-suspenders: even when CS's precedence-sorted query returns
+    the platform-default id (observed on real tenants despite the docs),
+    the applier strips it via the ``name == 'platform_default'`` marker on
+    the ``state.policies`` record before handing the list to set-precedence.
+
+    Without this defence CS rejects the payload with ``Did not provide all
+    policies for platform X, expected N but N+1 provided``.
+    """
+    from csfwctl.schema import PrecedenceBucket
+
+    p_high = _mac_policy(
+        "asc-exception-mac-monitor-only",
+        priority=PrecedenceBucket.high,
+        display_name="Exception-Mac-Monitor-Only",
+    )
+    p_low = _mac_policy(
+        "asc-mac-endpoints",
+        priority=PrecedenceBucket.default,
+        display_name="Mac-Endpoints",
+    )
+    repo = _repo_with(policies=[p_high, p_low])
+    state = _render_live_state(env="test", policies=[p_low, p_high])
+    # ``list_all()`` returns the default alongside the managed policies.
+    state.policies.append(
+        {
+            "id": "mac-default-id",
+            "name": "platform_default",
+            "platform_name": "Mac",
+            "description": "Platform Default Firewall Policy",
+        }
+    )
+    cs = compute_diff(repo, "test", state)
+    client = FakeFalconClient()
+    managed_low_id = state.policies[0]["id"]
+    managed_high_id = state.policies[1]["id"]
+    # CS's query mistakenly returns the default id too — the applier must
+    # strip it before the set-precedence call.
+    client.policies.platform_policies["Mac"] = [
+        managed_low_id,
+        managed_high_id,
+        "mac-default-id",
+    ]
+    apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    assert len(client.policies.precedence_calls) == 1
+    ids_in_order, _ = client.policies.precedence_calls[0]
+    assert "mac-default-id" not in ids_in_order
+    assert ids_in_order == [managed_high_id, managed_low_id]
+
+
 # ---- structured per-action diff detail -----------------------------------
 
 
