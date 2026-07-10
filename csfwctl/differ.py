@@ -43,10 +43,17 @@ from csfwctl.exporter import (
 )
 from csfwctl.falcon.client import FalconClient
 from csfwctl.loader import ConfigRepo
+from csfwctl.precedence_resolver import (
+    PrecedenceDelta,
+    PrecedenceError,
+    compute_precedence_delta,
+    resolve_precedence,
+)
 from csfwctl.resolver import managed_host_group_cs_name, managed_host_group_fql, resolve_inheritance
 from csfwctl.schema import (
     HostGroupEnv,
     Location,
+    Platform,
     Policy,
     Rule,
     RuleGroup,
@@ -180,6 +187,14 @@ class LiveState:
 
     ``host_groups`` carries all host-group records; the differ uses them
     to detect create/update/no-change for ``managed_host_groups`` entries.
+
+    ``precedence_ids_by_platform`` maps each :class:`Platform` to the
+    tenant's live precedence order for that platform (list of policy
+    ids in ``precedence.asc`` order — highest precedence first). It is
+    optional: an empty dict for a platform makes
+    :func:`compute_precedence_diff` skip precedence-preview output
+    entirely, which is what unit tests want when they hand-build a
+    ``LiveState`` and don't care about ordering.
     """
 
     policies: list[dict[str, Any]] = field(default_factory=list)
@@ -187,6 +202,7 @@ class LiveState:
     locations: list[dict[str, Any]] = field(default_factory=list)
     rules_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
     host_groups: list[dict[str, Any]] = field(default_factory=list)
+    precedence_ids_by_platform: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -441,12 +457,27 @@ def fetch_live_state(client: FalconClient) -> LiveState:
     """Pull every policy, rule group, location, rule, and host group.
 
     Read-only. Used by the ``diff`` and drift-check commands.
+
+    A per-platform ``precedence.asc`` query is issued so the returned
+    :class:`LiveState` carries the tenant's current family-level
+    ordering. Failure to fetch it for a platform is non-fatal — the
+    field stays empty for that platform and the diff simply omits its
+    precedence-preview section.
     """
     policies = client.policies.list_all()
     _enrich_policy_records_with_containers(client, policies)
     rule_groups = client.rule_groups.list_all()
     locations = client.locations.list_all()
     host_groups = client.host_groups.list_all()
+    precedence_ids_by_platform: dict[str, list[str]] = {}
+    for platform_name in ("Windows", "Mac"):
+        try:
+            precedence_ids_by_platform[platform_name] = client.policies.query(
+                filter=f"platform_name:'{platform_name}'",
+                sort="precedence.asc",
+            )
+        except Exception:  # noqa: BLE001 — preview is best-effort
+            precedence_ids_by_platform[platform_name] = []
     rule_ids: list[str] = []
     seen: set[str] = set()
     for rg in rule_groups:
@@ -483,6 +514,7 @@ def fetch_live_state(client: FalconClient) -> LiveState:
         locations=locations,
         rules_by_id=rules_by_id,
         host_groups=host_groups,
+        precedence_ids_by_platform=precedence_ids_by_platform,
     )
 
 
@@ -1293,11 +1325,18 @@ class MultiEnvDiff:
     """
 
     change_sets: dict[str, ChangeSet] = field(default_factory=dict)
+    precedence_deltas: dict[Platform, PrecedenceDelta] = field(default_factory=dict)
+    precedence_warnings: list[str] = field(default_factory=list)
 
     @property
     def has_changes(self) -> bool:
         """``True`` when any environment has at least one queued change."""
         return any(cs.has_changes for cs in self.change_sets.values())
+
+    @property
+    def has_precedence_changes(self) -> bool:
+        """``True`` when any platform's precedence order will move on apply."""
+        return any(delta.has_changes for delta in self.precedence_deltas.values())
 
     @property
     def env_drift_warnings(self) -> list[str]:
@@ -1338,7 +1377,71 @@ class MultiEnvDiff:
             "env_drift": self.has_env_drift,
             "env_drift_warnings": list(self.env_drift_warnings),
             "change_sets": {env: cs.to_json() for env, cs in self.change_sets.items()},
+            "precedence_deltas": {
+                platform.value: delta.to_json()
+                for platform, delta in self.precedence_deltas.items()
+            },
+            "precedence_warnings": list(self.precedence_warnings),
         }
+
+
+_PLATFORM_API_NAME: dict[Platform, str] = {
+    Platform.windows: "Windows",
+    Platform.mac: "Mac",
+}
+
+
+def compute_precedence_diff(
+    repo: ConfigRepo, state: LiveState
+) -> tuple[dict[Platform, PrecedenceDelta], list[str]]:
+    """Per-platform precedence preview: what will move when apply runs.
+
+    Uses the tenant's ``precedence.asc`` order — carried on
+    :attr:`LiveState.precedence_ids_by_platform` — to derive family-level
+    live ordinals via :func:`compute_precedence_delta`. Live ids not
+    covered by the state's ``policies`` list (or whose record lacks a
+    display name) are skipped, so unmanaged residue doesn't renumber
+    the resolved policies.
+
+    Returns ``({}, [warning])`` when
+    :func:`~csfwctl.precedence_resolver.resolve_precedence` fails; the
+    caller surfaces the warning alongside the diff. Platforms whose
+    ``precedence_ids_by_platform`` entry is empty are silently skipped
+    — precedence data is optional for tests, and the diff falls back to
+    the object-level changes for that platform.
+    """
+    try:
+        resolved_by_platform = resolve_precedence(repo)
+    except PrecedenceError as exc:
+        return {}, [f"precedence resolution failed: {exc}"]
+
+    id_to_name: dict[str, str] = {}
+    for record in state.policies:
+        if not isinstance(record, dict):
+            continue
+        pid = str(record.get("id", "") or "")
+        if not pid:
+            continue
+        name = str(record.get("name", "") or "").strip()
+        if not name:
+            continue
+        id_to_name[pid] = name
+
+    deltas: dict[Platform, PrecedenceDelta] = {}
+    for platform, resolved in resolved_by_platform.items():
+        platform_name = _PLATFORM_API_NAME[platform]
+        live_ids = state.precedence_ids_by_platform.get(platform_name)
+        if not live_ids:
+            continue
+        live_family_slugs: list[str] = []
+        for pid in live_ids:
+            live_name = id_to_name.get(str(pid))
+            if not live_name:
+                continue
+            base, _ = strip_env_suffix(live_name)
+            live_family_slugs.append(to_slug(base))
+        deltas[platform] = compute_precedence_delta(resolved, live_family_slugs)
+    return deltas, []
 
 
 def compute_all_envs_diff(repo: ConfigRepo, state: LiveState) -> MultiEnvDiff:
@@ -1347,9 +1450,15 @@ def compute_all_envs_diff(repo: ConfigRepo, state: LiveState) -> MultiEnvDiff:
     Calls :func:`compute_diff` once per env in :data:`ENV_ORDER`, reusing
     the single ``state`` snapshot (the live fetch is env-agnostic, so no
     extra API calls are needed). Returns a :class:`MultiEnvDiff` carrying
-    the cross-env ripple warnings.
+    the cross-env ripple warnings and a per-platform precedence preview.
     """
-    return MultiEnvDiff(change_sets={env: compute_diff(repo, env, state) for env in ENV_ORDER})
+    change_sets = {env: compute_diff(repo, env, state) for env in ENV_ORDER}
+    precedence_deltas, precedence_warnings = compute_precedence_diff(repo, state)
+    return MultiEnvDiff(
+        change_sets=change_sets,
+        precedence_deltas=precedence_deltas,
+        precedence_warnings=precedence_warnings,
+    )
 
 
 __all__ = [
@@ -1371,6 +1480,7 @@ __all__ = [
     "build_desired_state",
     "compute_all_envs_diff",
     "compute_diff",
+    "compute_precedence_diff",
     "env_suffix",
     "env_to_host_group_env",
     "expand_field_change",

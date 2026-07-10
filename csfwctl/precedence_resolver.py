@@ -93,6 +93,62 @@ class PrecedenceComparison:
         }
 
 
+@dataclass(frozen=True)
+class PrecedenceMove:
+    """One policy family whose position will change under apply.
+
+    ``live_ordinal`` is ``None`` when the family has no live counterpart
+    yet — a create that will slot in at ``resolved_ordinal``. ``delta``
+    is the signed positional shift (negative = higher precedence, i.e.
+    moved up the list). It is ``None`` on a create.
+    """
+
+    slug: str
+    name: str
+    bucket: PrecedenceBucket
+    live_ordinal: int | None
+    resolved_ordinal: int
+
+    @property
+    def delta(self) -> int | None:
+        if self.live_ordinal is None:
+            return None
+        return self.resolved_ordinal - self.live_ordinal
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "name": self.name,
+            "bucket": self.bucket.value,
+            "live_ordinal": self.live_ordinal,
+            "resolved_ordinal": self.resolved_ordinal,
+            "delta": self.delta,
+        }
+
+
+@dataclass(frozen=True)
+class PrecedenceDelta:
+    """Per-platform preview of the precedence changes an apply will push.
+
+    ``moves`` lists only families whose position changed (including
+    families new to the tenant). ``has_changes`` is ``True`` when any
+    move is queued.
+    """
+
+    platform: Platform
+    moves: list[PrecedenceMove]
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.moves)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "platform": self.platform.value,
+            "moves": [m.to_json() for m in self.moves],
+        }
+
+
 # ---- core resolution ------------------------------------------------------
 
 
@@ -230,12 +286,69 @@ def _live_slugs(records: list[dict[str, Any]], *, env: str | None) -> list[str]:
     return out
 
 
+def compute_precedence_delta(
+    resolved: list[ResolvedPolicy], live_family_slugs: list[str]
+) -> PrecedenceDelta:
+    """Preview which policy families will move when precedence is applied.
+
+    ``live_family_slugs`` is the platform's live precedence order at the
+    family level: each policy-family slug appears at most once, with the
+    slug's position taken from its first (highest-precedence) live
+    instance. The applier clusters a family's env instances together
+    when it writes ``set_precedence``, so family-level ordinals are the
+    right unit for a preview — per-env instances always ride with their
+    family.
+
+    Families the tenant does not know yet (``live_ordinal is None``) are
+    surfaced as moves too so the operator sees where a new policy will
+    slot in. Only families whose position changes appear in
+    :attr:`PrecedenceDelta.moves`; identity rows are omitted.
+    """
+    if not resolved:
+        return PrecedenceDelta(platform=Platform.windows, moves=[])
+    platform = resolved[0].platform
+    resolved_slugs = {rp.slug for rp in resolved}
+    live_ordinals: dict[str, int] = {}
+    seen: set[str] = set()
+    ordinal = 0
+    for slug in live_family_slugs:
+        if slug in seen:
+            continue
+        seen.add(slug)
+        # Only count live entries that map to a resolved policy — a
+        # live-only family shouldn't renumber the resolved policies'
+        # live_ordinal (which is otherwise ambiguous vs. what we would
+        # push).
+        if slug not in resolved_slugs:
+            continue
+        live_ordinals[slug] = ordinal
+        ordinal += 1
+    moves: list[PrecedenceMove] = []
+    for rp in resolved:
+        live_ordinal = live_ordinals.get(rp.slug)
+        if live_ordinal == rp.ordinal:
+            continue
+        moves.append(
+            PrecedenceMove(
+                slug=rp.slug,
+                name=rp.name,
+                bucket=rp.bucket,
+                live_ordinal=live_ordinal,
+                resolved_ordinal=rp.ordinal,
+            )
+        )
+    return PrecedenceDelta(platform=platform, moves=moves)
+
+
 __all__ = [
     "BUCKET_ORDER",
     "BUCKET_RANK",
     "PrecedenceComparison",
+    "PrecedenceDelta",
     "PrecedenceError",
+    "PrecedenceMove",
     "ResolvedPolicy",
     "compare_to_live",
+    "compute_precedence_delta",
     "resolve_precedence",
 ]

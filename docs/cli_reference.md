@@ -143,8 +143,16 @@ What it produces (all envs):
 - A `⚠ cross-env ripple detected` callout listing each downstream env
   whose pending-change count exceeds test's, followed by per-env detail
   logs.
+- A per-platform `precedence changes — {platform}` table below the
+  matrices when the resolved bucket order would move any family. Each
+  row shows the family slug, TitleCase name, priority bucket, live
+  ordinal, resolved ordinal, and Δ. Families new to the tenant render
+  `(new)` in the Live column; the delta is a signed shift (negative =
+  moved higher). Platforms whose order already matches produce no
+  table.
 - A multi-env JSON document to ``--output PATH`` (keys: `summary`,
-  `env_drift`, `env_drift_warnings`, `change_sets`).
+  `env_drift`, `env_drift_warnings`, `change_sets`, `precedence_deltas`,
+  `precedence_warnings`).
 
 ### Cross-env ripple warning
 

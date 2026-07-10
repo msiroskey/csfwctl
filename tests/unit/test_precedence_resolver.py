@@ -18,8 +18,11 @@ from csfwctl.precedence_resolver import (
     BUCKET_ORDER,
     BUCKET_RANK,
     PrecedenceComparison,
+    PrecedenceDelta,
     PrecedenceError,
+    PrecedenceMove,
     compare_to_live,
+    compute_precedence_delta,
     resolve_precedence,
 )
 from csfwctl.schema import (
@@ -337,3 +340,146 @@ def test_comparison_json_includes_all_fields() -> None:
     assert payload["resolved"] == ["alpha"]
     assert payload["live"] == ["alpha"]
     assert payload["matches"] is True
+
+
+# ---- precedence delta ----------------------------------------------------
+
+
+def test_compute_precedence_delta_flags_moved_family_only() -> None:
+    """Only families whose position changes surface as moves.
+
+    A ``high``-bucket family that lives at position 2 in the tenant but
+    resolves to position 0 is a move (delta = -2). Every other family
+    stays put and must be omitted.
+    """
+    repo = _repo(
+        policies={
+            "alpha": _policy(name="Alpha", bucket=PrecedenceBucket.default),
+            "beta": _policy(name="Beta", bucket=PrecedenceBucket.default),
+            "exception-mac": _policy(name="Exception-Mac", bucket=PrecedenceBucket.high),
+        }
+    )
+    resolved = resolve_precedence(repo)[Platform.windows]
+    live_family_slugs = ["alpha", "beta", "exception-mac"]
+    delta = compute_precedence_delta(resolved, live_family_slugs)
+
+    assert isinstance(delta, PrecedenceDelta)
+    assert delta.platform is Platform.windows
+    assert delta.has_changes is True
+    assert [m.slug for m in delta.moves] == ["exception-mac", "alpha", "beta"]
+    move_by_slug = {m.slug: m for m in delta.moves}
+    assert move_by_slug["exception-mac"].live_ordinal == 2
+    assert move_by_slug["exception-mac"].resolved_ordinal == 0
+    assert move_by_slug["exception-mac"].delta == -2
+    assert move_by_slug["alpha"].live_ordinal == 0
+    assert move_by_slug["alpha"].resolved_ordinal == 1
+    assert move_by_slug["alpha"].delta == 1
+
+
+def test_compute_precedence_delta_treats_new_family_as_null_live() -> None:
+    """A family with no live counterpart is a create-shaped move.
+
+    ``live_ordinal`` is ``None`` and ``delta`` is ``None`` — the render
+    layer distinguishes creates from repositioned families that way.
+    """
+    repo = _repo(
+        policies={
+            "alpha": _policy(name="Alpha"),
+            "beta": _policy(name="Beta"),
+        }
+    )
+    resolved = resolve_precedence(repo)[Platform.windows]
+    # Only Alpha exists on the tenant.
+    delta = compute_precedence_delta(resolved, ["alpha"])
+
+    assert [m.slug for m in delta.moves] == ["beta"]
+    move = delta.moves[0]
+    assert move.live_ordinal is None
+    assert move.resolved_ordinal == 1
+    assert move.delta is None
+
+
+def test_compute_precedence_delta_empty_when_orders_match() -> None:
+    """No moves ⇒ ``has_changes`` False and ``moves`` empty."""
+    repo = _repo(
+        policies={
+            "alpha": _policy(name="Alpha"),
+            "beta": _policy(name="Beta"),
+        }
+    )
+    resolved = resolve_precedence(repo)[Platform.windows]
+    delta = compute_precedence_delta(resolved, ["alpha", "beta"])
+    assert delta.moves == []
+    assert delta.has_changes is False
+
+
+def test_compute_precedence_delta_dedupes_env_instances_by_slug() -> None:
+    """Family-level ordinals: each slug's first live appearance wins.
+
+    The tenant returns three env instances per family clustered
+    together (``asc-mac-endpoints-Test``, ``…-Pilot``, ``…-Production``).
+    Family precedence should read those as one entry each — the second
+    and third env instances would otherwise push ``exception-mac`` from
+    live position 1 to live position 3.
+    """
+    repo = _repo(
+        policies={
+            "asc-mac-endpoints": _policy(name="Asc-Mac-Endpoints"),
+            "exception-mac": _policy(name="Exception-Mac", bucket=PrecedenceBucket.high),
+        }
+    )
+    resolved = resolve_precedence(repo)[Platform.windows]
+    live_family_slugs = [
+        "asc-mac-endpoints",
+        "asc-mac-endpoints",
+        "asc-mac-endpoints",
+        "exception-mac",
+        "exception-mac",
+        "exception-mac",
+    ]
+    delta = compute_precedence_delta(resolved, live_family_slugs)
+    # exception-mac at family position 1 → resolves to 0 (delta -1).
+    move_by_slug = {m.slug: m for m in delta.moves}
+    assert move_by_slug["exception-mac"].live_ordinal == 1
+    assert move_by_slug["exception-mac"].resolved_ordinal == 0
+    assert move_by_slug["exception-mac"].delta == -1
+
+
+def test_precedence_move_json_serialisation() -> None:
+    """Move JSON exposes slug/name/bucket/live_ordinal/resolved_ordinal/delta."""
+    move = PrecedenceMove(
+        slug="exception-mac",
+        name="Exception-Mac",
+        bucket=PrecedenceBucket.high,
+        live_ordinal=2,
+        resolved_ordinal=0,
+    )
+    assert move.to_json() == {
+        "slug": "exception-mac",
+        "name": "Exception-Mac",
+        "bucket": "high",
+        "live_ordinal": 2,
+        "resolved_ordinal": 0,
+        "delta": -2,
+    }
+
+
+def test_precedence_delta_json_carries_platform_and_moves() -> None:
+    """Delta JSON round-trips the platform value and every move entry."""
+    delta = PrecedenceDelta(
+        platform=Platform.mac,
+        moves=[
+            PrecedenceMove(
+                slug="exception-mac",
+                name="Exception-Mac",
+                bucket=PrecedenceBucket.high,
+                live_ordinal=None,
+                resolved_ordinal=0,
+            ),
+        ],
+    )
+    payload = delta.to_json()
+    assert payload["platform"] == "mac"
+    assert len(payload["moves"]) == 1
+    assert payload["moves"][0]["slug"] == "exception-mac"
+    assert payload["moves"][0]["delta"] is None

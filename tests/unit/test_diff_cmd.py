@@ -617,7 +617,7 @@ def test_render_change_prints_managed_group_line() -> None:
         desired_fql="hostname:'machine-a'",
     )
     buf = io.StringIO()
-    diff_cmd._render_change(Console(file=buf, force_terminal=False), change)
+    diff_cmd._render_change(Console(file=buf, force_terminal=False, width=200), change)
     rendered = buf.getvalue()
     assert "managed-group:create" in rendered
     assert "ABC-Endpoints-Managed-Test" in rendered
@@ -641,7 +641,7 @@ def test_render_change_skips_no_change_managed_group() -> None:
         desired_fql="hostname:'machine-a'",
     )
     buf = io.StringIO()
-    diff_cmd._render_change(Console(file=buf, force_terminal=False), change)
+    diff_cmd._render_change(Console(file=buf, force_terminal=False, width=200), change)
     assert "managed-group:" not in buf.getvalue()
 
 
@@ -678,7 +678,7 @@ def test_matrix_row_emitted_for_managed_group_update() -> None:
         }
     )
     buf = io.StringIO()
-    diff_cmd._render_env_matrix_tables(Console(file=buf, force_terminal=False), multi)
+    diff_cmd._render_env_matrix_tables(Console(file=buf, force_terminal=False, width=200), multi)
     rendered = buf.getvalue()
     assert "managed-host-group" in rendered
     # The update cell should render before -> after (Rich strips quoting
@@ -715,5 +715,109 @@ def test_matrix_row_absent_when_no_actionable_managed_group() -> None:
         }
     )
     buf = io.StringIO()
-    diff_cmd._render_env_matrix_tables(Console(file=buf, force_terminal=False), multi)
+    diff_cmd._render_env_matrix_tables(Console(file=buf, force_terminal=False, width=200), multi)
     assert "managed-host-group" not in buf.getvalue()
+
+
+# ---- precedence-preview table --------------------------------------------
+
+
+def test_precedence_table_renders_only_when_moves_present() -> None:
+    """Empty delta ⇒ nothing rendered; delta with moves ⇒ per-platform table."""
+    import io
+
+    from rich.console import Console
+
+    from csfwctl import diff_cmd
+    from csfwctl.precedence_resolver import PrecedenceDelta, PrecedenceMove
+    from csfwctl.schema import Platform, PrecedenceBucket
+
+    buf = io.StringIO()
+    diff_cmd._render_precedence_deltas(
+        Console(file=buf, force_terminal=False, width=200),
+        deltas={Platform.mac: PrecedenceDelta(platform=Platform.mac, moves=[])},
+        warnings=[],
+    )
+    assert "precedence changes" not in buf.getvalue()
+
+    buf = io.StringIO()
+    diff_cmd._render_precedence_deltas(
+        Console(file=buf, force_terminal=False, width=200),
+        deltas={
+            Platform.mac: PrecedenceDelta(
+                platform=Platform.mac,
+                moves=[
+                    PrecedenceMove(
+                        slug="asc-exception-mac-monitor-only",
+                        name="Exception-Mac",
+                        bucket=PrecedenceBucket.high,
+                        live_ordinal=2,
+                        resolved_ordinal=0,
+                    ),
+                ],
+            )
+        },
+        warnings=[],
+    )
+    output = buf.getvalue()
+    assert "precedence changes — mac" in output
+    assert "asc-exception-mac-monitor-only" in output
+    assert "Exception-Mac" in output
+    # Live column shows the previous ordinal; New column the resolved.
+    assert " 2 " in output
+    assert " 0 " in output
+    # Delta of -2 is displayed literally in the Δ column.
+    assert "-2" in output
+
+
+def test_precedence_table_marks_new_family_as_create() -> None:
+    """A move with ``live_ordinal=None`` renders as ``(new)`` in the Live column."""
+    import io
+
+    from rich.console import Console
+
+    from csfwctl import diff_cmd
+    from csfwctl.precedence_resolver import PrecedenceDelta, PrecedenceMove
+    from csfwctl.schema import Platform, PrecedenceBucket
+
+    buf = io.StringIO()
+    diff_cmd._render_precedence_deltas(
+        Console(file=buf, force_terminal=False, width=200),
+        deltas={
+            Platform.windows: PrecedenceDelta(
+                platform=Platform.windows,
+                moves=[
+                    PrecedenceMove(
+                        slug="brand-new",
+                        name="Brand-New",
+                        bucket=PrecedenceBucket.default,
+                        live_ordinal=None,
+                        resolved_ordinal=3,
+                    ),
+                ],
+            )
+        },
+        warnings=[],
+    )
+    output = buf.getvalue()
+    assert "(new)" in output
+    assert "brand-new" in output
+
+
+def test_precedence_warnings_surface_before_table() -> None:
+    """Resolver failures render as a warning line even when deltas is empty."""
+    import io
+
+    from rich.console import Console
+
+    from csfwctl import diff_cmd
+
+    buf = io.StringIO()
+    diff_cmd._render_precedence_deltas(
+        Console(file=buf, force_terminal=False, width=200),
+        deltas={},
+        warnings=["precedence resolution failed: cycle A→B and B→A"],
+    )
+    output = buf.getvalue()
+    assert "precedence" in output
+    assert "cycle A→B" in output

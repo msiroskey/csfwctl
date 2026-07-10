@@ -212,6 +212,26 @@ Three bugs surfaced by the per-leaf diff output:
 
 ## Enhancements
 
+- [x] **Precedence-preview section in `csfwctl diff`.** All-envs diff
+      now surfaces the per-platform `set_precedence` moves that an
+      apply will push. `fetch_live_state` adds a `precedence.asc`
+      `query_policies` per platform and threads the ids through the
+      new `LiveState.precedence_ids_by_platform`; the differ's
+      `compute_precedence_diff` maps those ids to family slugs (dedupe
+      by first live appearance so env-clustered instances count once)
+      and produces a `PrecedenceDelta` per platform.
+      `MultiEnvDiff.precedence_deltas` / `precedence_warnings` carry
+      the result; `diff_cmd._render_precedence_deltas` renders a per-
+      platform table listing only the families whose ordinal moves
+      (`Live #`, `New #`, and a signed `Δ`; families new to the tenant
+      show `(new)` in the Live column). JSON output grows
+      `precedence_deltas` / `precedence_warnings` alongside the
+      existing `change_sets`. Single-env diff intentionally skips the
+      section — precedence is cross-env by construction and would
+      repeat across envs. Tests in
+      `tests/unit/test_precedence_resolver.py` (delta computation,
+      dedup, JSON) and `tests/unit/test_diff_cmd.py` (table render,
+      new-family marker, warning surfacing).
 - [x] **Gated live tenant validation.** A real test environment is now
       available for the wire-contract questions mocks can't answer (the
       diff-based `update_rule_group` payload; the `image_name` filepath
