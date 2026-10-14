@@ -107,7 +107,8 @@ managed_host_groups:
 ```
 
 Each entry creates or updates a **dynamic** CrowdStrike host group with an FQL
-filter `hostname:'machine-a' or hostname:'machine-b'`. The group is
+filter `hostname:['machine-a','machine-b']` (a single hostname uses
+`hostname:'machine-a'`). The group is
 automatically named `{display_name or name.title()}-Managed-{Env}` (e.g.
 `ABC01-Endpoints-Managed-Test`).
 

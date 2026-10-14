@@ -667,7 +667,7 @@ def test_matrix_row_emitted_for_managed_group_update() -> None:
             "ABC-Endpoints",
             "update",
             live_fql="hostname:'a'",
-            desired_fql="hostname:'a' or hostname:'b'",
+            desired_fql="hostname:['a','b']",
         )
     )
     multi = MultiEnvDiff(
@@ -684,7 +684,7 @@ def test_matrix_row_emitted_for_managed_group_update() -> None:
     # The update cell should render before -> after (Rich strips quoting
     # syntax details, but the two FQL literals must both survive).
     assert "hostname:'a'" in rendered
-    assert "hostname:'b'" in rendered
+    assert "hostname:['a','b']" in rendered
 
 
 def test_matrix_row_absent_when_no_actionable_managed_group() -> None:

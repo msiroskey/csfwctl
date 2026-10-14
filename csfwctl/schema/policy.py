@@ -37,7 +37,7 @@ class Policy(BaseModel):
 
     ``managed_host_groups`` maps each environment to a list of hostnames.
     The applier creates (or updates) a CrowdStrike dynamic host group for
-    each env whose FQL is ``hostname:'a' or hostname:'b' …`` and assigns
+    each env whose FQL is ``hostname:['a','b',…]`` and assigns
     that group to the policy. Must not overlap with ``host_groups`` envs.
 
     ``skip_unassigned_envs`` restricts the policy (and its synthesised
