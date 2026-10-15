@@ -1068,6 +1068,13 @@ Three bugs surfaced by the per-leaf diff output:
 
 ## Bug fixes applied post-v1
 
+- [x] **Bug 6 — managed hostnames showed as unmatched entries**: Static
+      group hostname matching is case-sensitive and Falcon reports
+      hostnames in all caps, so lowercase YAML entries never matched a
+      host. `managed_host_group_fql` now uppercases (and de-duplicates)
+      hostnames on every platform; the differ compares parsed live vs
+      desired rules, so existing lowercase groups diff as an update and
+      are rewritten in uppercase.
 - [x] **Bug 5 — managed host groups were dynamic, not static**: The
       list-form rule from Bug 4 was accepted by the API, but the Falcon
       console flagged the group "Assignment rule unsupported by Falcon

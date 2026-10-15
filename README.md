@@ -372,8 +372,9 @@ rule_groups:
   - windows-baseline
 ```
 
-The group's assignment rule lists the hostnames
-(`device_id:[''],hostname:['lab-ws-001','lab-ws-002']`). When the
+The group's assignment rule lists the hostnames, uppercased to match
+how Falcon records them
+(`device_id:[''],hostname:['LAB-WS-001','LAB-WS-002']`). When the
 hostname list changes, csfwctl updates the rule on the next apply.
 Managed groups created as dynamic by earlier csfwctl versions are swapped
 for static ones on the next apply. The old group is renamed to

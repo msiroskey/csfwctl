@@ -55,17 +55,23 @@ def managed_host_group_cs_name(policy: Policy, env: str) -> str:
 def managed_host_group_fql(hostnames: list[str]) -> str:
     """Generate the static host group assignment rule for a list of hostnames.
 
-    Produces ``device_id:[''],hostname:['a','b',…]`` — the shape
+    Produces ``device_id:[''],hostname:['A','B',…]`` — the shape
     CrowdStrike's own Terraform provider uses for a static group
     populated by hostname. A dynamic-group FQL filter for a fixed host
     list is accepted by the API, but the console flags it "Assignment
-    rule unsupported by Falcon Console UI". An empty list returns an
-    empty string (the caller must guard against creating a group with
-    no members).
+    rule unsupported by Falcon Console UI".
+
+    Hostnames are uppercased (and de-duplicated, keeping first-seen
+    order): static-group hostname matching is case-sensitive and Falcon
+    reports hostnames in all caps, so ``lab-ws-001`` in YAML would
+    otherwise show up in the console as an unmatched entry. An empty
+    list returns an empty string (the caller must guard against
+    creating a group with no members).
     """
     if not hostnames:
         return ""
-    return "device_id:[''],hostname:[" + ",".join(f"'{h}'" for h in hostnames) + "]"
+    normalised = dict.fromkeys(h.upper() for h in hostnames)
+    return "device_id:[''],hostname:[" + ",".join(f"'{h}'" for h in normalised) + "]"
 
 
 _HOSTNAME_LIST_RE = re.compile(r"hostname:\[(.*?)\]", re.IGNORECASE)
