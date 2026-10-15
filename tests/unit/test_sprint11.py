@@ -187,7 +187,9 @@ def test_managed_host_group_fql_single() -> None:
 
 def test_managed_host_group_fql_multiple() -> None:
     fql = managed_host_group_fql(["host-a", "host-b", "host-c"])
-    assert fql == "hostname:'host-a' or hostname:'host-b' or hostname:'host-c'"
+    assert fql == "hostname:['host-a','host-b','host-c']"
+    # FQL has no ``or`` keyword; CrowdStrike 400s on it.
+    assert " or " not in fql
 
 
 def test_managed_host_group_fql_empty() -> None:

@@ -54,11 +54,19 @@ def managed_host_group_cs_name(policy: Policy, env: str) -> str:
 def managed_host_group_fql(hostnames: list[str]) -> str:
     """Generate an FQL filter string for a list of hostnames.
 
-    Produces ``hostname:'a' or hostname:'b' …``.  An empty list returns
-    an empty string (the caller must guard against creating a group with
-    no filter).
+    A single hostname produces ``hostname:'a'``; two or more produce the
+    FQL match-any list ``hostname:['a','b',…]``. FQL has no ``or``
+    keyword (OR is ``,``) and CrowdStrike rejects a rule containing one
+    with HTTP 400 "Invalid value specified for 'assignment_rule'". The
+    single-host form is kept as-is so existing one-host groups don't
+    churn. An empty list returns an empty string (the caller must guard
+    against creating a group with no filter).
     """
-    return " or ".join(f"hostname:'{h}'" for h in hostnames)
+    if not hostnames:
+        return ""
+    if len(hostnames) == 1:
+        return f"hostname:'{hostnames[0]}'"
+    return "hostname:[" + ",".join(f"'{h}'" for h in hostnames) + "]"
 
 
 def resolve_inheritance(policy: Policy, repo: ConfigRepo) -> Policy:

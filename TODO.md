@@ -1068,6 +1068,15 @@ Three bugs surfaced by the per-leaf diff output:
 
 ## Bug fixes applied post-v1
 
+- [x] **Bug 4 — managed host group FQL rejected with HTTP 400**: Adding a
+      second hostname to a `managed_host_groups` env failed with
+      `Invalid value specified for 'assignment_rule'`.
+      `managed_host_group_fql` joined terms with ` or `, which is not FQL
+      (OR is `,`). Two or more hostnames now render as the match-any list
+      `hostname:['a','b']`; a single hostname keeps `hostname:'a'` so
+      existing one-host groups don't churn. Pending real-tenant
+      confirmation: if CrowdStrike normalises the rule on readback, the
+      differ's exact-string compare will show a perpetual update.
 - [x] **Bug 3 — zero rule-group imports from real tenant**: Three root
       causes fixed together:
       - `query_rule_groups` default limit is 10; `RuleGroupsAPI.query` now

@@ -372,8 +372,7 @@ rule_groups:
   - windows-baseline
 ```
 
-The group uses an FQL filter (`hostname:'lab-ws-001' or
-hostname:'lab-ws-002'`). When the hostname list changes csfwctl updates
+The group uses an FQL filter (`hostname:['lab-ws-001','lab-ws-002']`). When the hostname list changes csfwctl updates
 the filter on the next apply; when a hostname is added or removed the
 group membership updates automatically via CrowdStrike's dynamic group
 evaluation.
