@@ -49,7 +49,12 @@ from csfwctl.precedence_resolver import (
     compute_precedence_delta,
     resolve_precedence,
 )
-from csfwctl.resolver import managed_host_group_cs_name, managed_host_group_fql, resolve_inheritance
+from csfwctl.resolver import (
+    managed_host_group_cs_name,
+    managed_host_group_fql,
+    managed_host_group_hostnames,
+    resolve_inheritance,
+)
 from csfwctl.schema import (
     HostGroupEnv,
     Location,
@@ -119,14 +124,21 @@ class HostGroupChange:
 
 @dataclass(frozen=True)
 class ManagedGroupChange:
-    """Create/update/no-change for a csfwctl-managed dynamic host group.
+    """Create/update/replace/no-change for a csfwctl-managed host group.
 
     Emitted for each env where a policy defines ``managed_host_groups``.
-    The applier uses this to create or update the dynamic CrowdStrike
+    The applier uses this to create or update the static CrowdStrike
     group before assigning it to the policy.
+
+    ``replace`` marks a live group with the canonical name that is not
+    static (earlier csfwctl versions created dynamic groups). A group's
+    type cannot be changed in place, so the applier renames the old
+    group to :func:`retired_managed_group_name`, creates the static
+    group under the canonical name, attaches it, and only then detaches
+    the old one. csfwctl never deletes the retired group.
     """
 
-    op: str  # "create" | "update" | "no-change"
+    op: str  # "create" | "update" | "replace" | "no-change"
     group_name: str
     env: HostGroupEnv
     desired_fql: str
@@ -820,17 +832,26 @@ def _host_group_changes(desired: Policy, live: Policy, env: str) -> list[HostGro
     return out
 
 
+def retired_managed_group_name(group_name: str) -> str:
+    """Name a replaced (legacy dynamic) managed host group is renamed to."""
+    return f"{group_name}-Retired"
+
+
 def _managed_group_changes(
     policy: Policy,
     env: str,
     live_host_groups_by_name: dict[str, dict[str, Any]],
 ) -> list[ManagedGroupChange]:
-    """Create/update/no-change operations for managed dynamic host groups.
+    """Create/update/replace/no-change operations for managed host groups.
 
     ``policy`` should be the *raw* (pre-projection) materialised policy
     so that ``managed_host_groups`` is still accessible.
     ``live_host_groups_by_name`` maps CrowdStrike group display name to
     its raw API record (keyed from :attr:`LiveState.host_groups`).
+
+    Membership is compared as a hostname set parsed from the live
+    ``assignment_rule``, so whitespace or ordering the API introduces on
+    readback does not show up as a perpetual update.
     """
     hg_env = env_to_host_group_env(env)
     hostnames = policy.managed_host_groups.get(hg_env)
@@ -849,19 +870,16 @@ def _managed_group_changes(
             )
         ]
     live_fql = str(live_record.get("assignment_rule", "") or "")
-    if live_fql == desired_fql:
-        return [
-            ManagedGroupChange(
-                op="no-change",
-                group_name=group_name,
-                env=hg_env,
-                desired_fql=desired_fql,
-                live_fql=live_fql,
-            )
-        ]
+    group_type = str(live_record.get("group_type", "") or "")
+    if group_type and group_type != "static":
+        op = "replace"
+    elif managed_host_group_hostnames(live_fql) == frozenset(hostnames):
+        op = "no-change"
+    else:
+        op = "update"
     return [
         ManagedGroupChange(
-            op="update",
+            op=op,
             group_name=group_name,
             env=hg_env,
             desired_fql=desired_fql,
@@ -1488,6 +1506,7 @@ __all__ = [
     "is_managed_description",
     "policy_is_assigned_in_env",
     "project_policy_for_env",
+    "retired_managed_group_name",
     "synthesise_override_rule_groups",
     "synthesise_override_rule_groups_from",
 ]

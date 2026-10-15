@@ -32,7 +32,7 @@ stem (slug). Extra characters are rejected at load time.
 | `status`              | `enabled` \| `disabled` \| `deleted`    | no       | Default `enabled`.                                                                         |
 | `description`         | string (≤ 2000)                         | no       |                                                                                            |
 | `host_groups`         | `{CrowdStrike name: env}`               | no       | Keys are verbatim CrowdStrike host-group names (may contain spaces/underscores). Each env (`test`/`pilot`/`production`) may appear at most once. |
-| `managed_host_groups` | `{env: [hostname, …]}`                  | no       | Auto-creates a dynamic CrowdStrike host group per env. See [Managed host groups](#managed-host-groups-managed_host_groups). |
+| `managed_host_groups` | `{env: [hostname, …]}`                  | no       | Auto-creates a static CrowdStrike host group per env. See [Managed host groups](#managed-host-groups-managed_host_groups). |
 | `rules`               | list of inline `Rule`                   | no       | Becomes anonymous override group at apply.                                                 |
 | `rule_groups`         | list of slug references                 | no       | Precedence order. No duplicates.                                                           |
 | `settings`            | `PolicySettings`                        | no       | Enforcement mode and default traffic actions. See [Policy settings](#policy-settings-settings). |
@@ -106,11 +106,23 @@ managed_host_groups:
     - machine-c
 ```
 
-Each entry creates or updates a **dynamic** CrowdStrike host group with an FQL
-filter `hostname:['machine-a','machine-b']` (a single hostname uses
-`hostname:'machine-a'`). The group is
-automatically named `{display_name or name.title()}-Managed-{Env}` (e.g.
+Each entry creates or updates a **static** CrowdStrike host group whose
+assignment rule lists the hostnames:
+`device_id:[''],hostname:['machine-a','machine-b']`. This is the format
+CrowdStrike's own Terraform provider uses for static groups populated by
+hostname. The group is automatically named
+`{display_name or name.title()}-Managed-{Env}` (e.g.
 `ABC01-Endpoints-Managed-Test`).
+
+Groups created as **dynamic** by earlier csfwctl versions show up in
+`diff` as `managed-group:replace`. A group's type can't be changed in place,
+so `apply` renames the old group to `<name>-Retired`, creates the static
+group under the original name, attaches it to the policy, and then detaches
+the old one. The policy always has one of the two groups attached. csfwctl
+never deletes the retired group: delete it in the Falcon console once no
+policy lists it. A dynamic group with the managed name that csfwctl did not
+create (its description lacks `Managed by csfwctl`) is left alone with a
+warning.
 
 Restrictions:
 

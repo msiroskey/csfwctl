@@ -352,7 +352,7 @@ is a separate toggle that can be enabled even when `enforcement_mode` is
 
 Instead of pre-creating host groups in the Falcon console, declare the
 hostnames directly in the policy YAML. csfwctl creates and maintains a
-**dynamic** CrowdStrike host group per environment, named
+**static** CrowdStrike host group per environment, named
 `{DisplayName}-Managed-{Env}` (e.g. `Research-Lab-Windows-Managed-Test`):
 
 ```yaml
@@ -372,10 +372,13 @@ rule_groups:
   - windows-baseline
 ```
 
-The group uses an FQL filter (`hostname:['lab-ws-001','lab-ws-002']`). When the hostname list changes csfwctl updates
-the filter on the next apply; when a hostname is added or removed the
-group membership updates automatically via CrowdStrike's dynamic group
-evaluation.
+The group's assignment rule lists the hostnames
+(`device_id:[''],hostname:['lab-ws-001','lab-ws-002']`). When the
+hostname list changes, csfwctl updates the rule on the next apply.
+Managed groups created as dynamic by earlier csfwctl versions are swapped
+for static ones on the next apply. The old group is renamed to
+`<name>-Retired` and detached, and you delete it in the Falcon console;
+see `docs/schema_reference.md`.
 
 Restrictions: an env may not appear in both `host_groups` and
 `managed_host_groups` on the same policy.

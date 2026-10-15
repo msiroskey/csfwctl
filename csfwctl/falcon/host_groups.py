@@ -139,7 +139,10 @@ class HostGroupsAPI:
         return None
 
     def create(self, name: str, *, description: str = "") -> dict[str, Any]:
-        """Create an empty static host group. Used by ``apply --create-groups``.
+        """Create an empty static host group.
+
+        Used by ``apply --create-groups`` and for managed host groups, whose
+        hostnames are then set with :meth:`update_fql`.
 
         Idempotent: if CrowdStrike rejects the create with
         ``409 Duplicate group name``, the group already exists. Falls
@@ -172,43 +175,14 @@ class HostGroupsAPI:
         resources = body.get("resources") or []
         return dict(resources[0]) if resources else {}
 
-    def create_dynamic(self, name: str, *, fql: str, description: str = "") -> dict[str, Any]:
-        """Create a dynamic host group with an FQL membership filter.
-
-        The CrowdStrike API field is ``assignment_rule`` for the FQL filter.
-        Pending real-tenant confirmation of the exact payload shape; see
-        ``docs/architecture.md``.
-
-        Idempotent on duplicate-name 409 — see :meth:`create`.
-        """
-        try:
-            result = self._client.call(
-                "host_groups.create_dynamic",
-                lambda: self._svc().create_host_groups(
-                    body={
-                        "resources": [
-                            {
-                                "group_type": "dynamic",
-                                "name": name,
-                                "description": description,
-                                "assignment_rule": fql,
-                            }
-                        ]
-                    }
-                ),
-            )
-        except FalconAPIError as exc:
-            if _is_duplicate_name_error(exc):
-                existing = self.find_by_name(name)
-                if existing is not None:
-                    return existing
-            raise
-        body = result.get("body") or {}
-        resources = body.get("resources") or []
-        return dict(resources[0]) if resources else {}
-
     def update_fql(self, group_id: str, fql: str) -> dict[str, Any]:
-        """Update an existing dynamic group's FQL assignment rule."""
+        """Update an existing group's assignment rule.
+
+        For a static group populated by hostname the rule has the shape
+        ``device_id:[''],hostname:['a','b']``. Static groups are created
+        empty (:meth:`create`) and populated here, the same two-step
+        sequence CrowdStrike's Terraform provider uses.
+        """
         result = self._client.call(
             "host_groups.update_fql",
             lambda: self._svc().update_host_groups(
@@ -217,6 +191,30 @@ class HostGroupsAPI:
                         {
                             "id": group_id,
                             "assignment_rule": fql,
+                        }
+                    ]
+                }
+            ),
+        )
+        body = result.get("body") or {}
+        resources = body.get("resources") or []
+        return dict(resources[0]) if resources else {}
+
+    def rename(self, group_id: str, name: str, *, description: str) -> dict[str, Any]:
+        """Rename a host group and replace its description.
+
+        Used to move a legacy dynamic managed group out of the way so
+        its static replacement can take the canonical name.
+        """
+        result = self._client.call(
+            "host_groups.rename",
+            lambda: self._svc().update_host_groups(
+                body={
+                    "resources": [
+                        {
+                            "id": group_id,
+                            "name": name,
+                            "description": description,
                         }
                     ]
                 }

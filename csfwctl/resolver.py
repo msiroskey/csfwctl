@@ -31,6 +31,7 @@ Collection merge behaviour:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from csfwctl.schema._common import HostGroupEnv
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
 
 
 def managed_host_group_cs_name(policy: Policy, env: str) -> str:
-    """CrowdStrike display name for the auto-managed dynamic host group.
+    """CrowdStrike display name for the auto-managed static host group.
 
     Follows the convention ``{base}-Managed-{Env}`` where ``base`` is the
     policy's ``display_name`` if set, otherwise the slug run through
@@ -52,21 +53,37 @@ def managed_host_group_cs_name(policy: Policy, env: str) -> str:
 
 
 def managed_host_group_fql(hostnames: list[str]) -> str:
-    """Generate an FQL filter string for a list of hostnames.
+    """Generate the static host group assignment rule for a list of hostnames.
 
-    A single hostname produces ``hostname:'a'``; two or more produce the
-    FQL match-any list ``hostname:['a','b',…]``. FQL has no ``or``
-    keyword (OR is ``,``) and CrowdStrike rejects a rule containing one
-    with HTTP 400 "Invalid value specified for 'assignment_rule'". The
-    single-host form is kept as-is so existing one-host groups don't
-    churn. An empty list returns an empty string (the caller must guard
-    against creating a group with no filter).
+    Produces ``device_id:[''],hostname:['a','b',…]`` — the shape
+    CrowdStrike's own Terraform provider uses for a static group
+    populated by hostname. A dynamic-group FQL filter for a fixed host
+    list is accepted by the API, but the console flags it "Assignment
+    rule unsupported by Falcon Console UI". An empty list returns an
+    empty string (the caller must guard against creating a group with
+    no members).
     """
     if not hostnames:
         return ""
-    if len(hostnames) == 1:
-        return f"hostname:'{hostnames[0]}'"
-    return "hostname:[" + ",".join(f"'{h}'" for h in hostnames) + "]"
+    return "device_id:[''],hostname:[" + ",".join(f"'{h}'" for h in hostnames) + "]"
+
+
+_HOSTNAME_LIST_RE = re.compile(r"hostname:\[(.*?)\]", re.IGNORECASE)
+
+
+def managed_host_group_hostnames(assignment_rule: str) -> frozenset[str]:
+    """Parse the hostname set out of a static group's assignment rule.
+
+    Tolerant of the whitespace CrowdStrike may add on readback
+    (``hostname:['a', 'b']``) and of the empty ``''`` placeholder. Used
+    to compare live against desired membership without depending on
+    the exact string the API echoes back.
+    """
+    match = _HOSTNAME_LIST_RE.search(assignment_rule)
+    if match is None:
+        return frozenset()
+    parts = (part.strip().strip("'").strip() for part in match.group(1).split(","))
+    return frozenset(part for part in parts if part)
 
 
 def resolve_inheritance(policy: Policy, repo: ConfigRepo) -> Policy:
@@ -147,5 +164,6 @@ def resolve_inheritance(policy: Policy, repo: ConfigRepo) -> Policy:
 __all__ = [
     "managed_host_group_cs_name",
     "managed_host_group_fql",
+    "managed_host_group_hostnames",
     "resolve_inheritance",
 ]

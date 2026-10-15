@@ -293,7 +293,7 @@ def _render_report(console: Console, change_set: ChangeSet, report: ApplyReport)
 def _render_action(console: Console, action: AppliedAction) -> None:
     """One line per action with colour matching the operation, followed by
     indented per-change detail (field-level diffs, host-group reassignments,
-    managed dynamic-group changes) so the operator sees *what* changed."""
+    managed-group changes) so the operator sees *what* changed."""
     colour = _OP_COLOR.get(action.op, "white")
     suffix = ""
     if action.detail and action.op != "host-group":
