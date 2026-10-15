@@ -849,9 +849,12 @@ def _managed_group_changes(
     ``live_host_groups_by_name`` maps CrowdStrike group display name to
     its raw API record (keyed from :attr:`LiveState.host_groups`).
 
-    Membership is compared as a hostname set parsed from the live
-    ``assignment_rule``, so whitespace or ordering the API introduces on
-    readback does not show up as a perpetual update.
+    Membership is compared as hostname sets parsed from the live and
+    desired ``assignment_rule``, so whitespace or ordering the API
+    introduces on readback does not show up as a perpetual update. The
+    comparison is case-sensitive on purpose: a live rule written with
+    lowercase hostnames by an earlier csfwctl version diffs as an
+    update and is rewritten in uppercase.
     """
     hg_env = env_to_host_group_env(env)
     hostnames = policy.managed_host_groups.get(hg_env)
@@ -873,7 +876,7 @@ def _managed_group_changes(
     group_type = str(live_record.get("group_type", "") or "")
     if group_type and group_type != "static":
         op = "replace"
-    elif managed_host_group_hostnames(live_fql) == frozenset(hostnames):
+    elif managed_host_group_hostnames(live_fql) == managed_host_group_hostnames(desired_fql):
         op = "no-change"
     else:
         op = "update"

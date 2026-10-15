@@ -108,9 +108,17 @@ managed_host_groups:
 
 Each entry creates or updates a **static** CrowdStrike host group whose
 assignment rule lists the hostnames:
-`device_id:[''],hostname:['machine-a','machine-b']`. This is the format
+`device_id:[''],hostname:['MACHINE-A','MACHINE-B']`. This is the format
 CrowdStrike's own Terraform provider uses for static groups populated by
-hostname. The group is automatically named
+hostname.
+
+Hostnames are **uppercased** when the rule is built, on every platform.
+Static-group hostname matching is case-sensitive and Falcon reports
+hostnames in all caps, so `machine-a` in YAML would otherwise show in the
+console as an unmatched entry. Write hostnames in any case;
+duplicates that differ only by case collapse to one entry. A group
+written with lowercase hostnames by an earlier csfwctl version shows as
+an update on the next `diff` and is rewritten in uppercase. The group is automatically named
 `{display_name or name.title()}-Managed-{Env}` (e.g.
 `ABC01-Endpoints-Managed-Test`).
 

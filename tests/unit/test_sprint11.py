@@ -183,18 +183,26 @@ def test_managed_host_group_cs_name_from_slug() -> None:
 
 
 def test_managed_host_group_fql_single() -> None:
-    assert managed_host_group_fql(["host-a"]) == "device_id:[''],hostname:['host-a']"
+    assert managed_host_group_fql(["host-a"]) == "device_id:[''],hostname:['HOST-A']"
 
 
 def test_managed_host_group_fql_multiple() -> None:
     """Static-group hostname rule, as CrowdStrike's Terraform provider builds it."""
     fql = managed_host_group_fql(["host-a", "host-b", "host-c"])
-    assert fql == "device_id:[''],hostname:['host-a','host-b','host-c']"
+    assert fql == "device_id:[''],hostname:['HOST-A','HOST-B','HOST-C']"
+
+
+def test_managed_host_group_fql_uppercases_and_dedupes() -> None:
+    """Static-group hostname matching is case-sensitive; Falcon reports all caps."""
+    fql = managed_host_group_fql(["lab-ws-001", "LAB-WS-001", "Lab-Ws-002"])
+    assert fql == "device_id:[''],hostname:['LAB-WS-001','LAB-WS-002']"
 
 
 def test_managed_host_group_hostnames_round_trips() -> None:
     hosts = ["host-a", "HOST-B"]
-    assert managed_host_group_hostnames(managed_host_group_fql(hosts)) == frozenset(hosts)
+    assert managed_host_group_hostnames(managed_host_group_fql(hosts)) == frozenset(
+        {"HOST-A", "HOST-B"}
+    )
 
 
 def test_managed_host_group_hostnames_tolerates_readback_whitespace() -> None:
@@ -751,7 +759,7 @@ def test_diff_shows_managed_group_create(tmp_path: Path) -> None:
     assert change.managed_group_changes
     mgc = change.managed_group_changes[0]
     assert mgc.op == "create"
-    assert "machine-foo" in mgc.desired_fql
+    assert "MACHINE-FOO" in mgc.desired_fql
 
 
 def test_diff_shows_managed_group_no_change_when_fql_matches(tmp_path: Path) -> None:
@@ -806,7 +814,7 @@ def test_diff_shows_managed_group_update_when_fql_differs(tmp_path: Path) -> Non
     change = cs.creates[0]
     mgc = change.managed_group_changes[0]
     assert mgc.op == "update"
-    assert "machine-bar" in mgc.desired_fql
+    assert "MACHINE-BAR" in mgc.desired_fql
     assert mgc.live_fql == old_fql
 
 
@@ -823,12 +831,37 @@ def test_diff_managed_group_ignores_readback_whitespace_and_order(tmp_path: Path
                 "id": "hg-123",
                 "name": managed_host_group_cs_name(p, "test"),
                 "group_type": "static",
-                "assignment_rule": "device_id:[''],hostname:['machine-bar', 'machine-foo']",
+                "assignment_rule": "device_id:[''],hostname:['MACHINE-BAR', 'MACHINE-FOO']",
             }
         ]
     )
     cs = compute_diff(_make_repo([p], tmp_path=tmp_path), "test", live_state)
     assert cs.creates[0].managed_group_changes[0].op == "no-change"
+
+
+def test_diff_rewrites_lowercase_live_hostnames_in_uppercase(tmp_path: Path) -> None:
+    """A rule an earlier csfwctl wrote in lowercase never matched a host; update it."""
+    p = _policy(
+        "abc01-endpoints",
+        display_name="ABC01-Endpoints",
+        managed_host_groups={HostGroupEnv.test: ["machine-foo", "Machine-Bar"]},
+    )
+    lowercase_rule = "device_id:[''],hostname:['machine-foo','Machine-Bar']"
+    live_state = LiveState(
+        host_groups=[
+            {
+                "id": "hg-123",
+                "name": managed_host_group_cs_name(p, "test"),
+                "group_type": "static",
+                "assignment_rule": lowercase_rule,
+            }
+        ]
+    )
+    cs = compute_diff(_make_repo([p], tmp_path=tmp_path), "test", live_state)
+    mgc = cs.creates[0].managed_group_changes[0]
+    assert mgc.op == "update"
+    assert mgc.live_fql == lowercase_rule
+    assert mgc.desired_fql == "device_id:[''],hostname:['MACHINE-FOO','MACHINE-BAR']"
 
 
 def test_diff_replaces_legacy_dynamic_managed_group(tmp_path: Path) -> None:
@@ -852,7 +885,7 @@ def test_diff_replaces_legacy_dynamic_managed_group(tmp_path: Path) -> None:
     mgc = cs.creates[0].managed_group_changes[0]
     assert mgc.op == "replace"
     assert mgc.live_fql == "hostname:'machine-foo'"
-    assert mgc.desired_fql == "device_id:[''],hostname:['machine-foo']"
+    assert mgc.desired_fql == "device_id:[''],hostname:['MACHINE-FOO']"
 
 
 # ---- applier with managed host groups --------------------------------------
@@ -1079,7 +1112,7 @@ def test_applier_creates_static_host_group(tmp_path: Path) -> None:
     assert created["name"] == "ABC01-Endpoints-Managed-Test"
     assert created["group_type"] == "static"
     assert client.host_groups.fql_updated == [
-        {"id": created["id"], "assignment_rule": "device_id:[''],hostname:['machine-foo']"}
+        {"id": created["id"], "assignment_rule": "device_id:[''],hostname:['MACHINE-FOO']"}
     ]
     # Policy payload should reference the managed group
     assert len(client.policies.created) == 1
@@ -1130,7 +1163,7 @@ def test_applier_updates_static_host_group_hostnames(tmp_path: Path) -> None:
     assert len(client.host_groups.fql_updated) == 1
     updated = client.host_groups.fql_updated[0]
     assert updated["id"] == "existing-hg-id"
-    assert "machine-bar" in updated["assignment_rule"]
+    assert "MACHINE-BAR" in updated["assignment_rule"]
 
 
 def test_applier_dry_run_does_not_create_group(tmp_path: Path) -> None:
@@ -1213,7 +1246,7 @@ def test_applier_replaces_legacy_dynamic_group_without_gap(tmp_path: Path) -> No
     assert "Safe to delete" in client.host_groups.renamed[0]["description"]
     assert client.host_groups.created[0]["group_type"] == "static"
     assert client.host_groups.fql_updated[0]["assignment_rule"] == (
-        "device_id:[''],hostname:['machine-foo','machine-bar']"
+        "device_id:[''],hostname:['MACHINE-FOO','MACHINE-BAR']"
     )
     hg_actions = [
         (name, params[0]["value"])

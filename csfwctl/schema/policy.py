@@ -37,9 +37,10 @@ class Policy(BaseModel):
 
     ``managed_host_groups`` maps each environment to a list of hostnames.
     The applier creates (or updates) a static CrowdStrike host group for
-    each env with the assignment rule ``device_id:[''],hostname:['a','b',…]``
-    and assigns that group to the policy. Must not overlap with
-    ``host_groups`` envs.
+    each env with the assignment rule ``device_id:[''],hostname:['A','B',…]``
+    and assigns that group to the policy. Hostnames are uppercased when
+    the rule is built, so YAML case does not matter. Must not overlap
+    with ``host_groups`` envs.
 
     ``skip_unassigned_envs`` restricts the policy (and its synthesised
     ``<slug>-overrides-<env>`` rule group) to environments that carry a
