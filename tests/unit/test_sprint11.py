@@ -31,6 +31,7 @@ from csfwctl.loader import ConfigRepo
 from csfwctl.resolver import (
     managed_host_group_cs_name,
     managed_host_group_fql,
+    managed_host_group_hostnames,
     resolve_inheritance,
 )
 from csfwctl.safety import SafetyOptions
@@ -182,14 +183,29 @@ def test_managed_host_group_cs_name_from_slug() -> None:
 
 
 def test_managed_host_group_fql_single() -> None:
-    assert managed_host_group_fql(["host-a"]) == "hostname:'host-a'"
+    assert managed_host_group_fql(["host-a"]) == "device_id:[''],hostname:['host-a']"
 
 
 def test_managed_host_group_fql_multiple() -> None:
+    """Static-group hostname rule, as CrowdStrike's Terraform provider builds it."""
     fql = managed_host_group_fql(["host-a", "host-b", "host-c"])
-    assert fql == "hostname:['host-a','host-b','host-c']"
-    # FQL has no ``or`` keyword; CrowdStrike 400s on it.
-    assert " or " not in fql
+    assert fql == "device_id:[''],hostname:['host-a','host-b','host-c']"
+
+
+def test_managed_host_group_hostnames_round_trips() -> None:
+    hosts = ["host-a", "HOST-B"]
+    assert managed_host_group_hostnames(managed_host_group_fql(hosts)) == frozenset(hosts)
+
+
+def test_managed_host_group_hostnames_tolerates_readback_whitespace() -> None:
+    """CrowdStrike may echo the rule with spaces and an empty placeholder."""
+    rule = "device_id:[''],hostname:['host-b', 'host-a' ,'']"
+    assert managed_host_group_hostnames(rule) == frozenset({"host-a", "host-b"})
+
+
+def test_managed_host_group_hostnames_without_list_is_empty() -> None:
+    assert managed_host_group_hostnames("hostname:'host-a'") == frozenset()
+    assert managed_host_group_hostnames("") == frozenset()
 
 
 def test_managed_host_group_fql_empty() -> None:
@@ -748,7 +764,14 @@ def test_diff_shows_managed_group_no_change_when_fql_matches(tmp_path: Path) -> 
     expected_fql = managed_host_group_fql(["machine-foo"])
     # Build a live policy shape (without the managed group already assigned)
     live_state = LiveState(
-        host_groups=[{"id": "hg-123", "name": expected_name, "assignment_rule": expected_fql}]
+        host_groups=[
+            {
+                "id": "hg-123",
+                "name": expected_name,
+                "group_type": "static",
+                "assignment_rule": expected_fql,
+            }
+        ]
     )
     repo = _make_repo([p], tmp_path=tmp_path)
     cs = compute_diff(repo, "test", live_state)
@@ -769,7 +792,14 @@ def test_diff_shows_managed_group_update_when_fql_differs(tmp_path: Path) -> Non
     expected_name = managed_host_group_cs_name(p, "test")
     old_fql = managed_host_group_fql(["machine-foo"])
     live_state = LiveState(
-        host_groups=[{"id": "hg-123", "name": expected_name, "assignment_rule": old_fql}]
+        host_groups=[
+            {
+                "id": "hg-123",
+                "name": expected_name,
+                "group_type": "static",
+                "assignment_rule": old_fql,
+            }
+        ]
     )
     repo = _make_repo([p], tmp_path=tmp_path)
     cs = compute_diff(repo, "test", live_state)
@@ -778,6 +808,51 @@ def test_diff_shows_managed_group_update_when_fql_differs(tmp_path: Path) -> Non
     assert mgc.op == "update"
     assert "machine-bar" in mgc.desired_fql
     assert mgc.live_fql == old_fql
+
+
+def test_diff_managed_group_ignores_readback_whitespace_and_order(tmp_path: Path) -> None:
+    """Same hostname set echoed back reordered with spaces is not an update."""
+    p = _policy(
+        "abc01-endpoints",
+        display_name="ABC01-Endpoints",
+        managed_host_groups={HostGroupEnv.test: ["machine-foo", "machine-bar"]},
+    )
+    live_state = LiveState(
+        host_groups=[
+            {
+                "id": "hg-123",
+                "name": managed_host_group_cs_name(p, "test"),
+                "group_type": "static",
+                "assignment_rule": "device_id:[''],hostname:['machine-bar', 'machine-foo']",
+            }
+        ]
+    )
+    cs = compute_diff(_make_repo([p], tmp_path=tmp_path), "test", live_state)
+    assert cs.creates[0].managed_group_changes[0].op == "no-change"
+
+
+def test_diff_replaces_legacy_dynamic_managed_group(tmp_path: Path) -> None:
+    """A dynamic group under the managed name must be replaced, even if hosts match."""
+    p = _policy(
+        "abc01-endpoints",
+        display_name="ABC01-Endpoints",
+        managed_host_groups={HostGroupEnv.test: ["machine-foo"]},
+    )
+    live_state = LiveState(
+        host_groups=[
+            {
+                "id": "dyn-1",
+                "name": managed_host_group_cs_name(p, "test"),
+                "group_type": "dynamic",
+                "assignment_rule": "hostname:'machine-foo'",
+            }
+        ]
+    )
+    cs = compute_diff(_make_repo([p], tmp_path=tmp_path), "test", live_state)
+    mgc = cs.creates[0].managed_group_changes[0]
+    assert mgc.op == "replace"
+    assert mgc.live_fql == "hostname:'machine-foo'"
+    assert mgc.desired_fql == "device_id:[''],hostname:['machine-foo']"
 
 
 # ---- applier with managed host groups --------------------------------------
@@ -877,41 +952,57 @@ class _FakePoliciesAPI(_FakeSubClient):
 
 
 class _FakeHostGroupsAPI(_FakeSubClient):
-    """Extended fake that supports create_dynamic and update_fql."""
+    """Extended fake that supports static create, update_fql, and rename."""
 
     def __init__(self, known: dict[str, dict] | None = None) -> None:
         super().__init__()
-        # known maps name → {id, assignment_rule, description}
+        # known maps name → {id, group_type, assignment_rule, description}
         self._known: dict[str, dict] = dict(known or {})
-        self.dynamic_created: list[dict] = []
         self.fql_updated: list[dict] = []
+        self.renamed: list[dict] = []
+        self.fail_create = False
+        # Ordered log of write calls, shared with the policies fake when
+        # a test needs to assert cross-API ordering.
+        self.calls: list[tuple] = []
 
     def find_by_name(self, name: str) -> dict | None:
         return self._known.get(name)
 
     def create(self, name: str, *, description: str = "") -> dict:
-        rec = {"id": f"hg-{name}", "name": name, "description": description}
+        if self.fail_create:
+            raise RuntimeError("create failed")
+        if name in self._known:
+            # Mirrors the real client's duplicate-name 409 fallback.
+            return self._known[name]
+        rec = {
+            "id": f"hg-{name}",
+            "name": name,
+            "group_type": "static",
+            "description": description,
+        }
         self.created.append(rec)
+        self.calls.append(("create", name))
         self._known[name] = rec
         return rec
 
     def list_all(self, *, filter: str | None = None) -> list[dict]:
         return list(self._known.values())
 
-    def create_dynamic(self, name: str, *, fql: str, description: str = "") -> dict:
-        rec = {
-            "id": f"dyn-hg-{name}",
-            "name": name,
-            "description": description,
-            "assignment_rule": fql,
-        }
-        self.dynamic_created.append(rec)
-        self._known[name] = rec
-        return rec
+    def rename(self, group_id: str, name: str, *, description: str) -> dict:
+        self.renamed.append({"id": group_id, "name": name, "description": description})
+        self.calls.append(("rename", group_id, name))
+        for old_name, rec in list(self._known.items()):
+            if rec.get("id") == group_id:
+                del self._known[old_name]
+                rec.update(name=name, description=description)
+                self._known[name] = rec
+                return rec
+        return {}
 
     def update_fql(self, group_id: str, fql: str) -> dict:
         update = {"id": group_id, "assignment_rule": fql}
         self.fql_updated.append(update)
+        self.calls.append(("update_fql", group_id))
         for rec in self._known.values():
             if rec.get("id") == group_id:
                 rec["assignment_rule"] = fql
@@ -964,8 +1055,8 @@ def _bootstrapped_live_state(**extra: Any) -> LiveState:
     )
 
 
-def test_applier_creates_dynamic_host_group(tmp_path: Path) -> None:
-    """Applier creates a dynamic group and assigns it to the policy."""
+def test_applier_creates_static_host_group(tmp_path: Path) -> None:
+    """Applier creates a static group, sets its hostnames, and assigns it."""
     p = _policy(
         "abc01-endpoints",
         display_name="ABC01-Endpoints",
@@ -983,18 +1074,21 @@ def test_applier_creates_dynamic_host_group(tmp_path: Path) -> None:
         options=_options(),
         safety_options=_safety(),
     )
-    assert len(client.host_groups.dynamic_created) == 1
-    created = client.host_groups.dynamic_created[0]
+    assert len(client.host_groups.created) == 1
+    created = client.host_groups.created[0]
     assert created["name"] == "ABC01-Endpoints-Managed-Test"
-    assert "machine-foo" in created["assignment_rule"]
+    assert created["group_type"] == "static"
+    assert client.host_groups.fql_updated == [
+        {"id": created["id"], "assignment_rule": "device_id:[''],hostname:['machine-foo']"}
+    ]
     # Policy payload should reference the managed group
     assert len(client.policies.created) == 1
     pol_groups = client.policies.created[0]["groups"]
     assert any(g["name"] == "ABC01-Endpoints-Managed-Test" for g in pol_groups)
 
 
-def test_applier_updates_dynamic_host_group_fql(tmp_path: Path) -> None:
-    """Applier updates FQL when hostnames change."""
+def test_applier_updates_static_host_group_hostnames(tmp_path: Path) -> None:
+    """Applier updates the hostname rule when hostnames change."""
     from csfwctl.differ import METADATA_SIGNATURE_TOKEN
 
     p = _policy(
@@ -1009,6 +1103,7 @@ def test_applier_updates_dynamic_host_group_fql(tmp_path: Path) -> None:
     existing_group = {
         "id": "existing-hg-id",
         "name": group_name,
+        "group_type": "static",
         "assignment_rule": old_fql,
         "description": signed_desc,
     }
@@ -1056,9 +1151,176 @@ def test_applier_dry_run_does_not_create_group(tmp_path: Path) -> None:
         options=_options(dry_run=True),
         safety_options=_safety(),
     )
-    assert len(client.host_groups.dynamic_created) == 0
+    assert len(client.host_groups.created) == 0
     # But action still recorded
     assert any(a.op == "create" and a.kind == "host-group" for a in report.actions)
+
+
+def _legacy_dynamic_setup(
+    tmp_path: Path, *, group_description: str = "Managed by csfwctl for policy abc01-endpoints"
+) -> tuple[str, ConfigRepo, LiveState, Any, _FakeClient]:
+    """Live tenant where the managed group is a legacy dynamic group on the policy."""
+    from csfwctl.differ import METADATA_SIGNATURE_TOKEN
+
+    p = _policy(
+        "abc01-endpoints",
+        display_name="ABC01-Endpoints",
+        managed_host_groups={HostGroupEnv.test: ["machine-foo", "machine-bar"]},
+    )
+    group_name = managed_host_group_cs_name(p, "test")
+    legacy = {
+        "id": "dyn-1",
+        "name": group_name,
+        "group_type": "dynamic",
+        "assignment_rule": "hostname:['machine-foo','machine-bar']",
+        "description": group_description,
+    }
+    live_pol_shape = policy_to_api_shape(p, "test")
+    live_pol_shape["description"] = (
+        f"{METADATA_SIGNATURE_TOKEN} | version: 1 | git_sha: old | "
+        "applied: 2026-01-01T00:00:00Z | env: test"
+    )
+    live_pol_shape["groups"] = [{"id": "dyn-1", "name": group_name}]
+    state = LiveState(policies=[live_pol_shape], host_groups=[legacy])
+    repo = _make_repo([p], tmp_path=tmp_path)
+    cs = compute_diff(repo, "test", state)
+    client = _FakeClient(known_host_groups={group_name: dict(legacy)})
+    return group_name, repo, state, cs, client
+
+
+def test_applier_replaces_legacy_dynamic_group_without_gap(tmp_path: Path) -> None:
+    """Rename old → create static → set hosts → attach new → detach old. No delete."""
+    group_name, repo, state, cs, client = _legacy_dynamic_setup(tmp_path)
+    assert [c.managed_group_changes[0].op for c in cs.updates] == ["replace"]
+    assert cs.updates[0].host_group_changes == ()
+
+    report = apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+
+    retired_name = f"{group_name}-Retired"
+    new_id = f"hg-{group_name}"
+    assert client.host_groups.calls == [
+        ("rename", "dyn-1", retired_name),
+        ("create", group_name),
+        ("update_fql", new_id),
+    ]
+    assert "Safe to delete" in client.host_groups.renamed[0]["description"]
+    assert client.host_groups.created[0]["group_type"] == "static"
+    assert client.host_groups.fql_updated[0]["assignment_rule"] == (
+        "device_id:[''],hostname:['machine-foo','machine-bar']"
+    )
+    hg_actions = [
+        (name, params[0]["value"])
+        for name, _ids, params in client.policies.actions
+        if name in ("add-host-group", "remove-host-group")
+    ]
+    # Attach the replacement before detaching the old group.
+    assert hg_actions == [("add-host-group", new_id), ("remove-host-group", "dyn-1")]
+    assert client.host_groups.deleted == []
+    assert any(
+        a.op == "update" and a.kind == "host-group" and a.managed_group_changes[0].op == "replace"
+        for a in report.actions
+    )
+    assert any(retired_name in w and "Delete it" in w for w in report.warnings)
+
+
+def test_applier_does_not_replace_dynamic_group_not_created_by_csfwctl(tmp_path: Path) -> None:
+    group_name, repo, state, cs, client = _legacy_dynamic_setup(
+        tmp_path, group_description="hand-made in the console"
+    )
+    report = apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    assert client.host_groups.calls == []
+    assert not any(
+        name in ("add-host-group", "remove-host-group")
+        for name, _ids, _params in client.policies.actions
+    )
+    assert any("not created by csfwctl" in w for w in report.warnings)
+
+
+def test_applier_keeps_old_group_attached_when_static_create_fails(tmp_path: Path) -> None:
+    """A failed create after the rename must not detach the only group."""
+    group_name, repo, state, cs, client = _legacy_dynamic_setup(tmp_path)
+    client.host_groups.fail_create = True
+    report = apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(),
+        safety_options=_safety(),
+    )
+    assert client.host_groups.calls == [("rename", "dyn-1", f"{group_name}-Retired")]
+    assert not any(
+        name in ("add-host-group", "remove-host-group")
+        for name, _ids, _params in client.policies.actions
+    )
+    assert any("re-run apply to finish replacing it" in w for w in report.warnings)
+
+
+def test_applier_replace_dry_run_writes_nothing(tmp_path: Path) -> None:
+    _group_name, repo, state, cs, client = _legacy_dynamic_setup(tmp_path)
+    report = apply_change_set(
+        client=client,
+        repo=repo,
+        change_set=cs,
+        state=state,
+        options=_options(dry_run=True),
+        safety_options=_safety(),
+    )
+    assert client.host_groups.calls == []
+    assert client.policies.actions == []
+    assert any(
+        a.managed_group_changes
+        and a.managed_group_changes[0].op == "replace"
+        and "dry-run" in (a.detail or "")
+        for a in report.actions
+    )
+
+
+def test_diff_recovers_after_interrupted_replace(tmp_path: Path) -> None:
+    """Renamed old group still attached + new static group present → add then remove."""
+    from csfwctl.differ import METADATA_SIGNATURE_TOKEN
+
+    p = _policy(
+        "abc01-endpoints",
+        display_name="ABC01-Endpoints",
+        managed_host_groups={HostGroupEnv.test: ["machine-foo"]},
+    )
+    group_name = managed_host_group_cs_name(p, "test")
+    live_pol_shape = policy_to_api_shape(p, "test")
+    live_pol_shape["description"] = f"{METADATA_SIGNATURE_TOKEN} | version: 1 | env: test"
+    live_pol_shape["groups"] = [{"id": "dyn-1", "name": f"{group_name}-Retired"}]
+    state = LiveState(
+        policies=[live_pol_shape],
+        host_groups=[
+            {
+                "id": "hg-new",
+                "name": group_name,
+                "group_type": "static",
+                "assignment_rule": managed_host_group_fql(["machine-foo"]),
+            }
+        ],
+    )
+    cs = compute_diff(_make_repo([p], tmp_path=tmp_path), "test", state)
+    change = cs.updates[0]
+    assert change.managed_group_changes[0].op == "no-change"
+    assert [(h.op, h.group_name) for h in change.host_group_changes] == [
+        ("add", group_name),
+        ("remove", f"{group_name}-Retired"),
+    ]
 
 
 # ---- inheritance in build_desired_state ------------------------------------

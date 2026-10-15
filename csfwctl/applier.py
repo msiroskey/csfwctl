@@ -828,17 +828,22 @@ def _apply_managed_host_groups(
     managed_group_changes: list[tuple[str, ManagedGroupChange]],
     options: ApplyOptions,
     report: ApplyReport,
-) -> dict[str, str]:
-    """Create or update dynamic host groups for ``managed_host_groups`` entries.
+) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+    """Create, update, or replace static host groups for ``managed_host_groups``.
 
-    Returns a mapping of ``group_name → group_id`` for all managed groups
-    that were created, updated, or already existed.  The caller threads
-    these IDs into ``host_group_ids`` before building policy payloads.
+    Returns ``(resolved, retired)``. ``resolved`` maps ``group_name →
+    group_id`` for all managed groups that were created, updated,
+    replaced, or already existed; the caller threads these IDs into
+    ``host_group_ids`` before building policy payloads. ``retired`` maps
+    ``group_name → (retired_name, old_id)`` for each legacy dynamic
+    group replaced in this run, so the policy step can attach the new
+    static group and only then detach the old one.
 
     ``managed_group_changes`` is a list of ``(policy_slug, ManagedGroupChange)``
     pairs collected from all policy creates/updates in the change set.
     """
     resolved: dict[str, str] = {}
+    retired: dict[str, tuple[str, str]] = {}
     seen: set[str] = set()
     for policy_slug, mgc in managed_group_changes:
         if mgc.group_name in seen:
@@ -846,7 +851,7 @@ def _apply_managed_host_groups(
         seen.add(mgc.group_name)
 
         if mgc.op == "no-change":
-            # Group already has the right FQL; just look up its ID.
+            # Group already has the right membership; just look up its ID.
             try:
                 record = client.host_groups.find_by_name(mgc.group_name)
             except Exception as exc:  # noqa: BLE001
@@ -869,24 +874,14 @@ def _apply_managed_host_groups(
                         op="create",
                         slug=policy_slug,
                         display_name=mgc.group_name,
-                        detail=f"dry-run (dynamic, fql={mgc.desired_fql!r})",
+                        detail=f"dry-run (static, fql={mgc.desired_fql!r})",
                         managed_group_changes=(mgc,),
                     ),
                 )
                 continue
-            try:
-                created = client.host_groups.create_dynamic(
-                    mgc.group_name,
-                    fql=mgc.desired_fql,
-                    description=f"Managed by csfwctl for policy {policy_slug}",
-                )
-            except Exception as exc:  # noqa: BLE001
-                report.warnings.append(
-                    f"failed to create managed host group {mgc.group_name!r}: {exc}"
-                )
-                continue
-            if created and created.get("id"):
-                resolved[mgc.group_name] = str(created["id"])
+            new_id = _create_static_managed_group(client, mgc, policy_slug, report)
+            if new_id is not None:
+                resolved[mgc.group_name] = new_id
                 _append_action(
                     report,
                     AppliedAction(
@@ -894,10 +889,19 @@ def _apply_managed_host_groups(
                         op="create",
                         slug=policy_slug,
                         display_name=mgc.group_name,
-                        detail=str(created["id"]),
+                        detail=new_id,
                         managed_group_changes=(mgc,),
                     ),
                 )
+            continue
+
+        if mgc.op == "replace":
+            replaced = _replace_managed_group(client, mgc, policy_slug, options, report)
+            if replaced is not None:
+                new_id, retired_entry = replaced
+                resolved[mgc.group_name] = new_id
+                if retired_entry is not None:
+                    retired[mgc.group_name] = retired_entry
             continue
 
         # op == "update": FQL changed.
@@ -956,7 +960,195 @@ def _apply_managed_host_groups(
                 managed_group_changes=(mgc,),
             ),
         )
-    return resolved
+    return resolved, retired
+
+
+def _create_static_managed_group(
+    client: FalconClient,
+    mgc: ManagedGroupChange,
+    policy_slug: str,
+    report: ApplyReport,
+) -> str | None:
+    """Create the static group for ``mgc`` and set its hostnames.
+
+    Static groups are created empty and populated with a follow-up
+    update, matching CrowdStrike's Terraform provider. Returns the new
+    group id, or ``None`` (with a warning on ``report``) when either
+    step fails or the name is already taken by a non-static group.
+    """
+    try:
+        created = client.host_groups.create(
+            mgc.group_name,
+            description=f"Managed by csfwctl for policy {policy_slug}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        report.warnings.append(f"failed to create managed host group {mgc.group_name!r}: {exc}")
+        return None
+    group_id = str(created.get("id") or "")
+    if not group_id:
+        report.warnings.append(
+            f"create for managed host group {mgc.group_name!r} returned no id; skipped"
+        )
+        return None
+    # ``create`` is idempotent on a duplicate-name 409 and hands back the
+    # existing record, which may be a legacy dynamic group.
+    group_type = str(created.get("group_type") or "static")
+    if group_type != "static":
+        report.warnings.append(
+            f"managed host group {mgc.group_name!r} already exists as a {group_type} "
+            "group; re-run apply to replace it with a static group"
+        )
+        return None
+    try:
+        client.host_groups.update_fql(group_id, mgc.desired_fql)
+    except Exception as exc:  # noqa: BLE001
+        report.warnings.append(
+            f"created managed host group {mgc.group_name!r} but failed to set its hostnames: {exc}"
+        )
+        return None
+    return group_id
+
+
+def _replace_managed_group(
+    client: FalconClient,
+    mgc: ManagedGroupChange,
+    policy_slug: str,
+    options: ApplyOptions,
+    report: ApplyReport,
+) -> tuple[str, tuple[str, str] | None] | None:
+    """Swap a legacy dynamic managed group for a static one.
+
+    A host group's type cannot be changed in place, and CrowdStrike
+    rejects a second group with the same name, so the old group is
+    renamed to :func:`retired_managed_group_name` first and the static
+    group is created under the canonical name. The caller attaches the
+    new group to the policy before detaching the old one, so the policy
+    is never left without a group. The retired group is not deleted.
+
+    Returns ``(new_id, (retired_name, old_id))``, or ``None`` when the
+    swap did not happen (a warning is recorded). In dry-run the retired
+    entry is ``None`` and ``new_id`` is synthetic. The swap is recorded
+    as a host-group ``update`` action whose ``managed_group_changes``
+    entry carries ``op="replace"``, so report summary counts are
+    unchanged.
+    """
+    try:
+        live_record = client.host_groups.find_by_name(mgc.group_name)
+    except Exception as exc:  # noqa: BLE001
+        report.warnings.append(f"managed host group {mgc.group_name!r} lookup failed: {exc}")
+        return None
+    # ``find_by_name`` can fall back to a non-exact match; renaming the
+    # wrong group would be worse than skipping.
+    if (
+        not live_record
+        or not live_record.get("id")
+        or str(live_record.get("name", "")) != mgc.group_name
+    ):
+        report.warnings.append(
+            f"managed host group {mgc.group_name!r} marked for replacement but "
+            "not found in CrowdStrike; it will be created on next apply"
+        )
+        return None
+    from csfwctl.differ import METADATA_SIGNATURE_TOKEN, retired_managed_group_name
+
+    old_id = str(live_record["id"])
+    if str(live_record.get("group_type") or "") == "static":
+        report.warnings.append(
+            f"managed host group {mgc.group_name!r} is already static; re-run apply "
+            "to reconcile its hostnames"
+        )
+        return None
+    if METADATA_SIGNATURE_TOKEN not in str(live_record.get("description", "") or ""):
+        report.warnings.append(
+            f"managed host group {mgc.group_name!r} is a "
+            f"{live_record.get('group_type') or 'non-static'} group that was not created "
+            "by csfwctl; rename or delete it, then re-run apply to create the static group"
+        )
+        return None
+    retired_name = retired_managed_group_name(mgc.group_name)
+    if options.dry_run:
+        _append_action(
+            report,
+            AppliedAction(
+                kind="host-group",
+                op="update",
+                slug=policy_slug,
+                display_name=mgc.group_name,
+                detail=(
+                    f"dry-run (replace with static, fql={mgc.desired_fql!r}; "
+                    f"old group {old_id} renamed to {retired_name!r})"
+                ),
+                managed_group_changes=(mgc,),
+            ),
+        )
+        return f"dry-run-managed-hg-{policy_slug}", None
+    try:
+        client.host_groups.rename(
+            old_id,
+            retired_name,
+            description=(
+                f"Retired by csfwctl: replaced by static host group {mgc.group_name!r}. "
+                "Safe to delete once no policy references it."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        report.warnings.append(
+            f"failed to rename managed host group {mgc.group_name!r} to {retired_name!r} "
+            f"before replacing it with a static group; left unchanged: {exc}"
+        )
+        return None
+    new_id = _create_static_managed_group(client, mgc, policy_slug, report)
+    if new_id is None:
+        report.warnings.append(
+            f"managed host group {mgc.group_name!r} was renamed to {retired_name!r} and is "
+            "still assigned to its policy; re-run apply to finish replacing it"
+        )
+        return None
+    _append_action(
+        report,
+        AppliedAction(
+            kind="host-group",
+            op="update",
+            slug=policy_slug,
+            display_name=mgc.group_name,
+            detail=f"replaced with static {new_id} (old group {old_id} renamed to {retired_name!r})",
+            managed_group_changes=(mgc,),
+        ),
+    )
+    report.warnings.append(
+        f"managed host group {mgc.group_name!r} is now a static group; the old dynamic "
+        f"group was renamed to {retired_name!r}. Delete it in the Falcon console once "
+        "no policy lists it"
+    )
+    return new_id, (retired_name, old_id)
+
+
+def _with_managed_group_swaps(
+    change: ObjectChange,
+    retired: dict[str, tuple[str, str]],
+) -> tuple[HostGroupChange, ...]:
+    """Append attach-new / detach-old pairs for managed groups replaced this run.
+
+    The differ saw the old group under the canonical name, so it emitted
+    no host-group change for it. When the old group was attached, the
+    new static group is added first and the renamed old group removed
+    second, so the policy always has one of them. If the differ already
+    queued an ``add`` for the canonical name, the old group was not
+    attached and only that add is needed.
+    """
+    swaps: list[HostGroupChange] = []
+    for mgc in change.managed_group_changes:
+        entry = retired.get(mgc.group_name)
+        if mgc.op != "replace" or entry is None:
+            continue
+        if any(
+            hgc.op == "add" and hgc.group_name == mgc.group_name
+            for hgc in change.host_group_changes
+        ):
+            continue
+        swaps.append(HostGroupChange(op="add", group_name=mgc.group_name, env=mgc.env))
+        swaps.append(HostGroupChange(op="remove", group_name=entry[0], env=mgc.env))
+    return (*change.host_group_changes, *swaps)
 
 
 def _platform_api_name(platform: Platform) -> str:
@@ -1296,12 +1488,14 @@ def apply_change_set(
     policy_creates = _ordered(change_set.creates, KIND_POLICY)
     policy_updates = _ordered(change_set.updates, KIND_POLICY)
 
-    # 3a. Create/update managed dynamic host groups before resolving IDs.
+    # 3a. Create/update/replace managed static host groups before resolving IDs.
     all_managed_changes: list[tuple[str, ManagedGroupChange]] = []
     for change in (*policy_creates, *policy_updates):
         for mgc in change.managed_group_changes:
             all_managed_changes.append((change.slug, mgc))
-    managed_group_ids = _apply_managed_host_groups(client, all_managed_changes, options, report)
+    managed_group_ids, retired_groups = _apply_managed_host_groups(
+        client, all_managed_changes, options, report
+    )
 
     needed_host_groups: list[str] = []
     remove_host_group_names: list[str] = []
@@ -1320,8 +1514,11 @@ def apply_change_set(
     # group we are about to remove, and the perform_action remove call
     # would be skipped with a "not resolved" warning.
     host_group_ids.update(_lookup_host_group_ids(client, remove_host_group_names, report))
-    # Merge managed group IDs so policy payloads can reference them.
+    # Merge managed group IDs so policy payloads can reference them, plus
+    # the renamed legacy groups so the policy step can detach them.
     host_group_ids.update(managed_group_ids)
+    for retired_name, old_id in retired_groups.values():
+        host_group_ids[retired_name] = old_id
 
     rule_group_ids: dict[str, str] = {
         slug: live_id for slug, (live_id, _desc) in index.rule_groups.items()
@@ -1411,6 +1608,7 @@ def apply_change_set(
         # group, host-group, and enabled-state changes via dedicated
         # endpoints. Without this the differ reports the update but
         # nothing actually changes on the live policy.
+        host_group_changes = _with_managed_group_swaps(change, retired_groups)
         if p_live is not None:
             status_changed = any(fc.path == "status" for fc in change.field_changes)
             _apply_policy_relations(
@@ -1419,14 +1617,14 @@ def apply_change_set(
                 policy_id=p_live[0],
                 host_group_ids=host_group_ids,
                 rule_group_ids=rule_group_ids,
-                host_group_changes=change.host_group_changes,
+                host_group_changes=host_group_changes,
                 status_changed=status_changed,
                 options=options,
                 report=report,
                 is_create=False,
             )
         # Record host-group reassignments on the report for visibility.
-        for hg_change in change.host_group_changes:
+        for hg_change in host_group_changes:
             _record_host_group_change(report, change, hg_change)
 
     # ---- 4. precedence ----------------------------------------------------

@@ -1068,6 +1068,20 @@ Three bugs surfaced by the per-leaf diff output:
 
 ## Bug fixes applied post-v1
 
+- [x] **Bug 5 — managed host groups were dynamic, not static**: The
+      list-form rule from Bug 4 was accepted by the API, but the Falcon
+      console flagged the group "Assignment rule unsupported by Falcon
+      Console UI". A fixed hostname list is a *static* group in
+      CrowdStrike. Managed groups are now created static (empty create,
+      then `update_host_groups` with
+      `device_id:[''],hostname:['a','b']`, the sequence CrowdStrike's
+      Terraform provider uses). Membership is compared as a parsed
+      hostname set, so readback whitespace/order doesn't cause a
+      perpetual update. Live dynamic managed groups diff as `replace`:
+      apply renames the old group to `<name>-Retired`, creates the
+      static group, attaches it, then detaches the old one (never
+      deleted by csfwctl). Pending real-tenant confirmation of the
+      readback shape for static groups.
 - [x] **Bug 4 — managed host group FQL rejected with HTTP 400**: Adding a
       second hostname to a `managed_host_groups` env failed with
       `Invalid value specified for 'assignment_rule'`.

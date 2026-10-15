@@ -542,13 +542,15 @@ def _render_precedence_deltas(
 
 
 def _managed_group_row(per_env: dict[str, ObjectChange], envs: tuple[str, ...]) -> list[str] | None:
-    """Row rendering managed-host-group create/update ops across envs.
+    """Row rendering managed-host-group create/update/replace ops across envs.
 
     Returns ``None`` when no env has an actionable managed-group op — a
     ``no-change`` or an env with no managed-group entry does not warrant
     its own row. Otherwise cells follow the same conventions as the
     field-path rows: ``before -> after`` for updates, an ``(new) <fql>``
-    prefix for creates, and the empty-cell sentinel elsewhere.
+    prefix for creates, a ``(replace)`` prefix when a legacy dynamic
+    group is swapped for a static one, and the empty-cell sentinel
+    elsewhere.
     """
     cells: list[str] = ["managed-host-group"]
     any_actionable = False
@@ -566,6 +568,9 @@ def _managed_group_row(per_env: dict[str, ObjectChange], envs: tuple[str, ...]) 
         any_actionable = True
         if actionable.op == "create":
             cells.append(f"[green](new)[/green] {actionable.desired_fql!r}")
+        elif actionable.op == "replace":
+            live = actionable.live_fql or ""
+            cells.append(f"[yellow](replace)[/yellow] {live!r} -> {actionable.desired_fql!r}")
         else:  # "update"
             live = actionable.live_fql or ""
             cells.append(f"{live!r} -> {actionable.desired_fql!r}")

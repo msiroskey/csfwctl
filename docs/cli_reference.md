@@ -122,7 +122,9 @@ What it produces (single env):
   field-level diffs (`path: before -> after`), host-group add/remove
   lines, and — for policies with `managed_host_groups` — a
   `managed-group:<op> <group-name> fql=<desired>` line per env whose
-  csfwctl-managed dynamic host group is being created or updated.
+  csfwctl-managed static host group is being created, updated, or
+  replaced (`replace` swaps a legacy dynamic group for a static one; see
+  `docs/schema_reference.md`).
   List-valued fields (notably a rule group's `rules`) are expanded
   down to the individual element and leaf that changed — e.g.
   `rules[Airdrop: Any Inbound].file_path: None ->
@@ -370,7 +372,9 @@ Three structured fields appear on each `AppliedAction`:
 - `host_group_changes` — `(op, group_name, env)` triples on policy
   updates, mirroring the standalone `host-group` action rows.
 - `managed_group_changes` — `(op, group_name, env, desired_fql,
-  live_fql)` rows for csfwctl-managed dynamic host groups.
+  live_fql)` rows for csfwctl-managed static host groups. `op` is
+  `create`, `update`, `replace`, or `no-change`; `desired_fql` /
+  `live_fql` carry the assignment rule.
 
 Each action is also emitted as one structured `INFO` log record on the
 `csfwctl.applier` logger, so `--log-format json` produces one JSON line

@@ -666,8 +666,8 @@ def test_matrix_row_emitted_for_managed_group_update() -> None:
             "abc-endpoints",
             "ABC-Endpoints",
             "update",
-            live_fql="hostname:'a'",
-            desired_fql="hostname:['a','b']",
+            live_fql="device_id:[''],hostname:['a']",
+            desired_fql="device_id:[''],hostname:['a','b']",
         )
     )
     multi = MultiEnvDiff(
@@ -683,8 +683,42 @@ def test_matrix_row_emitted_for_managed_group_update() -> None:
     assert "managed-host-group" in rendered
     # The update cell should render before -> after (Rich strips quoting
     # syntax details, but the two FQL literals must both survive).
+    assert "device_id:[''],hostname:['a']" in rendered
+    assert "device_id:[''],hostname:['a','b']" in rendered
+
+
+def test_matrix_row_flags_managed_group_replace() -> None:
+    """A legacy dynamic group being swapped for a static one renders as ``(replace)``."""
+    import io
+
+    from rich.console import Console
+
+    from csfwctl import diff_cmd
+
+    test = ChangeSet(env="test")
+    test.updates.append(
+        _policy_change_with_managed(
+            DiffOp.update,
+            "abc-endpoints",
+            "ABC-Endpoints",
+            "replace",
+            live_fql="hostname:'a'",
+            desired_fql="device_id:[''],hostname:['a']",
+        )
+    )
+    multi = MultiEnvDiff(
+        change_sets={
+            "test": test,
+            "pilot": ChangeSet(env="pilot"),
+            "production": ChangeSet(env="production"),
+        }
+    )
+    buf = io.StringIO()
+    diff_cmd._render_env_matrix_tables(Console(file=buf, force_terminal=False, width=200), multi)
+    rendered = buf.getvalue()
+    assert "(replace)" in rendered
     assert "hostname:'a'" in rendered
-    assert "hostname:['a','b']" in rendered
+    assert "device_id:[''],hostname:['a']" in rendered
 
 
 def test_matrix_row_absent_when_no_actionable_managed_group() -> None:
